@@ -1,0 +1,73 @@
+[package]
+name = "burn-stack"
+version = "0.1.0"
+edition = "2024"
+description = "Block-generic layer/network composition on Burn: Pre-LN layers, virtual-layer stacks, bidirectional pairs, latent/vocab networks, multi-gate residuals, class tokens, and Muon parameter groups."
+
+[features]
+default = ["autodiff", "optim", "backend-flex"]
+autodiff = ["burn/autodiff"]
+# Optimizer support (`crate::optim`): Muon parameter groups over the fused
+# projections. Pulls `burn-optim` (which implies `burn/autodiff`).
+optim = ["burn/optim", "burn/std", "autodiff"]
+cubecl = ["dep:burn-cubecl", "burn/cubecl"]
+fusion = ["burn/fusion", "dep:burn-fusion"]
+check-inf = []
+check-nan = []
+# Expose `utils::test_helpers` (and its `check_grads_match_two_paths!` macro) to
+# downstream dev-dependencies. Test-only surface; off by default.
+test-helpers = []
+# Backend selection. With the Dispatch architecture each feature simply enables
+# the corresponding burn backend; multiple may be compiled in simultaneously.
+# At runtime the tests use `Device::default()`, which resolves to an enabled
+# backend (honouring the `BURN_DEVICE` env override). Each backend also turns on
+# the internal `_dev-test` marker so the tensor test suite compiles under
+# whichever backend is present.
+backend-ndarray = ["burn/ndarray", "_dev-test"]
+backend-ndarray-blas-accelerate = ["backend-ndarray", "burn/std", "burn/accelerate"]
+backend-ndarray-blas-netlib = ["backend-ndarray", "burn/std", "burn/blas-netlib"]
+backend-ndarray-blas-openblas = ["backend-ndarray", "burn/std", "burn/openblas"]
+backend-flex = ["burn/flex", "_dev-test"]
+backend-flex-rayon = ["backend-flex", "dep:burn-flex", "burn-flex?/rayon"]
+backend-cpu = ["burn/cpu", "burn/std", "cubecl", "_dev-test"]
+backend-tch-cpu = ["burn/tch", "burn/std", "_dev-test"]
+backend-tch-gpu = ["burn/tch", "burn/std", "_dev-test"]
+backend-wgpu = ["burn/wgpu", "burn/std", "cubecl", "_dev-test"]
+backend-webgpu = ["burn/webgpu", "burn/std", "cubecl", "_dev-test"]
+backend-metal = ["burn/metal", "burn/std", "cubecl", "_dev-test"]
+backend-vulkan = ["burn/vulkan", "burn/std", "cubecl", "_dev-test"]
+backend-cuda = ["burn/cuda", "burn/std", "cubecl", "_dev-test"]
+backend-rocm = ["burn/rocm", "burn/std", "cubecl", "_dev-test"]
+backend-remote = ["burn/remote", "burn/std", "cubecl", "_dev-test"]
+# `_dev-test` (internal): enabled by every `backend-*` so the tensor test suite
+# compiles whenever a backend is present. Not meant to be enabled directly.
+_dev-test = []
+dev-f16 = []
+dev-simd = ["burn/simd", "burn/std"]
+dev-autotune = ["burn/autotune"]
+
+[dependencies]
+serde = { version = "1.0.0", features = ["derive"] }
+# burn-flex = { version = "0.22.0-pre.1", default-features = false, optional = true }
+burn-flex = { git = "https://github.com/tracel-ai/burn.git", rev = "1893b608d1c70d286e4de89f852308d56b3270ea", default-features = false, optional = true }
+
+### For the main branch. ###
+# burn = { version = "0.22.0-pre.2", default-features = false, features = ["extension"]}
+# burn-cubecl = { version = "0.22.0-pre.2", default-features = false, optional = true}
+# burn-fusion = { version = "0.22.0-pre.2", default-features = false, optional = true}
+burn = { git = "https://github.com/tracel-ai/burn.git", rev = "1893b608d1c70d286e4de89f852308d56b3270ea", default-features = false, features = ["extension"] }
+burn-cubecl = { git = "https://github.com/tracel-ai/burn.git", rev = "1893b608d1c70d286e4de89f852308d56b3270ea", default-features = false, optional = true}
+burn-fusion = { git = "https://github.com/tracel-ai/burn.git", rev = "1893b608d1c70d286e4de89f852308d56b3270ea", default-features = false, optional = true}
+
+### For local development. ###
+# burn = { path = "../burn/crates/burn", default-features = false, features = ["extension"] }
+# burn-cubecl = { path = "../burn/crates/burn-cubecl", default-features = false, optional = true }
+# burn-fusion = { path = "../burn/crates/burn-fusion", default-features = false, optional = true }
+
+[dev-dependencies]
+### For the main branch. ###
+# burn = { version = "0.22.0-pre.2", default-features = false, features = ["autodiff", "std", "optim", "extension"]}
+burn = { git = "https://github.com/tracel-ai/burn.git", rev = "1893b608d1c70d286e4de89f852308d56b3270ea", default-features = false, features = ["autodiff", "std", "optim"]}
+
+### For local development. ###
+# burn = { path = "../burn/crates/burn", default-features = false, features = ["autodiff", "std"] }
