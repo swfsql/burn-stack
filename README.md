@@ -65,4 +65,4 @@ default. There are no custom kernels — only portable Burn tensor ops.
 
 ## Users
 
-- [`burn-mamba`](../burn-mamba) — Mamba-1/2/3 selective state space models.
+- [`burn-mamba`](https://github.com/swfsql/burn-mamba) — Mamba-1/2/3 selective state space models.
