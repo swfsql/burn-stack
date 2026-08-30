@@ -1,6 +1,6 @@
 [package]
 name = "burn-stack"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "Block-generic layer/network composition on Burn: Pre-LN layers, virtual-layer stacks, bidirectional pairs, latent/vocab networks, multi-gate residuals, class tokens, and Muon parameter groups."
 

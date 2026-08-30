@@ -10,7 +10,8 @@ VocabNetwork<M>   embedding → Layers<M> → final RMSNorm → LM head → logi
 LatentNetwork<M>  in_proj → Layers<M> → [norm_f] → out_proj   (continuous I/O)
 BidiLayers<M>     paired straight (→) / reversed (←) stacks, merged per pair
 Layers<M>         N (virtual) layers over R real weight sets
-Layer<M>          Pre-LN residual:  y = x·residual_scale + Block(RMSNorm(x))
+Layer<M>          Pre-LN sub-blocks: Block(RMSNorm(x)), then the optional
+                  SwiGLU MLP over norm2; Layers owns the outer residual
 M: Block          the mixer core, supplied by you
 ```
 

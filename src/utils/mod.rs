@@ -23,6 +23,7 @@ pub mod detach;
 /// Rank-tagged `FloatTensor` primitive wrapper mirroring the `Tensor` method
 /// API, used by custom-backward gradient math.
 pub mod fprim;
+pub mod init;
 /// Virtual-layer → real-weight index scheduling shared by all block families.
 pub mod schedule;
 /// Learning-rate schedulers (cosine-annealing + warmup, constant).
@@ -33,6 +34,7 @@ pub mod test_helpers;
 
 pub use class::{ClassCursor, ClassCursors, ClassLatent, ClassToken};
 pub use detach::detach_params;
+pub use init::InitPolicy;
 pub use schedule::{BidiSchedule, GradHorizon, Schedule};
 pub use scheduler::{ConstantLr, CosineAnnealingLr, Lr};
 

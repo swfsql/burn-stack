@@ -4,5 +4,6 @@
 pub mod bce;
 /// Cross-entropy (multi-class).
 pub mod cross_entropy;
+pub mod l2warp;
 /// Mean squared error.
 pub mod mse;

@@ -26,7 +26,8 @@
 //! VocabNetwork<M>   embedding → Layers<M> → final RMSNorm → LM head → logits
 //! LatentNetwork<M>  in_proj → Layers<M> → [norm_f] → out_proj (continuous I/O)
 //! Layers<M>         a stack of N (virtual) layers over R real weight sets
-//! Layer<M>          Pre-LN residual:  y = x·residual_scale + Block(RMSNorm(x))
+//! Layer<M>          Pre-LN sub-blocks: Block(RMSNorm(x)), then the optional
+//!                   SwiGLU MLP over norm2; Layers owns the outer residual
 //! M: Block          the mixer core, supplied by the caller
 //! ```
 //!
@@ -70,7 +71,9 @@ pub mod prelude {
         LatentNetwork, Layer, Layers, LayersBuilder, MultiGateResidualConfig, OutputMerge,
         OutputMergeConfig, Residuals, ResidualsConfig, RmsNorm, RmsNormConfig, VocabNetwork,
     };
-    pub use crate::utils::{BidiSchedule, ClassLatent, ClassToken, GradHorizon, Schedule};
+    pub use crate::utils::{
+        BidiSchedule, ClassLatent, ClassToken, GradHorizon, InitPolicy, Schedule,
+    };
 
     #[cfg(feature = "optim")]
     pub use crate::optim::{MuonPlan, ProjSegment, ProjSpec, muon_config};

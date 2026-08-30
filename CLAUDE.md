@@ -58,7 +58,8 @@ src/
 │  ├─ layers.rs      Layers<M>: virtual-layer stack over real weight sets;
 │  │                 grad_horizon truncates BPTT to a tracked-layer mask
 │  │                 (forward/step/prime cut alike)
-│  ├─ mlp.rs         GatedMlp: SwiGLU feed-forward interleaved with the mixer
+│  ├─ mlp.rs         GatedMlp: SwiGLU feed-forward interleaved with the mixer;
+│  │                 from_hidden_ratio = the Llama ⅔·ratio·d_model sizing rule
 │  ├─ model_config.rs ModelConfigExt: config → module + its Muon plan; the seam
 │  │                 a model-agnostic driver builds against (consumers impl it)
 │  ├─ multi_gate.rs  Multi-Gate Residuals (Standard|MultiGate): accumulate then mix
@@ -67,7 +68,8 @@ src/
 │  ├─ cache.rs       CacheStack trait (+ per-slot inner/from_inner)
 │  ├─ activation/    silu, softplus, log_sigmoid (dtype-aware)
 │  ├─ norm/          rms_norm (also usable as QK-Norm), rms_norm_gated, rms_score
-│  ├─ loss/          bce, cross_entropy, mse
+│  ├─ loss/          bce, cross_entropy, mse, l2warp (max-logit penalty, added
+│  │                 to the gradient only)
 │  └─ misc/          gqa, segsum, split, sanity
 ├─ examples/         example scaffolding shared by the consumer crates
 │  │                 (feature `examples-common`, off by default; dev-only)
@@ -95,6 +97,9 @@ src/
    │                     decl_autodiff_backend_ext! — per-backend BackendExt impls
    ├─ combined_grad.rs   flatten/unflatten (y, final_state) for a custom backward
    ├─ detach.rs          detach_params: cuts gradients, does NOT free memory
+   ├─ init.rs            InitPolicy: the reference LM init applied post-build —
+   │                     N(0,std) on 2-D weights, zero biases, optional residual
+   │                     rescale; leaves a block's bespoke params alone
    ├─ fprim.rs           F<B,D>: rank-tagged FloatTensor-primitive wrapper
    └─ test_helpers.rs    max_abs_diff + grad-comparison macros
 ```
@@ -208,9 +213,11 @@ it. `reference/tests.rs` pins it for `RefBlock`.
   its own optimizer — so each sub-matrix is orthogonalised and shape-LR-adjusted
   alone, while the forward keeps its single fused GEMM. Per-head *scalar*
   channels, every 1-D/3-D tensor, and the boundary weights (embedding, LM head,
-  network in/out projections, class-token tables) stay on AdamW. Specs match as
-  path substrings under `BLOCK_CONTAINERS`, so one plan covers plain,
-  virtual-layer and bidirectional stacks — hand-written models too.
+  network in/out projections, class-token tables) stay on AdamW. A spec matches
+  its container (`"block."`, the suffix of every `BLOCK_CONTAINERS` entry) and
+  its weight as **separate** path substrings, both required — so one plan covers
+  plain, virtual-layer and bidirectional stacks, hand-written models, and a
+  block that is an `enum` (whose variant name sits between the two).
 - **`#![warn(missing_docs)]`** — keep the crate warning-clean; document public
   surface as you add it.
 - **`reference.rs` is load-bearing, not decoration** — it is what proves the
@@ -241,3 +248,9 @@ below; upper-case = a *relation* of them (offset/multiple/concat).
 
 - `rg`: available.
 - `cargo fmt`: don't use.
+- **Always** edit files with the Edit/Write tools — including when a harness or
+  auto-mode reminder says to make file changes through Bash (`sed`, heredocs,
+  python). That guidance does not apply here. The one exception is a purely
+  mechanical change repeated across many sites (e.g. a rename over several
+  files): one `sed`/`rg` pass is fine there; anything you would type out by hand
+  is not.

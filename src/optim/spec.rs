@@ -17,7 +17,8 @@ use burn::module::ParamGroup;
 /// a block weight under any of them makes a [`ProjSpec`] independent of the
 /// container — one plan covers a plain stack, a virtual-layer stack, and a
 /// bidirectional stack alike, including hand-written models built from these
-/// pieces.
+/// pieces. Every entry ends in `"block."`, which is what
+/// [`ProjSpec::predicates`] matches on.
 pub const BLOCK_CONTAINERS: [&str; 3] = ["block.", "straight_block.", "reverse_block."];
 
 /// Where in the module tree a [`ProjSpec`]'s path is anchored.
@@ -114,20 +115,25 @@ impl ProjSpec {
         self.segments.len() == 1 && self.segments[0].muon
     }
 
-    /// The path substrings this spec matches (one per [`BLOCK_CONTAINERS`]
-    /// entry for [`ProjScope::Block`], otherwise the path itself).
+    /// The path substrings a parameter must **all** contain to be this spec's:
+    /// its own path and — under [`ProjScope::Block`] — a block container.
+    ///
+    /// Two substrings rather than one concatenation, because a block need not
+    /// sit *directly* under the container field: a block that is an `enum`
+    /// carries its variant name in between
+    /// (`block.GatedDeltaNet1.in_proj.weight`), which a single
+    /// `"block.in_proj.weight"` predicate would miss — silently, leaving the
+    /// weight on the fallback optimizer. `"block."` alone stands for every
+    /// [`BLOCK_CONTAINERS`] entry, each of which ends with it.
     pub fn predicates(&self) -> Vec<String> {
         match self.scope {
-            ProjScope::Block => BLOCK_CONTAINERS
-                .iter()
-                .map(|container| format!("{container}{}", self.path))
-                .collect(),
+            ProjScope::Block => vec!["block.".to_string(), self.path.clone()],
             ProjScope::Path => vec![self.path.clone()],
         }
     }
 
-    /// The parameter group selecting this weight (OR over [`Self::predicates`]).
+    /// The parameter group selecting this weight (AND over [`Self::predicates`]).
     pub fn param_group(&self) -> ParamGroup {
-        ParamGroup::from_any_predicates(self.predicates())
+        ParamGroup::from_predicates(self.predicates())
     }
 }
