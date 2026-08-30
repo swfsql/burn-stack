@@ -46,11 +46,15 @@
 //! - [`utils`] — virtual-layer/LR scheduling, class tokens, and the
 //!   custom-backward plumbing a family needs to register its own kernels.
 //! - [`optim`] — Muon parameter groups over fused projection weights.
+//! - `examples` (feature `examples-common`) — the CLI/training/dataset
+//!   scaffolding the consumer crates' `examples/` directories share.
 
 #![warn(missing_docs)]
 #![allow(clippy::let_and_return)]
 #![allow(clippy::module_inception)]
 
+#[cfg(feature = "examples-common")]
+pub mod examples;
 pub mod modules;
 #[cfg(feature = "optim")]
 pub mod optim;

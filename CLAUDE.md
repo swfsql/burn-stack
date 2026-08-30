@@ -34,7 +34,11 @@ cargo doc --no-deps         # build docs
 - `autodiff`/`optim` are default-on; `optim` (Muon parameter groups) implies
   `burn/optim`+`burn/std`. `cubecl`/`fusion` gate the per-backend `BackendExt`
   impls the macros emit. `test-helpers` exposes `utils::test_helpers` and
-  `reference` to a downstream crate's dev-dependencies.
+  `reference` to a downstream crate's dev-dependencies; `examples-common` exposes
+  `examples` (pulling `burn/train`+`burn/dataset` and the download/CLI/image
+  crates) — a consumer enables it in its **dev**-dependencies only. Note
+  `ModelConfigExt` is deliberately *not* behind it: consumers implement it in
+  their own libs, which cannot depend on a dev-only feature.
 - A consumer crate must **forward** every one of these features (see
   `burn-mamba/Cargo.toml`), because the `backend-*` cfgs are evaluated where the
   `impl_backend_ext_for_burn_backends!` macro expands — in the *calling* crate.
@@ -55,6 +59,8 @@ src/
 │  │                 grad_horizon truncates BPTT to a tracked-layer mask
 │  │                 (forward/step/prime cut alike)
 │  ├─ mlp.rs         GatedMlp: SwiGLU feed-forward interleaved with the mixer
+│  ├─ model_config.rs ModelConfigExt: config → module + its Muon plan; the seam
+│  │                 a model-agnostic driver builds against (consumers impl it)
 │  ├─ multi_gate.rs  Multi-Gate Residuals (Standard|MultiGate): accumulate then mix
 │  ├─ network.rs     LatentNetwork (optional final norm) / VocabNetwork
 │  ├─ bidi.rs        BidiLayers<M> + BidiLayerPair<M> + OutputMerge
@@ -63,6 +69,14 @@ src/
 │  ├─ norm/          rms_norm (also usable as QK-Norm), rms_norm_gated, rms_score
 │  ├─ loss/          bce, cross_entropy, mse
 │  └─ misc/          gqa, segsum, split, sanity
+├─ examples/         example scaffolding shared by the consumer crates
+│  │                 (feature `examples-common`, off by default; dev-only)
+│  ├─ cli.rs         AppArgs: parsing, artifact dir, model/optim/config I/O
+│  ├─ device.rs      Device dtype configuration (`dev-f16`) + FloatElement
+│  ├─ training.rs    TrainingConfig + OptimizerConfig (AdamW, optional Muon)
+│  └─ mnist/         dataset.rs (download + batching), classify.rs (the epoch
+│                    loops + the MnistModel seam), render.rs (a digit beside
+│                    its class distribution, as text or PNG)
 ├─ optim/            Muon parameter groups (feature `optim`); allowlist, not denylist
 │  ├─ mod.rs         MuonPlan: specs → ModuleOptimizer (AdamW fallback + Muon groups)
 │  ├─ spec.rs        ProjSpec/ProjSegment: fused-weight column seams → ParamGroup;

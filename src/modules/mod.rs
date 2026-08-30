@@ -27,6 +27,7 @@ pub mod loss;
 pub mod misc;
 /// The SwiGLU feed-forward block interleaved with the mixer ([`GatedMlp`]).
 pub mod mlp;
+pub mod model_config;
 /// Multi-Gate Residuals: multi-stream gated depth-wise residuals ([`Residuals`]).
 pub mod multi_gate;
 /// Block-generic networks ([`LatentNetwork`] / [`VocabNetwork`]).
@@ -42,6 +43,7 @@ pub use misc::sanity::sanity;
 pub use misc::segsum::segsum;
 pub use misc::split::split_into;
 pub use mlp::{GatedMlp, GatedMlpConfig};
+pub use model_config::ModelConfigExt;
 pub use norm::rms_norm::{RmsNorm, RmsNormConfig};
 pub use norm::rms_norm_gated::{RmsNormGated, RmsNormGatedConfig};
 pub use norm::rms_score::{normed_score, rms_denom, score_scale};
