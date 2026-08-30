@@ -35,8 +35,9 @@ cargo doc --no-deps         # build docs
   `burn/optim`+`burn/std`. `cubecl`/`fusion` gate the per-backend `BackendExt`
   impls the macros emit. `test-helpers` exposes `utils::test_helpers` and
   `reference` to a downstream crate's dev-dependencies; `examples-common` exposes
-  `examples` (pulling `burn/train`+`burn/dataset` and the download/CLI/image
-  crates) — a consumer enables it in its **dev**-dependencies only. Note
+  `examples` (pulling `burn/train`+`burn/dataset` and the
+  download/CLI/image/json/rand crates) — a consumer enables it in its
+  **dev**-dependencies only. Note
   `ModelConfigExt` is deliberately *not* behind it: consumers implement it in
   their own libs, which cannot depend on a dev-only feature.
 - A consumer crate must **forward** every one of these features (see
@@ -76,9 +77,13 @@ src/
 │  ├─ cli.rs         AppArgs: parsing, artifact dir, model/optim/config I/O
 │  ├─ device.rs      Device dtype configuration (`dev-f16`) + FloatElement
 │  ├─ training.rs    TrainingConfig + OptimizerConfig (AdamW, optional Muon)
-│  └─ mnist/         dataset.rs (download + batching), classify.rs (the epoch
-│                    loops + the MnistModel seam), render.rs (a digit beside
-│                    its class distribution, as text or PNG)
+│  ├─ mnist/         dataset.rs (download + batching), classify.rs (the epoch
+│  │                 loops + the MnistModel seam), render.rs (a digit beside
+│  │                 its class distribution, as text or PNG)
+│  └─ tiny_stories/  dataset.rs (character corpus: alphabet, datasets-server
+│                    paging + cache, windowing), lm.rs (TinyStoriesConfig +
+│                    CLI overrides, the epoch loops + the LmModel seam),
+│                    sample.rs (prefill/decode sampler over VocabNetwork<M>)
 ├─ optim/            Muon parameter groups (feature `optim`); allowlist, not denylist
 │  ├─ mod.rs         MuonPlan: specs → ModuleOptimizer (AdamW fallback + Muon groups)
 │  ├─ spec.rs        ProjSpec/ProjSegment: fused-weight column seams → ParamGroup;

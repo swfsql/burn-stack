@@ -3,8 +3,10 @@
 //! None of this is part of the composition layer: it is the plumbing every
 //! `examples/` directory otherwise rewrites — CLI + artifact handling ([`cli`]),
 //! runtime dtype selection ([`device`]), the [`training`] config (AdamW,
-//! optionally Muon), and the sequential-[`mnist`] dataset. It lives here so
-//! `burn-mamba` and `burn-deltanet` share one copy.
+//! optionally Muon), and the two datasets with their epoch loops — the
+//! sequential-[`mnist`] classifier and the character-level [`tiny_stories`]
+//! language model. It lives here so `burn-mamba` and `burn-deltanet` share one
+//! copy.
 //!
 //! Gated behind the off-by-default `examples-common` feature, which is what
 //! pulls `burn/train`, `burn/dataset` and the download/CLI crates; a consumer
@@ -18,4 +20,5 @@
 pub mod cli;
 pub mod device;
 pub mod mnist;
+pub mod tiny_stories;
 pub mod training;
