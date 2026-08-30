@@ -66,3 +66,9 @@ default. There are no custom kernels — only portable Burn tensor ops.
 ## Users
 
 - [`burn-mamba`](https://github.com/swfsql/burn-mamba) — Mamba-1/2/3 selective state space models.
+
+## Custom Commands
+
+- `rg`: available.
+- `cargo fmt`: don't use.
+- Prefer using the file editing tool to edit files. Use python scripts for editing iff there are procedural benefits.

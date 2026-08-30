@@ -33,7 +33,7 @@ pub mod test_helpers;
 
 pub use class::{ClassCursor, ClassCursors, ClassLatent, ClassToken};
 pub use detach::detach_params;
-pub use schedule::{BidiSchedule, Schedule};
+pub use schedule::{BidiSchedule, GradHorizon, Schedule};
 pub use scheduler::{ConstantLr, CosineAnnealingLr, Lr};
 
 /// A small `dtype`-specific epsilon for safe division (`x / (y + eps)`),

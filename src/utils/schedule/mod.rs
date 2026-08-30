@@ -10,6 +10,10 @@
 //! indices run the reverse (←) pass.
 //!
 //! Each variant is documented with a worked virtual→real mapping example.
+//!
+//! A [`GradHorizon`] rides on top of that mapping: it says which of the virtual
+//! layers back-propagate, counted **per real layer** so that no weight set is
+//! left untrained, whichever way a schedule spreads it.
 
 /// How a unidirectional layer stack maps virtual layer indices to real
 /// (weight-bearing) layer indices.
@@ -47,6 +51,96 @@ impl Schedule {
             Schedule::Cyclic => virtual_idx % real_len,
             Schedule::Stretched => (virtual_idx * real_len) / virtual_len,
             Schedule::Custom(map) => *map.get(virtual_idx).unwrap(),
+        }
+    }
+}
+
+/// Which (virtual) layers of a stack build an autodiff graph — the shape of
+/// [`Layers::grad_horizon`](crate::modules::Layers::grad_horizon).
+///
+/// The layers left out run on the inner (non-autodiff) backend and retain no
+/// activation. A horizon is a **mask**, not one boundary: the stack cuts down
+/// wherever the mask turns off and lifts back wherever it turns on, as many
+/// times as the mask says.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum GradHorizon {
+    /// Back-propagate the last `K` applications of **every real layer**.
+    ///
+    /// `K` counts per *weight set*, not per stack, so every real layer keeps a
+    /// tracked application whatever the schedule does with it — which is the
+    /// point: a plain suffix of `K` virtual layers reaches every weight only
+    /// under [`Schedule::Cyclic`], and would leave every [`Schedule::Stretched`]
+    /// real layer but the topmost with no gradient at all.
+    ///
+    /// # Example
+    /// - virtual len = 8, real len = 3, `Depth(1)` (`T` = tracked):
+    ///   - [`Schedule::Cyclic`] (`0 1 2 0 1 2 0 1`): `. . . . . T T T` —
+    ///     a single cut, at `virtual_len - K·real_len` on an even stack.
+    ///   - [`Schedule::Stretched`] (`0 0 0 1 1 1 2 2`): `. . T . . T . T` —
+    ///     one cut **per real layer**, at the tail of each run.
+    ///
+    /// A stack **without** weight sharing applies each real layer once, so any
+    /// `K >= 1` tracks all of it; [`Self::last`] states the suffix mask for that
+    /// case. [`Schedule::Custom`] has no canonical run to take a tail of and
+    /// takes a [`Self::Mask`] instead (`Depth` panics on it).
+    Depth(usize),
+    /// Explicit per-virtual-layer mask, `true` = back-propagated. Its length
+    /// must be the stack's virtual-layer count.
+    Mask(Vec<bool>),
+}
+
+impl GradHorizon {
+    /// A [`Self::Mask`] tracking the **last `k`** of `virtual_len` layers: the
+    /// single-cut suffix horizon, spelled out. It is what [`Self::Depth`] comes
+    /// to under [`Schedule::Cyclic`] with `k = K·real_len`, and the only horizon
+    /// that cuts a stack sharing no weights.
+    pub fn last(k: usize, virtual_len: usize) -> Self {
+        GradHorizon::Mask((0..virtual_len).map(|i| i + k >= virtual_len).collect())
+    }
+
+    /// Resolve to one `tracked` flag per virtual layer. `schedule` is the
+    /// stack's own, `None` when it runs no virtual layers at all (each real
+    /// layer applied once, `virtual_len == real_len`).
+    ///
+    /// # Panics
+    /// A [`Self::Mask`] of the wrong length, or a [`Self::Depth`] against a
+    /// [`Schedule::Custom`].
+    pub fn tracked(
+        &self,
+        schedule: Option<&Schedule>,
+        virtual_len: usize,
+        real_len: usize,
+    ) -> Vec<bool> {
+        match self {
+            GradHorizon::Mask(mask) => {
+                assert_eq!(
+                    mask.len(),
+                    virtual_len,
+                    "GradHorizon::Mask needs one flag per virtual layer",
+                );
+                mask.clone()
+            }
+            GradHorizon::Depth(k) => {
+                assert!(
+                    !matches!(schedule, Some(Schedule::Custom(_))),
+                    "GradHorizon::Depth is undefined for Schedule::Custom: a hand-written \
+                     virtual→real map has no canonical run to take the last K applications \
+                     of — state the cuts with GradHorizon::Mask instead",
+                );
+                // Walk the stack downwards, keeping each real layer's `k`
+                // topmost applications: one contiguous suffix under `Cyclic`,
+                // one tail per run under `Stretched`.
+                let mut tracked = vec![false; virtual_len];
+                let mut kept = vec![0usize; real_len];
+                for i in (0..virtual_len).rev() {
+                    let real = schedule.map_or(i, |s| s.real_idx(i, virtual_len, real_len));
+                    if kept[real] < *k {
+                        kept[real] += 1;
+                        tracked[i] = true;
+                    }
+                }
+                tracked
+            }
         }
     }
 }

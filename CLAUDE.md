@@ -52,7 +52,8 @@ src/
 │  ├─ layer.rs       Layer<M>: Pre-LN block M(RMSNorm(·)) + optional norm2/mlp;
 │  │                 returns the layer's total delta, outer residual by Layers
 │  ├─ layers.rs      Layers<M>: virtual-layer stack over real weight sets;
-│  │                 grad_horizon truncates BPTT to the top K (forward/step/prime)
+│  │                 grad_horizon truncates BPTT to a tracked-layer mask
+│  │                 (forward/step/prime cut alike)
 │  ├─ mlp.rs         GatedMlp: SwiGLU feed-forward interleaved with the mixer
 │  ├─ multi_gate.rs  Multi-Gate Residuals (Standard|MultiGate): accumulate then mix
 │  ├─ network.rs     LatentNetwork (optional final norm) / VocabNetwork
@@ -73,7 +74,8 @@ src/
    ├─ class/         ClassToken / ClassLatent placement (CLS-style registers) +
    │                 ClassCursor(s): offsets + full-length hint, shared by
    │                 forward/step/prime
-   ├─ schedule/      Schedule + BidiSchedule (virtual→real index mapping)
+   ├─ schedule/      Schedule + BidiSchedule (virtual→real index mapping) +
+   │                 GradHorizon (which virtual layers back-propagate)
    ├─ scheduler/     LR schedulers (cosine + warmup, constant)
    ├─ backend_macros.rs  impl_backend_ext_for_burn_backends! /
    │                     decl_autodiff_backend_ext! — per-backend BackendExt impls
@@ -119,18 +121,25 @@ it. `reference/tests.rs` pins it for `RefBlock`.
 - **Virtual layers** (`utils/schedule/`): `Layers<M>` runs `n_virtual_layers`
   logical passes over `n_real_layers` weight sets, each virtual layer keeping its
   own cache. `Schedule` maps virtual→real (`Cyclic`/`Stretched`/`Custom`);
-  `BidiSchedule` pairs forward/backward layers. `grad_horizon: Some(K)`
-  back-propagates only the top `K` of them (truncated BPTT), the rest running on
-  the inner backend; `forward`/`step`/`prime` cut on the same layers, and a
-  shared weight collects the gradient of its tracked applications alone. The
-  stack **input** is re-attached *straight-through* at the boundary (a value-zero
-  term restoring an identity gradient path) — it enters only at the bottom, so a
-  cut would otherwise leave a network's `in_proj`/embedding untrained; TRM/HRM
-  avoid this by re-injecting the input every recursion, which this stack does
-  not. Under `MultiGate` the carry reaches every stream. Class embeddings train
-  at every level and on both sides of the cut (a per-layer latent below it gets a
-  tracked zero-valued *ghost* row in the carry) — they are learnable input rows,
-  not part of a layer's transform.
+  `BidiSchedule` pairs forward/backward layers. `grad_horizon: Some(GradHorizon)`
+  back-propagates only *some* of them (truncated BPTT), the rest running on the
+  inner backend; `forward`/`step`/`prime` cut on the same layers, and a shared
+  weight collects the gradient of its tracked applications alone. It is a
+  **mask**, not one boundary: `Depth(K)` keeps the last `K` applications of every
+  **real** layer — a single top suffix under `Cyclic`, the tail of each run (one
+  cut per real layer) under `Stretched`, so no weight set is left untrained;
+  `Mask(Vec<bool>)` states the tracked layers outright and is what `Custom` takes
+  (`Depth` panics on it), `GradHorizon::last(K, n)` being the plain suffix — the
+  only form that cuts a stack sharing no weights, where each real layer has a
+  single application. What enters an untracked segment is re-attached
+  *straight-through* where the graph resumes (a value-zero term restoring an
+  identity gradient path); the stack **input** is why — it enters only at the
+  bottom, so a cut would otherwise leave a network's `in_proj`/embedding
+  untrained; TRM/HRM avoid this by re-injecting the input every recursion, which
+  this stack does not. Under `MultiGate` the carry reaches every stream. Class
+  embeddings train at every level and on both sides of a cut (a per-layer latent
+  inside an untracked segment gets a tracked zero-valued *ghost* row in the
+  carry) — they are learnable input rows, not part of a layer's transform.
 - **Bidirectional** (`modules/bidi.rs`): `BidiLayerPair<M>` runs a straight (→)
   and a reversed (← via `flip`) pass merged by `OutputMerge` (`Mean`|`CatLinear`);
   `BidiLayers<M>` stacks pairs.
@@ -171,7 +180,7 @@ it. `reference/tests.rs` pins it for `RefBlock`.
 - **A no-grad region means the inner backend, not `detach`** — Burn registers
   untracked ops in the graph anyway, so detaching cuts gradients while
   **retaining every activation** (measured: 3144 MB vs 208 MB at 64 virtual
-  layers; see `utils/detach.rs`). `grad_horizon` runs its prefix on
+  layers; see `utils/detach.rs`). `grad_horizon` runs its untracked segments on
   `AutodiffModule::valid(self)`. Three consequences: `.inner()`/`.valid()`
   **panic** off autodiff (unlike `detach`, a no-op there), so the `is_autodiff`
   guard is load-bearing; caches convert by hand (`Module::map` is a no-op on

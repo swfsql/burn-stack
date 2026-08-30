@@ -66,7 +66,7 @@ pub mod prelude {
         LatentNetwork, Layer, Layers, LayersBuilder, MultiGateResidualConfig, OutputMerge,
         OutputMergeConfig, Residuals, ResidualsConfig, RmsNorm, RmsNormConfig, VocabNetwork,
     };
-    pub use crate::utils::{BidiSchedule, ClassLatent, ClassToken, Schedule};
+    pub use crate::utils::{BidiSchedule, ClassLatent, ClassToken, GradHorizon, Schedule};
 
     #[cfg(feature = "optim")]
     pub use crate::optim::{MuonPlan, ProjSegment, ProjSpec, muon_config};
