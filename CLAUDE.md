@@ -82,7 +82,8 @@ src/
 │  │                 (feature `examples-common`, off by default; dev-only)
 │  ├─ cli.rs         AppArgs: parsing, artifact dir, model/optim/config I/O
 │  ├─ device.rs      Device dtype configuration (`dev-f16`) + FloatElement
-│  ├─ training.rs    TrainingConfig + OptimizerConfig (AdamW, optional Muon)
+│  ├─ training.rs    TrainingConfig + OptimizerConfig (AdamW, optional Muon);
+│  │                 BatchBudget: the `--max-batches` run cap (not config state)
 │  ├─ mnist/         dataset.rs (download + batching), classify.rs (the epoch
 │  │                 loops + the MnistModel seam), render.rs (a digit beside
 │  │                 its class distribution, as text or PNG)

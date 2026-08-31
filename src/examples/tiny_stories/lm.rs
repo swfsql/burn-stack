@@ -16,7 +16,7 @@ use crate::examples::cli::AppArgs;
 use crate::examples::tiny_stories::dataset::{
     Split, TinyStoriesBatch, TinyStoriesBatcher, TinyStoriesDataset, VOCAB_SIZE,
 };
-use crate::examples::training::{TrainingConfig, metric_current};
+use crate::examples::training::{BatchBudget, TrainingConfig, metric_current};
 use burn::optim::{GradientsParams, ModuleOptimizer};
 use burn::prelude::*;
 use burn::{
@@ -178,6 +178,10 @@ pub fn dataloaders(
 
 /// Train for a single epoch, stepping the optimizer per batch and periodically
 /// validating, sampling and checkpointing; returns the updated model.
+///
+/// The epoch ends early once `batch_budget` (the `--max-batches` cap) runs out;
+/// the caller's epoch loop should then stop, seeing
+/// [`BatchBudget::is_exhausted`].
 #[allow(clippy::too_many_arguments)]
 pub fn epoch_train<W: LmModel>(
     dataloader_train: Dataloader,
@@ -187,12 +191,12 @@ pub fn epoch_train<W: LmModel>(
     optim: &mut ModuleOptimizer,
     metric_meta: &mut MetricMetadata,
     epoch: usize,
-    training_loop_limit: Option<usize>,
+    batch_budget: &mut BatchBudget,
     valid_loop_limit: Option<usize>,
     app_args: &AppArgs,
     valid_device: Device,
 ) -> W {
-    let training_loop_limit = training_loop_limit.unwrap_or(usize::MAX);
+    let training_loop_limit = batch_budget.take_limit();
     let mut loss_metric = burn::train::metric::LossMetric::new();
     let mut acc_metric = burn::train::metric::AccuracyMetric::new();
     let mut iteration_speed_metric = burn::train::metric::IterationSpeedMetric::new();
@@ -205,6 +209,7 @@ pub fn epoch_train<W: LmModel>(
         .take(training_loop_limit)
     {
         b += 1;
+        batch_budget.spend();
         let [batch_size, _seq_len] = batch.inputs.dims();
         metric_meta.iteration = Some(metric_meta.iteration.unwrap() + 1);
         metric_meta.progress.items_processed += batch_size;

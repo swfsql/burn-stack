@@ -5,6 +5,10 @@
 //! AdamW defaults shared by the examples (epsilon, grad clipping, cautious
 //! weight decay); [`OptimizerConfig::muon`] optionally moves the hidden weight
 //! matrices to Muon (see [`crate::optim`]).
+//!
+//! [`BatchBudget`] is the run-length knob that is *not* part of the config: the
+//! `--max-batches` cap, which belongs to the invocation rather than to the
+//! persisted hyperparameters.
 
 use burn::{
     optim::{AdamWConfig, ModuleOptimizer, MuonConfig},
@@ -53,6 +57,66 @@ impl OptimizerConfig {
         match &self.muon {
             None => self.adamw.init(),
             Some(muon) => plan.build(&self.adamw, muon),
+        }
+    }
+}
+
+/// A runtime cap on how many training mini-batches a run may take, spanning
+/// every epoch (`--max-batches`; `None` ⇒ unlimited).
+///
+/// It is a *budget*, not a per-epoch limit: the epoch loops take it by `&mut`,
+/// bound their `take()` by what is left and spend one per batch, so a cap of
+/// 600 stops 600 batches into the run whichever epoch that lands in. Checking
+/// [`is_exhausted`](Self::is_exhausted) after each epoch is what breaks the
+/// outer loop (the caller still checkpoints and validates first).
+///
+/// It deliberately lives outside [`TrainingConfig`]: it describes this
+/// invocation ("stop early so I can look at it"), not the hyperparameters the
+/// artifacts directory persists and a resumed run should inherit.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BatchBudget {
+    /// Batches still allowed, or `None` when uncapped.
+    remaining: Option<usize>,
+}
+
+impl BatchBudget {
+    /// A budget of `max_batches` training mini-batches; `None` ⇒ unlimited.
+    pub fn new(max_batches: Option<usize>) -> Self {
+        Self {
+            remaining: max_batches,
+        }
+    }
+
+    /// The uncapped budget (what every example ran with before `--max-batches`).
+    pub fn unlimited() -> Self {
+        Self::new(None)
+    }
+
+    /// Whether a cap was given at all.
+    pub fn is_capped(&self) -> bool {
+        self.remaining.is_some()
+    }
+
+    /// Batches still allowed, as an `Iterator::take` count — `usize::MAX` when
+    /// uncapped.
+    pub fn take_limit(&self) -> usize {
+        self.remaining.unwrap_or(usize::MAX)
+    }
+
+    /// Batches still allowed, or `None` when uncapped.
+    pub fn remaining(&self) -> Option<usize> {
+        self.remaining
+    }
+
+    /// Whether a cap was given and is now fully spent, i.e. training must stop.
+    pub fn is_exhausted(&self) -> bool {
+        self.remaining == Some(0)
+    }
+
+    /// Charge one mini-batch to the budget (a no-op when uncapped).
+    pub fn spend(&mut self) {
+        if let Some(remaining) = &mut self.remaining {
+            *remaining = remaining.saturating_sub(1);
         }
     }
 }

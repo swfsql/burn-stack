@@ -8,6 +8,7 @@
 //! (conventionally `concat!(env!("CARGO_PKG_NAME"), "-", env!("CARGO_BIN_NAME"),
 //! "-")`, evaluated in the example crate).
 
+use crate::examples::training::BatchBudget;
 use crate::modules::ModelConfigExt;
 use burn::optim::ModuleOptimizer;
 use burn::prelude::*;
@@ -35,6 +36,7 @@ BEHAVIOR OVERVIEW
 - With --remove-artifacts, any existing model and optimizer files in the artifacts directory are deleted before training (if --training is active).
 - Model and optimizer weights are loaded from the artifacts directory if present; otherwise new ones are created and saved.
 - If both --training and --inference are specified, training executes first, followed by inference using the trained model.
+- With --max-batches, training stops after that many mini-batches in total (counted across epochs), checkpointing as usual before it returns.
 - Any arguments following -- are captured as-is and forwarded to downstream processing.
 
 FLAGS:
@@ -48,6 +50,8 @@ OPTIONS:
     -c, --training-config <PATH>
                                 Load training configuration from this file (overrides any config in artifacts directory)
     -m, --model-config <PATH>   Load model configuration from this file (overrides any config in artifacts directory)
+    -b, --max-batches <N>       Stop training after N mini-batches in total (across epochs), regardless of the
+                                configured number of epochs. Unlimited when absent.
     -a, --artifacts-path <PATH>
                                 Directory where configurations, model weights, and optimizer state are saved and loaded.
                                 If the directory does not exist, it will be created.
@@ -73,6 +77,9 @@ pub struct AppArgs {
     pub model_config: Option<PathBuf>,
     /// Directory for configs, model weights, and optimizer state.
     pub artifacts_path: PathBuf,
+    /// Optional cap on the total number of training mini-batches; see
+    /// [`AppArgs::batch_budget`].
+    pub max_batches: Option<usize>,
     /// Arguments after `--`, forwarded verbatim to downstream processing.
     pub extra_args: Vec<OsString>,
 }
@@ -109,6 +116,7 @@ impl AppArgs {
             training_config: pargs
                 .opt_value_from_os_str(["-c", "--training-config"], parse_path)?,
             model_config: pargs.opt_value_from_os_str(["-m", "--model-config"], parse_path)?,
+            max_batches: pargs.opt_value_from_str(["-b", "--max-batches"])?,
             artifacts_path: pargs
                 .opt_value_from_os_str(["-a", "--artifacts-path"], parse_path)?
                 .unwrap_or_else(|| {
@@ -133,6 +141,12 @@ impl AppArgs {
         }
 
         Ok(args)
+    }
+
+    /// The `--max-batches` cap as a fresh [`BatchBudget`] for one training run
+    /// (uncapped when the flag is absent).
+    pub fn batch_budget(&self) -> BatchBudget {
+        BatchBudget::new(self.max_batches)
     }
 
     /// Create the artifacts directory (removing model/optim first if requested).

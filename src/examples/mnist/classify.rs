@@ -13,7 +13,7 @@
 use crate::examples::cli::AppArgs;
 use crate::examples::mnist::dataset::{MnistBatch, MnistBatcher, MnistDataset};
 use crate::examples::mnist::render;
-use crate::examples::training::{TrainingConfig, metric_current};
+use crate::examples::training::{BatchBudget, TrainingConfig, metric_current};
 use burn::optim::{GradientsParams, ModuleOptimizer};
 use burn::prelude::*;
 use burn::{
@@ -62,6 +62,10 @@ pub fn sample_images(n: usize, device: &Device) -> (Tensor<4>, Vec<u8>) {
 
 /// Train for a single epoch, stepping the optimizer per batch and periodically
 /// validating + checkpointing; returns the updated model.
+///
+/// The epoch ends early once `batch_budget` (the `--max-batches` cap) runs out;
+/// the caller's epoch loop should then stop, seeing
+/// [`BatchBudget::is_exhausted`].
 #[allow(clippy::too_many_arguments)]
 pub fn epoch_train<W: MnistModel>(
     dataloader_train: Dataloader,
@@ -71,12 +75,12 @@ pub fn epoch_train<W: MnistModel>(
     optim: &mut ModuleOptimizer,
     metric_meta: &mut MetricMetadata,
     epoch: usize,
-    training_loop_limit: Option<usize>,
+    batch_budget: &mut BatchBudget,
     valid_loop_limit: Option<usize>,
     app_args: &AppArgs,
     valid_device: Device,
 ) -> W {
-    let training_loop_limit = training_loop_limit.unwrap_or(usize::MAX);
+    let training_loop_limit = batch_budget.take_limit();
     let mut loss_metric = burn::train::metric::LossMetric::new();
     let mut acc_metric = burn::train::metric::AccuracyMetric::new();
     let mut iteration_speed_metric = burn::train::metric::IterationSpeedMetric::new();
@@ -93,6 +97,7 @@ pub fn epoch_train<W: MnistModel>(
         .take(training_loop_limit)
     {
         b += 1;
+        batch_budget.spend();
         let [batch_size, _, _, _] = batch.images.dims();
         metric_meta.iteration = Some(metric_meta.iteration.unwrap() + 1);
         metric_meta.progress.items_processed += batch_size;
