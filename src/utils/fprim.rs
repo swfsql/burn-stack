@@ -204,12 +204,26 @@ impl<B: Backend, const D: usize> F<B, D> {
     /// triangular bool mask over the last two dims and fills the masked region
     /// with `0`.
     pub fn triu(self, diagonal: i64) -> Self {
+        self.tri_zero(diagonal, false)
+    }
+
+    /// Zero everything strictly above the `diagonal` (keeps the lower triangle).
+    ///
+    /// Equivalent to [`Tensor::tril`](burn::tensor::Tensor::tril); the mirror of
+    /// [`Self::triu`].
+    pub fn tril(self, diagonal: i64) -> Self {
+        self.tri_zero(diagonal, true)
+    }
+
+    /// Shared body of [`Self::triu`] / [`Self::tril`]: build the triangular
+    /// bool mask over the last two dims and fill the masked region with `0`.
+    fn tri_zero(self, diagonal: i64, lower: bool) -> Self {
         let dims = self.0.shape().dims::<D>();
         let rows = dims[D - 2];
         let cols = dims[D - 1];
         let device = &self.0.device();
 
-        let mask2 = tri_bool::<B>(rows, cols, diagonal, false, device);
+        let mask2 = tri_bool::<B>(rows, cols, diagonal, lower, device);
         let mut lead = [1usize; D];
         lead[D - 2] = rows;
         lead[D - 1] = cols;
@@ -221,6 +235,29 @@ impl<B: Backend, const D: usize> F<B, D> {
     /// Fill the positions where `mask` is `true` with `value`.
     pub fn mask_fill(self, mask: Mask<B>, value: f32) -> Self {
         F(B::float_mask_fill(self.0, mask.0, Scalar::from(value)))
+    }
+
+    /// Element-wise multiplication by a scalar.
+    pub fn mul_scalar(self, value: f64) -> Self {
+        F(B::float_mul_scalar(self.0, Scalar::from(value)))
+    }
+
+    /// Element-wise ceiling at `max`.
+    pub fn clamp_max(self, max: f64) -> Self {
+        F(B::float_clamp_max(self.0, Scalar::from(max)))
+    }
+
+    /// Mask that is `true` wherever `self >= value` — exactly where
+    /// [`Self::clamp_max`] at `value` binds, so that clamp's gradient is
+    /// `d.mask_fill(x.ge_elem(value), 0.0)`.
+    pub fn ge_elem(&self, value: f64) -> Mask<B> {
+        let device = self.0.device();
+        let bool_dtype = get_device_settings::<B>(&device).bool_dtype;
+        Mask(B::float_greater_equal_elem(
+            self.0.clone(),
+            Scalar::from(value),
+            bool_dtype,
+        ))
     }
 
     /// Concatenate same-rank tensors along `dim` (rank-preserving).
