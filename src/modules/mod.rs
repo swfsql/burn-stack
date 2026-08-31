@@ -7,6 +7,11 @@
 //!
 //! Everything here is parameterised by the mixer block `M: `[`Block`] — the one
 //! trait a family of sequence-mixing blocks implements to drop into this stack.
+//!
+//! Their *serializable* counterparts are the [`shape`] types
+//! ([`NetworkShape`]/[`LatentShape`]/[`VocabShape`]/[`BidiShape`]): the same
+//! knobs with the block generic split off, so a consumer's model config is the
+//! pair `{ shape, block }` and no architecture is restated per family.
 
 use burn::config::Config;
 use burn::prelude::*;
@@ -34,6 +39,7 @@ pub mod multi_gate;
 pub mod network;
 /// RMS norms ([`RmsNorm`] and [`RmsNormGated`]), fp16-safe.
 pub mod norm;
+pub mod shape;
 
 pub use activation::log_sigmoid::log_sigmoid;
 pub use activation::silu::Silu;
@@ -55,6 +61,7 @@ pub use layers::{Layers, LayersBuilder};
 pub use multi_gate::{
     MultiGate, MultiGateResidual, MultiGateResidualConfig, Residuals, ResidualsConfig,
 };
+pub use shape::{BidiShape, LatentShape, NetworkShape, VocabShape};
 pub use network::{
     LatentNetwork, LatentNetworkBuilder, VocabNetwork, VocabNetworkBuilder,
 };

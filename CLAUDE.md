@@ -7,8 +7,9 @@ Guidance for Claude Code (claude.ai/code) when working in this repository.
 `burn-stack`: the block-generic layer/network composition layer on top of
 [Burn](https://github.com/tracel-ai/burn/). It owns everything *around* a
 sequence-mixing block — layers, (virtual-)layer stacks, bidirectional pairs,
-latent/vocab networks, multi-gate residuals, class tokens, schedules, the Muon
-plan — and **nothing** about any particular mixer.
+latent/vocab networks, multi-gate residuals, class tokens, schedules, the
+serialisable network shapes, the Muon plan — and **nothing** about any
+particular mixer.
 
 **It must stay family-agnostic.** No `mamba`, no attention, no convolution
 specifics: a block plugs in through `Block` / `BlockConfig` / `CacheStack`. If a
@@ -65,6 +66,11 @@ src/
 │  │                 a model-agnostic driver builds against (consumers impl it)
 │  ├─ multi_gate.rs  Multi-Gate Residuals (Standard|MultiGate): accumulate then mix
 │  ├─ network.rs     LatentNetwork (optional final norm) / VocabNetwork
+│  ├─ shape.rs       NetworkShape (+ LatentShape/VocabShape/BidiShape): the
+│  │                 serialisable, block-free half of a model config — the
+│  │                 builders next door carry `C` and cannot derive Config, so
+│  │                 a consumer's config is the pair `{ shape, block }`;
+│  │                 init/muon_plan over any BlockConfig
 │  ├─ bidi.rs        BidiLayers<M> + BidiLayerPair<M> + OutputMerge
 │  ├─ cache.rs       CacheStack trait (+ per-slot inner/from_inner)
 │  ├─ activation/    silu, softplus, log_sigmoid (dtype-aware)
