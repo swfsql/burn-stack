@@ -38,4 +38,24 @@ pub trait CacheStack: Sized {
     /// Lift one cache slot back **from** the inner backend, as a fresh graph
     /// root. The inverse of [`Self::cache_to_inner`]; see its notes.
     fn cache_from_inner(cache: Self::Cache) -> Self::Cache;
+
+    /// Round-trip **every** slot through the inner backend: the cache keeps its
+    /// values and loses the graph that produced it, so a caller can carry state
+    /// across a gradient boundary (truncated BPTT) without retaining the
+    /// previous segment's activations.
+    ///
+    /// `detach` alone would cut the gradients but free nothing — an untracked op
+    /// is still registered (see [`detach_params`](crate::utils::detach_params));
+    /// the backend hop is what drops the graph.
+    ///
+    /// # Panics
+    /// See [`Self::cache_to_inner`]: the cache must be on an autodiff device.
+    fn detach(self) -> Self {
+        let slots = self
+            .into_slots()
+            .into_iter()
+            .map(|slot| slot.map(|cache| Self::cache_from_inner(Self::cache_to_inner(cache))))
+            .collect();
+        Self::from_slots(slots)
+    }
 }

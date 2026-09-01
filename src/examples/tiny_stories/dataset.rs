@@ -40,9 +40,15 @@
 //! Stories are joined with `"\n\n"` — a sequence that never occurs *inside* a
 //! story (single `\n` separates its paragraphs), so the blank line is an
 //! unambiguous document boundary the model can learn — and the resulting token
-//! stream is cut into non-overlapping windows of `seq_len + 1`. Each window is
-//! one training item: the first `seq_len` tokens are the input, the last
-//! `seq_len` (shifted by one) are the next-character targets.
+//! stream is cut into non-overlapping windows of `seq_len + 1`: the first
+//! `seq_len` tokens are the input, the last `seq_len` (shifted by one) are the
+//! next-character targets.
+//!
+//! One **item** is a *run* of `run_len` such windows, back to back in the
+//! stream (`run_len · seq_len + 1` tokens), which is what lets the training loop
+//! carry the recurrent state from one window into the next
+//! ([`lm::epoch_train`](super::lm::epoch_train)). `run_len = 1` is the stateless
+//! tiling — one window per item, every window starting from a zero state.
 
 use burn::data::dataloader::batcher::Batcher;
 use burn::prelude::*;
@@ -322,35 +328,40 @@ pub fn text(split: Split, n_stories: usize) -> String {
 // Dataset + batcher
 // ===========================================================================
 
-/// One training window: `seq_len + 1` token ids (input and shifted target
-/// overlap by `seq_len - 1`, so they share one buffer).
+/// One training item: a run of `run_len` consecutive windows, i.e.
+/// `run_len · seq_len + 1` token ids (input and shifted target overlap by all
+/// but one token, so they share one buffer).
 #[derive(Clone, Debug)]
 pub struct TinyStoriesItem {
-    /// Token ids, `[seq_len + 1]`.
+    /// Token ids, `[run_len · seq_len + 1]`.
     pub tokens: Vec<u8>,
 }
 
-/// A character stream cut into non-overlapping `seq_len + 1` windows.
+/// A character stream cut into non-overlapping runs of `run_len` windows.
 pub struct TinyStoriesDataset {
     /// The whole split as token ids (shared, so cloning the dataset is free).
     tokens: Arc<Vec<u8>>,
-    /// Window length; each item is `seq_len + 1` tokens.
+    /// Window length: the BPTT span of one forward.
     seq_len: usize,
+    /// Windows per item; the run the training loop carries state along.
+    run_len: usize,
 }
 
 impl TinyStoriesDataset {
-    /// Load (downloading once) `n_stories` of `split` and window it.
-    pub fn new(split: Split, n_stories: usize, seq_len: usize) -> Self {
+    /// Load (downloading once) `n_stories` of `split` and cut it into runs.
+    pub fn new(split: Split, n_stories: usize, seq_len: usize, run_len: usize) -> Self {
+        assert!(run_len >= 1, "a run holds at least one window");
         let tokens = VOCAB.encode(&text(split, n_stories));
         assert!(
-            tokens.len() > seq_len,
-            "the {} corpus ({} tokens) is shorter than one window",
+            tokens.len() > seq_len * run_len,
+            "the {} corpus ({} tokens) is shorter than one run of {run_len} × {seq_len}",
             split.name(),
             tokens.len(),
         );
         Self {
             tokens: Arc::new(tokens),
             seq_len,
+            run_len,
         }
     }
 
@@ -358,29 +369,58 @@ impl TinyStoriesDataset {
     pub fn num_tokens(&self) -> usize {
         self.tokens.len()
     }
+
+    /// Windows the split holds — `run_len` times its item count, and the number
+    /// of optimizer steps an epoch takes when the frontier never stalls.
+    pub fn num_windows(&self) -> usize {
+        Dataset::len(self) * self.run_len
+    }
 }
 
 impl Dataset<TinyStoriesItem> for TinyStoriesDataset {
     fn get(&self, index: usize) -> Result<TinyStoriesItem, DatasetError> {
-        let start = index * self.seq_len;
+        let run = self.run_len * self.seq_len;
+        let start = index * run;
         Ok(TinyStoriesItem {
-            tokens: self.tokens[start..start + self.seq_len + 1].to_vec(),
+            tokens: self.tokens[start..start + run + 1].to_vec(),
         })
     }
 
     fn len(&self) -> usize {
-        // The final window needs one extra token for its last target.
-        (self.tokens.len() - 1) / self.seq_len
+        // The final window of the final run needs one extra token for its last
+        // target; a trailing partial run is dropped.
+        (self.tokens.len() - 1) / (self.run_len * self.seq_len)
     }
 }
 
-/// A batch of next-character windows.
+/// A batch of next-character runs; [`window`](Self::window) cuts one window out
+/// of it.
 #[derive(Clone, Debug)]
 pub struct TinyStoriesBatch {
-    /// Input token ids, `[batch_size, seq_len]`.
+    /// Input token ids, `[batch_size, run_len · seq_len]`.
     pub inputs: Tensor<2, Int>,
-    /// Next-character targets (the inputs shifted by one), `[batch_size, seq_len]`.
+    /// Next-character targets (the inputs shifted by one),
+    /// `[batch_size, run_len · seq_len]`.
     pub targets: Tensor<2, Int>,
+}
+
+impl TinyStoriesBatch {
+    /// Window `w` of the run: the `[batch_size, seq_len]` slice of both tensors.
+    ///
+    /// Every batch slot advances together, so window `w` continues window
+    /// `w - 1` in all of them — which is what makes one carried cache valid for
+    /// the whole batch.
+    pub fn window(&self, w: usize, seq_len: usize) -> Self {
+        let [_batch_size, run] = self.inputs.dims();
+        assert!(
+            (w + 1) * seq_len <= run,
+            "window {w} of {seq_len} is past the run ({run} tokens)",
+        );
+        Self {
+            inputs: self.inputs.clone().narrow(1, w * seq_len, seq_len),
+            targets: self.targets.clone().narrow(1, w * seq_len, seq_len),
+        }
+    }
 }
 
 /// Stacks [`TinyStoriesItem`]s into a [`TinyStoriesBatch`].
@@ -390,15 +430,17 @@ pub struct TinyStoriesBatcher {}
 impl Batcher<TinyStoriesItem, TinyStoriesBatch> for TinyStoriesBatcher {
     fn batch(&self, items: Vec<TinyStoriesItem>, device: &Device) -> TinyStoriesBatch {
         let batch_size = items.len();
-        let seq_len = items[0].tokens.len() - 1;
-        let mut inputs = Vec::with_capacity(batch_size * seq_len);
-        let mut targets = Vec::with_capacity(batch_size * seq_len);
+        // The item is a whole run (`run_len · seq_len` scored positions); the
+        // training loop slices its windows out with `TinyStoriesBatch::window`.
+        let run = items[0].tokens.len() - 1;
+        let mut inputs = Vec::with_capacity(batch_size * run);
+        let mut targets = Vec::with_capacity(batch_size * run);
         for item in &items {
-            assert_eq!(item.tokens.len(), seq_len + 1);
-            inputs.extend(item.tokens[..seq_len].iter().map(|&t| t as i32));
+            assert_eq!(item.tokens.len(), run + 1);
+            inputs.extend(item.tokens[..run].iter().map(|&t| t as i32));
             targets.extend(item.tokens[1..].iter().map(|&t| t as i32));
         }
-        let shape = [batch_size, seq_len];
+        let shape = [batch_size, run];
         TinyStoriesBatch {
             inputs: Tensor::<1, Int>::from_ints(inputs.as_slice(), device).reshape(shape),
             targets: Tensor::<1, Int>::from_ints(targets.as_slice(), device).reshape(shape),

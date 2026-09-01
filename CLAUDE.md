@@ -72,7 +72,8 @@ src/
 │  │                 a consumer's config is the pair `{ shape, block }`;
 │  │                 init/muon_plan over any BlockConfig
 │  ├─ bidi.rs        BidiLayers<M> + BidiLayerPair<M> + OutputMerge
-│  ├─ cache.rs       CacheStack trait (+ per-slot inner/from_inner)
+│  ├─ cache.rs       CacheStack trait (+ per-slot inner/from_inner, whole-stack
+│  │                 detach() for carrying state across a gradient boundary)
 │  ├─ activation/    silu, softplus, log_sigmoid (dtype-aware)
 │  ├─ norm/          rms_norm (also usable as QK-Norm), rms_norm_gated, rms_score
 │  ├─ loss/          bce, cross_entropy, mse, l2warp (max-logit penalty, added
@@ -88,9 +89,10 @@ src/
 │  │                 loops + the MnistModel seam), render.rs (a digit beside
 │  │                 its class distribution, as text or PNG)
 │  └─ tiny_stories/  dataset.rs (character corpus: alphabet, datasets-server
-│                    paging + cache, windowing), lm.rs (TinyStoriesConfig +
-│                    CLI overrides, the epoch loops + the LmModel seam),
-│                    sample.rs (prefill/decode sampler over VocabNetwork<M>)
+│                    paging + cache, windowing into runs), lm.rs
+│                    (TinyStoriesConfig + CLI overrides, the FrontierGate, the
+│                    epoch loops + the cache-carrying LmModel seam), sample.rs
+│                    (prefill/decode sampler over VocabNetwork<M>)
 ├─ optim/            Muon parameter groups (feature `optim`); allowlist, not denylist
 │  ├─ mod.rs         MuonPlan: specs → ModuleOptimizer (AdamW fallback + Muon groups)
 │  ├─ spec.rs        ProjSpec/ProjSegment: fused-weight column seams → ParamGroup;

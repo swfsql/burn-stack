@@ -36,7 +36,7 @@ BEHAVIOR OVERVIEW
 - With --remove-artifacts, any existing model and optimizer files in the artifacts directory are deleted before training (if --training is active).
 - Model and optimizer weights are loaded from the artifacts directory if present; otherwise new ones are created and saved.
 - If both --training and --inference are specified, training executes first, followed by inference using the trained model.
-- With --max-batches, training stops after that many mini-batches in total (counted across epochs), checkpointing as usual before it returns.
+- With --max-batches, training stops after that many mini-batches in total (counted across epochs), checkpointing as usual before it returns. One mini-batch is one optimizer step, which for the character LM is one window of a run rather than one dataloader item.
 - Any arguments following -- are captured as-is and forwarded to downstream processing.
 
 FLAGS:
