@@ -99,16 +99,6 @@ pub trait Block: Module + burn::module::ModuleDisplay + burn::module::AutodiffMo
     /// Single-token recurrent step — decoding.
     fn block_step(&self, x: Tensor<2>, cache: Option<Self::Cache>) -> (Tensor<2>, Self::Cache);
 
-    /// Closed-form **stationary fixed point**: the limit of
-    /// [`Self::block_step`] outputs when the same constant token is stepped
-    /// forever. The limit forgets the starting state, so no cache is taken or
-    /// returned. The default implementation panics — a block only provides this
-    /// when its recurrence has a closed-form constant-input limit.
-    fn block_step_infinite(&self, x: Tensor<2>) -> Tensor<2> {
-        let _ = x;
-        unimplemented!("block_step_infinite: this block has no constant-input shortcut")
-    }
-
     /// Build `n_virtual` zero caches sized for a `[batch, sequence, d_model]` input.
     fn zero_caches_3d(&self, x: &Tensor<3>, n_virtual: usize) -> Self::Caches;
     /// Build `n_virtual` zero caches sized for a `[batch, d_model]` input.

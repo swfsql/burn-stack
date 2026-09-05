@@ -230,19 +230,5 @@ impl<M: Block> Layer<M> {
         let (h1, cache) = self.block.block_step(normed, cache);
         (self.add_mlp_delta(residual, h1), cache)
     }
-
-    /// Stationary fixed point of the Pre-LN block under a constant token,
-    /// **without** the residual: the `step` counterpart of infinitely many
-    /// identical tokens (closed form, no cache — see
-    /// [`Block::block_step_infinite`]). Cursorless: class latents are not
-    /// injected (`Middle`/`End` latents panic, as in a `None`-cursor `step`).
-    /// The feed-forward sub-block is point-wise, so it composes with the limit:
-    /// once the mixer output settles, `x + h₁` is constant and so is `h₂`.
-    pub fn step_infinite(&self, x: Tensor<2>) -> Tensor<2> {
-        assert_full_len_known(&self.class_latents, None, "Layer");
-        let residual = self.mlp_residual(&x);
-        let h1 = self.block.block_step_infinite(self.norm.forward(x));
-        self.add_mlp_delta(residual, h1)
-    }
 }
 

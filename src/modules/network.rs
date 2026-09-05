@@ -223,16 +223,6 @@ where
         (self.head(x), caches)
     }
 
-    /// Stationary fixed point of the network under a constant input token:
-    /// `in_proj → `[`Layers::step_infinite`]` → out_proj`, no caches.
-    /// Cursorless (class tokens are not injected).
-    pub fn step_infinite(&self, x: Tensor<2>) -> Tensor<2> {
-        assert_full_len_known(&self.class_tokens, None, "LatentNetwork");
-        let x = self.in_proj.forward(x);
-        let x = self.layers.step_infinite(x);
-        self.head(x)
-    }
-
     /// The output head: the optional [`Self::norm_f`], then [`Self::out_proj`].
     /// Rank-generic, so every call path (sequence and single-token) shares it.
     fn head<const D: usize>(&self, x: Tensor<D>) -> Tensor<D> {
@@ -369,19 +359,6 @@ where
             self.apply_lm_head(x.unsqueeze_dim(1)).squeeze_dim(1)
         });
         (logits, caches)
-    }
-
-    /// Stationary fixed point of the LM under a constant token: logits
-    /// `[batch, padded_vocab]` after infinitely many repeats of `x`, no caches
-    /// (see [`Layers::step_infinite`]).
-    pub fn step_infinite(&self, x: Tensor<1, Int>) -> Tensor<2> {
-        let x = self
-            .embedding
-            .forward(x.unsqueeze_dim::<2>(1))
-            .squeeze_dim(1);
-        let x = self.layers.step_infinite(x);
-        let x = self.norm_f.forward(x);
-        self.apply_lm_head(x.unsqueeze_dim(1)).squeeze_dim(1)
     }
 
     /// Project `[batch, sequence, d_model]` → `[batch, sequence, padded_vocab]`

@@ -79,23 +79,6 @@ fn block_forward_is_chunkable_through_the_cache() {
     assert!(max_abs_diff(y_all, Tensor::cat(vec![y_a, y_b], 1)) < TOL);
 }
 
-/// Stepping a constant token converges to `block_step_infinite`.
-#[test]
-fn block_step_infinite_is_the_stationary_limit() {
-    let device: Device = Default::default();
-    let block = block_config().init(&device);
-    let x = Tensor::random([2, D_MODEL], Distribution::Normal(0.0, 1.0), &device);
-
-    let mut cache = None;
-    let mut y = None;
-    for _ in 0..400 {
-        let (y_t, c) = block.block_step(x.clone(), cache);
-        cache = Some(c);
-        y = Some(y_t);
-    }
-    assert!(max_abs_diff(y.unwrap(), block.block_step_infinite(x)) < 1e-3);
-}
-
 // ---------------------------------------------------------------------------
 // Layer / Layers
 // ---------------------------------------------------------------------------

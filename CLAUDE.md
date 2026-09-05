@@ -127,8 +127,7 @@ src/
 A block family supplies three impls and gets every container for free:
 
 - **`Block`** — `block_forward` (chunked: training + prefill), `block_step`
-  (recurrent: decode), optional `block_step_infinite` (constant-input fixed
-  point), and the zero-cache constructors. Associated types `Cache`, `Caches`,
+  (recurrent: decode), and the zero-cache constructors. Associated types `Cache`, `Caches`,
   `Options` (the per-call algorithm/chunk selector; `()` when there is nothing
   to choose).
 - **`BlockConfig`** — `d_model`, `init_block`, `muon_projections`.

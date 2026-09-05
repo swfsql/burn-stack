@@ -140,15 +140,6 @@ impl Block for RefBlock {
         (y_bd, RefCache { state_bd })
     }
 
-    /// Under a constant token the accumulator converges to `W_in x / (1 − σ(decay))`,
-    /// so the output limit is closed-form.
-    fn block_step_infinite(&self, x_bd: Tensor<2>) -> Tensor<2> {
-        let decay_1d: Tensor<2> = burn::tensor::activation::sigmoid(self.decay_raw.val()).unsqueeze();
-        let state_bd = self.in_proj.forward(x_bd.clone()) / (-decay_1d + 1.0);
-        let gate_bd = Silu::new().forward(self.gate_proj.forward(x_bd));
-        self.out_proj.forward(state_bd * gate_bd)
-    }
-
     fn zero_caches_3d(&self, x_bsd: &Tensor<3>, n_virtual: usize) -> RefCaches {
         let [batch, _s, _d] = x_bsd.dims();
         self.zero_caches(batch, n_virtual, &x_bsd.device())

@@ -192,12 +192,6 @@ where
         tracked.iter().any(|t| !t).then_some(tracked)
     }
 
-    /// Whether (virtual) layer `i` of `n` suppresses its residual — the first
-    /// layer when `ignore_first_residual`, the last when `ignore_last_residual`.
-    fn skip_residual(&self, i: usize, n: usize) -> bool {
-        (self.ignore_first_residual && i == 0) || (self.ignore_last_residual && i + 1 == n)
-    }
-
     /// Full-sequence pass through every (virtual) layer.
     ///
     /// [`Layer`] returns only its delta — `F_l = Block(RMSNorm(·))`, plus the
@@ -916,62 +910,6 @@ where
         (out, Some(M::Caches::from_slots(slots)))
     }
 
-    /// Stationary fixed point of the whole stack under a constant token, with
-    /// **no caches** involved: under a constant input each layer's output
-    /// converges (its decay damps the transient, and the readout phase of the
-    /// rotation cancels), so the downstream layer's input converges too and
-    /// the limit composes **exactly**, layer by layer — even though every
-    /// layer's SSM state keeps rotating forever. Residual handling mirrors
-    /// [`Self::step`]; cursorless (class latents are not injected).
-    pub fn step_infinite(&self, x: Tensor<2>) -> Tensor<2> {
-        if let Residuals::MultiGate(mg) = &self.residuals {
-            return self.step_infinite_multi_gate(x, mg);
-        }
-        assert_full_len_known(&self.class_latents, None, "Layers");
-        let n = self.n_virtual_count();
-        let mut h = x;
-        for i in 0..n {
-            let layer = &self.real_layers[self.real_idx(i)];
-            h = if self.skip_residual(i, n) {
-                layer.step_infinite(h)
-            } else {
-                layer.step_infinite(h.clone()) + h
-            };
-        }
-        h
-    }
-
-    /// Multi-Gate counterpart of [`Self::step_infinite`]. The streams are a
-    /// per-token depth construct (as in [`Self::step_multi_gate`]), so applying
-    /// the mixers to the layers' fixed-point outputs *is* the fixed point of
-    /// the whole stack.
-    fn step_infinite_multi_gate(&self, x: Tensor<2>, mg: &crate::modules::MultiGate) -> Tensor<2> {
-        assert_full_len_known(&self.class_latents, None, "Layers");
-        let n = self.n_virtual_count();
-        let mut streams = x.clone().unsqueeze_dim::<3>(1);
-        let mut h = x;
-        for i in 0..n {
-            let real = self.real_idx(i);
-            let layer = &self.real_layers[real];
-            let out = layer.step_infinite(h);
-            if self.ignore_last_residual && i + 1 == n {
-                h = out;
-            } else if self.ignore_first_residual && i == 0 {
-                streams = out.clone().unsqueeze_dim::<3>(1);
-                h = out;
-            } else {
-                let mgr = &mg.layers[mg.module_index(i, real)];
-                let (new_h, new_streams) = if streams.dims()[1] < mg.n_stream {
-                    mgr.accumulate_step(out, streams)
-                } else {
-                    mgr.step(out, streams)
-                };
-                h = new_h;
-                streams = new_streams;
-            }
-        }
-        h
-    }
 
 }
 
