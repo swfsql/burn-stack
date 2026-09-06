@@ -1,6 +1,5 @@
 //! Character-level [TinyStories-GPT4-clean] corpus: a stream of single-character
-//! tokens over a **case-folded ASCII** alphabet, windowed into fixed-length
-//! next-character training sequences.
+//! tokens over a **case-folded ASCII** alphabet, one *story* per training item.
 //!
 //! [TinyStories-GPT4-clean]: https://huggingface.co/datasets/karpathy/tinystories-gpt4-clean
 //!
@@ -16,44 +15,47 @@
 //!
 //! # Download
 //!
-//! The dataset ships as one 673 MB parquet file, which is absurd for an example
-//! this size, so instead of the [`HuggingfaceDatasetLoader`](burn_dataset) path
-//! (python + `datasets` + a full sqlite import) the corpus is paged out of the
-//! public [datasets-server] `/rows` endpoint, 100 stories per request — the
-//! endpoint's hard maximum. The normalized text is cached under
-//! `~/.cache/burn-dataset/tinystories-gpt4-clean/`, one file per
-//! `(split, story count)`, so the download happens once.
+//! The dataset is a single 673 MB parquet file (one column, `text`; one row per
+//! story; 2,669 ZSTD row groups of 1,024 rows). It is downloaded **whole**, once,
+//! exactly the way [`MnistDataset`](super::super::mnist::dataset::MnistDataset)
+//! downloads its IDX files, and cached at
+//! `~/.cache/burn-dataset/tinystories-gpt4-clean/`. Reading it is lazy, so only
+//! the row groups up to the requested rows are ever decompressed.
 //!
-//! [datasets-server]: https://huggingface.co/docs/datasets-server
-//!
-//! That endpoint is rate limited (CloudFront answers `429` with an HTML body
-//! once the budget — about 28 requests per two minutes — runs out), so the pager
-//! paces itself (one page every 4s) and retries a failed page with exponential
-//! backoff.
+//! The stories that come out are normalized and cached again, as text, one file
+//! per `(split, story count)` — so a second run reads a few MB of text and never
+//! opens (or needs) the parquet at all.
 //!
 //! Splits follow the dataset card's suggested row ranges (the rows are
 //! pre-shuffled, so a contiguous range is already a random sample): rows
 //! `0..10k` are test, `10k..20k` validation, and `20k..` training.
 //!
-//! # Windows
+//! # Items, windows and runs
 //!
-//! Stories are joined with `"\n\n"` — a sequence that never occurs *inside* a
-//! story (single `\n` separates its paragraphs), so the blank line is an
-//! unambiguous document boundary the model can learn — and the resulting token
-//! stream is cut into non-overlapping windows of `seq_len + 1`: the first
-//! `seq_len` tokens are the input, the last `seq_len` (shifted by one) are the
-//! next-character targets.
+//! One **item is one story**, and nothing is spliced between two of them: a story
+//! is a self-contained example, and no separator character stands in for its
+//! boundary. Leading and trailing whitespace is stripped, so the first token of
+//! an item is always a real symbol. What (if anything) marks the start is the
+//! model's business, not the corpus's — see [`lm_output`](super::lm::lm_output)
+//! for the one hook this side offers.
 //!
-//! One **item** is a *run* of `run_len` such windows, back to back in the
-//! stream (`run_len · seq_len + 1` tokens), which is what lets the training loop
-//! carry the recurrent state from one window into the next
-//! ([`lm::epoch_train`](super::lm::epoch_train)). `run_len = 1` is the stateless
-//! tiling — one window per item, every window starting from a zero state.
+//! A story (303–4,149 characters, median 724) is longer than one back-propagation
+//! window, so it is walked in **windows** of `seq_len` tokens with the recurrent
+//! state carried across them ([`lm::epoch_train`](super::lm::epoch_train)) — the
+//! *run*. Its length comes from the data, capped by `run_len`; the frontier gate
+//! is what ends it early.
+//!
+//! Every slot of a batch walks its own story, and stories differ in length, so a
+//! batch is padded to a whole number of windows of its longest one.
+//! [`TinyStoriesBatch::scored`] records how many positions of each slot are real,
+//! and [`lm_output`](super::lm::lm_output) scores only those — padding never
+//! reaches the loss or the accuracy.
 
 use burn::data::dataloader::batcher::Batcher;
 use burn::prelude::*;
 use burn_dataset::{Dataset, DatasetError, network::downloader::download_file_as_bytes};
-use serde::Deserialize;
+use parquet::file::reader::{FileReader, SerializedFileReader};
+use parquet::record::RowAccessor;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -71,7 +73,9 @@ pub const VOCAB_SIZE: usize = ALPHABET.len();
 /// Token id reserved by [`Vocab`] for "not in the alphabet".
 const NO_TOKEN: u8 = u8::MAX;
 
-/// The document boundary: a blank line, which never occurs inside a story.
+/// Record separator of the **text cache** — a blank line, which never occurs
+/// inside a story (single `\n` separates its paragraphs). It is a property of
+/// that file only: it is never encoded, so the model never sees it.
 pub const STORY_SEPARATOR: &str = "\n\n";
 
 /// Byte ↔ token-id tables for [`ALPHABET`], with `A-Z` folded onto `a-z`.
@@ -144,21 +148,8 @@ impl Default for Vocab {
 /// The Hugging Face dataset id.
 const DATASET: &str = "karpathy/tinystories-gpt4-clean";
 
-/// The rows endpoint's hard maximum page size.
-const PAGE: usize = 100;
-
-/// Pause between two page requests. Measured budget: ~28 requests per ~2min,
-/// i.e. a sustained page every ~4s, after which `429`s appear for ~15s at a
-/// time. Pacing to the budget beats sawtoothing through it.
-const THROTTLE: std::time::Duration = std::time::Duration::from_secs(4);
-
-/// How many times one page is attempted before giving up.
-const MAX_ATTEMPTS: usize = 6;
-
-/// Backoff after the first failed attempt; doubles on each further one. Long
-/// enough to sit out a rate-limit window rather than spend attempts inside it
-/// (a retry during the window counts against the budget too).
-const BACKOFF: std::time::Duration = std::time::Duration::from_secs(30);
+/// The dataset's single parquet file, as named in the repository.
+const PARQUET: &str = "tinystories_gpt4_clean.parquet";
 
 /// Which of the dataset card's suggested row ranges to read.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -199,251 +190,290 @@ impl Split {
     }
 }
 
-/// One `/rows` response (or the endpoint's error object).
-#[derive(Deserialize)]
-struct RowsResponse {
-    #[serde(default)]
-    rows: Vec<RowEntry>,
-    #[serde(default)]
-    error: Option<String>,
-}
-
-/// One row: `{"row_idx": .., "row": {"text": ..}, ..}`.
-#[derive(Deserialize)]
-struct RowEntry {
-    row: Story,
-}
-
-/// The dataset's single column.
-#[derive(Deserialize)]
-struct Story {
-    text: String,
-}
-
-/// Case-fold `story` and drop the (vanishingly rare, ~5 per million) characters
-/// outside [`ALPHABET`] — after which the text is exactly the token stream.
-fn normalize(story: &str) -> String {
-    story
-        .bytes()
-        .filter(|&byte| VOCAB.token(byte).is_some())
-        .map(|byte| byte.to_ascii_lowercase() as char)
-        .collect()
-}
-
-/// `~/.cache/burn-dataset/tinystories-gpt4-clean/<split>-<n_stories>.txt`.
-fn cache_path(split: Split, n_stories: usize) -> PathBuf {
+/// `~/.cache/burn-dataset/tinystories-gpt4-clean/`, created on demand.
+fn cache_dir() -> PathBuf {
     let dir = dirs::home_dir()
         .expect("Could not get home directory")
         .join(".cache")
         .join("burn-dataset")
         .join("tinystories-gpt4-clean");
     std::fs::create_dir_all(&dir).expect("Failed to create the cache directory");
-    dir.join(format!("{}-{n_stories}.txt", split.name()))
+    dir
 }
 
-/// Request one page, retrying with exponential backoff. The downloader hands
-/// back whatever body it got without looking at the status code, so a rate-limit
-/// (`429`, an HTML body) and a real error object both surface here as "not the
-/// JSON we asked for" — and both are worth another try.
-fn fetch_page(url: &str, message: &str, offset: usize) -> Vec<RowEntry> {
-    let mut backoff = BACKOFF;
-    let mut last = String::new();
-    for attempt in 1..=MAX_ATTEMPTS {
-        let bytes = download_file_as_bytes(url, message);
-        match serde_json::from_slice::<RowsResponse>(&bytes) {
-            Ok(response) if !response.rows.is_empty() => return response.rows,
-            Ok(response) => {
-                last = response
-                    .error
-                    .unwrap_or_else(|| "the response carried no rows".to_owned());
-            }
-            Err(e) => {
-                let body = String::from_utf8_lossy(&bytes);
-                let head: String = body.chars().take(120).collect();
-                last = format!("unparseable JSON ({e}): {head}");
-            }
-        }
-        if attempt < MAX_ATTEMPTS {
-            println!("  retrying rows at offset {offset} in {backoff:?} ({last})");
-            std::thread::sleep(backoff);
-            backoff *= 2;
-        }
+/// Case-fold `story`, drop the (vanishingly rare, ~5 per million) characters
+/// outside [`ALPHABET`], and trim the surrounding whitespace — after which the
+/// text is exactly the token stream, opening on a real symbol.
+fn normalize(story: &str) -> String {
+    story
+        .bytes()
+        .filter(|&byte| VOCAB.token(byte).is_some())
+        .map(|byte| byte.to_ascii_lowercase() as char)
+        .collect::<String>()
+        .trim()
+        .to_owned()
+}
+
+/// The cached parquet file, downloading it (whole, once) if it is not there yet.
+fn parquet_file() -> PathBuf {
+    let path = cache_dir().join(PARQUET);
+    if path.exists() {
+        return path;
     }
-    panic!("datasets-server gave up at offset {offset} after {MAX_ATTEMPTS} attempts: {last}");
+    let url = format!("https://huggingface.co/datasets/{DATASET}/resolve/main/{PARQUET}");
+    println!("downloading {DATASET} ({PARQUET}, 673MB, cached afterwards)");
+    let bytes = download_file_as_bytes(&url, PARQUET);
+    // Write beside the target and rename, so an interrupted download cannot
+    // leave a truncated file that later runs would happily try to read.
+    let partial = path.with_extension("parquet.partial");
+    std::fs::write(&partial, &bytes).expect("Failed to write the parquet cache");
+    std::fs::rename(&partial, &path).expect("Failed to move the parquet cache into place");
+    println!("cached {} bytes into {path:?}", bytes.len());
+    path
 }
 
-/// Page `n_stories` rows of `split` out of the datasets-server, normalize them,
-/// and join them with [`STORY_SEPARATOR`].
-fn download(split: Split, n_stories: usize) -> String {
+/// Read `n_stories` rows of `split` out of the parquet file and normalize them.
+///
+/// The reader is lazy — one row group (1,024 rows) at a time — and is dropped at
+/// the last one the request touches, so a request never decompresses past its own
+/// end of the file. The splits' offsets are small (20k rows, i.e. 20 groups) next
+/// to the file's 2,669, so what is skipped costs little.
+fn read_parquet(split: Split, n_stories: usize) -> Vec<String> {
     assert!(
         n_stories <= split.capacity(),
         "{n_stories} stories exceed the {} split ({} rows)",
         split.name(),
         split.capacity(),
     );
-    let pages = n_stories.div_ceil(PAGE);
+    let file = std::fs::File::open(parquet_file()).expect("Failed to open the parquet cache");
+    let reader = SerializedFileReader::new(file).expect("Failed to read the parquet file");
     println!(
-        "downloading {n_stories} {} stories from {DATASET} ({pages} requests, cached afterwards)",
+        "reading {n_stories} {} stories from {PARQUET}",
         split.name(),
     );
 
-    let mut stories = Vec::with_capacity(n_stories);
-    while stories.len() < n_stories {
-        let offset = split.offset() + stories.len();
-        let length = PAGE.min(n_stories - stories.len());
-        let url = format!(
-            "https://datasets-server.huggingface.co/rows\
-             ?dataset={DATASET}&config=default&split=train&offset={offset}&length={length}"
-        );
-        let message = format!(
-            "{} rows {offset}..{} ({}/{pages})",
-            split.name(),
-            offset + length,
-            stories.len() / PAGE + 1,
-        );
-        // The progress bar hides itself when stdout is not a terminal, so say
-        // where we are: a long download is otherwise minutes of silence.
-        println!("  {message}");
-        std::thread::sleep(THROTTLE);
-        let rows = fetch_page(&url, &message, offset);
-        stories.extend(rows.into_iter().map(|e| normalize(&e.row.text)));
-    }
-    stories.join(STORY_SEPARATOR)
+    let stories: Vec<String> = reader
+        .get_row_iter(None)
+        .expect("Failed to iterate the parquet rows")
+        .skip(split.offset())
+        .take(n_stories)
+        .map(|row| {
+            let row = row.expect("Failed to read a parquet row");
+            normalize(row.get_string(0).expect("the `text` column is a string"))
+        })
+        .collect();
+    assert_eq!(
+        stories.len(),
+        n_stories,
+        "the {} split ran out of rows",
+        split.name(),
+    );
+    stories
 }
 
-/// The normalized text of `n_stories` stories from `split`, downloading it on
-/// the first call and reading the cache afterwards.
-pub fn text(split: Split, n_stories: usize) -> String {
-    let path = cache_path(split, n_stories);
+/// The normalized stories of `split`, downloading and extracting them on the
+/// first call and reading the text cache — `<split>-<n_stories>.txt`, the
+/// stories joined by [`STORY_SEPARATOR`] — afterwards.
+pub fn stories(split: Split, n_stories: usize) -> Vec<String> {
+    let path = cache_dir().join(format!("{}-{n_stories}.txt", split.name()));
     if let Ok(cached) = std::fs::read_to_string(&path) {
-        return cached;
+        let stories: Vec<String> = cached.split(STORY_SEPARATOR).map(str::to_owned).collect();
+        assert_eq!(
+            stories.len(),
+            n_stories,
+            "the text cache {path:?} holds a different number of stories; delete it to rebuild",
+        );
+        return stories;
     }
-    let text = download(split, n_stories);
-    std::fs::write(&path, &text).expect("Failed to write the corpus cache");
-    println!("cached {} characters into {path:?}", text.len());
-    text
+    let stories = read_parquet(split, n_stories);
+    // The separator is the cache file's only structure, so a story carrying one
+    // would make the file unreadable. It never happens (paragraphs inside a
+    // story are separated by a single `\n`), and `normalize` trims the ends.
+    assert!(
+        !stories.iter().any(|s| s.contains(STORY_SEPARATOR)),
+        "a story contains the cache separator",
+    );
+    std::fs::write(&path, stories.join(STORY_SEPARATOR)).expect("Failed to write the corpus cache");
+    println!("cached {} stories into {path:?}", stories.len());
+    stories
 }
 
 // ===========================================================================
 // Dataset + batcher
 // ===========================================================================
 
-/// One training item: a run of `run_len` consecutive windows, i.e.
-/// `run_len · seq_len + 1` token ids (input and shifted target overlap by all
-/// but one token, so they share one buffer).
+/// One training item: the token ids of one whole story.
 #[derive(Clone, Debug)]
 pub struct TinyStoriesItem {
-    /// Token ids, `[run_len · seq_len + 1]`.
+    /// Token ids of the story, `[story_len]`.
     pub tokens: Vec<u8>,
 }
 
-/// A character stream cut into non-overlapping runs of `run_len` windows.
+/// The split's stories, one per item.
 pub struct TinyStoriesDataset {
-    /// The whole split as token ids (shared, so cloning the dataset is free).
-    tokens: Arc<Vec<u8>>,
+    /// One token-id vector per story (shared, so cloning the dataset is free).
+    stories: Arc<Vec<Vec<u8>>>,
     /// Window length: the BPTT span of one forward.
     seq_len: usize,
-    /// Windows per item; the run the training loop carries state along.
-    run_len: usize,
 }
 
 impl TinyStoriesDataset {
-    /// Load (downloading once) `n_stories` of `split` and cut it into runs.
+    /// Load (downloading once) `n_stories` of `split`.
+    ///
+    /// `run_len` caps how many windows one story may spend: a longer story is
+    /// truncated to that many, which is the only thing the cap does — the run
+    /// length itself comes from the story.
     pub fn new(split: Split, n_stories: usize, seq_len: usize, run_len: usize) -> Self {
         assert!(run_len >= 1, "a run holds at least one window");
-        let tokens = VOCAB.encode(&text(split, n_stories));
+        // A story must have at least one token to predict from and one to
+        // predict, i.e. one whole window plus its final target at most.
+        let max_tokens = run_len.saturating_mul(seq_len).saturating_add(1);
+        let stories: Vec<Vec<u8>> = stories(split, n_stories)
+            .iter()
+            .map(|story| {
+                let mut tokens = VOCAB.encode(story);
+                tokens.truncate(max_tokens);
+                tokens
+            })
+            .filter(|tokens| tokens.len() >= 2)
+            .collect();
         assert!(
-            tokens.len() > seq_len * run_len,
-            "the {} corpus ({} tokens) is shorter than one run of {run_len} × {seq_len}",
+            !stories.is_empty(),
+            "the {} corpus holds no story long enough to score",
             split.name(),
-            tokens.len(),
         );
         Self {
-            tokens: Arc::new(tokens),
+            stories: Arc::new(stories),
             seq_len,
-            run_len,
         }
     }
 
-    /// Total number of characters in the split.
+    /// Total number of characters across the split's stories.
     pub fn num_tokens(&self) -> usize {
-        self.tokens.len()
+        self.stories.iter().map(Vec::len).sum()
     }
 
-    /// Windows the split holds — `run_len` times its item count, and the number
-    /// of optimizer steps an epoch takes when the frontier never stalls.
+    /// Windows the split holds if every story were walked alone — the number of
+    /// optimizer steps an epoch takes at `batch_size = 1` when the frontier
+    /// never stalls. A real batch runs the windows of its *longest* story, so it
+    /// takes somewhat fewer steps over somewhat more padding.
     pub fn num_windows(&self) -> usize {
-        Dataset::len(self) * self.run_len
+        self.stories
+            .iter()
+            .map(|tokens| (tokens.len() - 1).div_ceil(self.seq_len))
+            .sum()
     }
 }
 
 impl Dataset<TinyStoriesItem> for TinyStoriesDataset {
     fn get(&self, index: usize) -> Result<TinyStoriesItem, DatasetError> {
-        let run = self.run_len * self.seq_len;
-        let start = index * run;
         Ok(TinyStoriesItem {
-            tokens: self.tokens[start..start + run + 1].to_vec(),
+            tokens: self.stories[index].clone(),
         })
     }
 
     fn len(&self) -> usize {
-        // The final window of the final run needs one extra token for its last
-        // target; a trailing partial run is dropped.
-        (self.tokens.len() - 1) / (self.run_len * self.seq_len)
+        self.stories.len()
     }
 }
 
-/// A batch of next-character runs; [`window`](Self::window) cuts one window out
-/// of it.
+/// A batch of stories, padded to a whole number of windows of the longest one;
+/// [`window`](Self::window) cuts one window out of it.
 #[derive(Clone, Debug)]
 pub struct TinyStoriesBatch {
-    /// Input token ids, `[batch_size, run_len · seq_len]`.
+    /// Input token ids, `[batch_size, num_windows · seq_len]`.
     pub inputs: Tensor<2, Int>,
     /// Next-character targets (the inputs shifted by one),
-    /// `[batch_size, run_len · seq_len]`.
+    /// `[batch_size, num_windows · seq_len]`.
     pub targets: Tensor<2, Int>,
+    /// Real (non-padding) scored positions per batch slot: `story_len - 1` for
+    /// the whole batch, and what is left of it for a [`window`](Self::window).
+    pub scored: Vec<usize>,
+    /// Window length this batch was padded against.
+    pub seq_len: usize,
 }
 
 impl TinyStoriesBatch {
-    /// Window `w` of the run: the `[batch_size, seq_len]` slice of both tensors.
+    /// Windows the batch spans — its longest story's, and the length of the run
+    /// [`epoch_train`](super::lm::epoch_train) walks.
+    pub fn num_windows(&self) -> usize {
+        self.inputs.dims()[1] / self.seq_len
+    }
+
+    /// Window `w` of the batch: the `[batch_size, seq_len]` slice of both
+    /// tensors, with [`scored`](Self::scored) narrowed to what each slot still
+    /// has left inside it (`0` for a story that ended earlier).
     ///
     /// Every batch slot advances together, so window `w` continues window
     /// `w - 1` in all of them — which is what makes one carried cache valid for
     /// the whole batch.
-    pub fn window(&self, w: usize, seq_len: usize) -> Self {
-        let [_batch_size, run] = self.inputs.dims();
+    pub fn window(&self, w: usize) -> Self {
+        let seq_len = self.seq_len;
         assert!(
-            (w + 1) * seq_len <= run,
-            "window {w} of {seq_len} is past the run ({run} tokens)",
+            w < self.num_windows(),
+            "window {w} is past the batch ({} windows)",
+            self.num_windows(),
         );
         Self {
             inputs: self.inputs.clone().narrow(1, w * seq_len, seq_len),
             targets: self.targets.clone().narrow(1, w * seq_len, seq_len),
+            scored: self
+                .scored
+                .iter()
+                .map(|&n| n.saturating_sub(w * seq_len).min(seq_len))
+                .collect(),
+            seq_len,
         }
     }
 }
 
-/// Stacks [`TinyStoriesItem`]s into a [`TinyStoriesBatch`].
-#[derive(Clone, Default)]
-pub struct TinyStoriesBatcher {}
+/// Stacks [`TinyStoriesItem`]s into a [`TinyStoriesBatch`], padding them to a
+/// whole number of `seq_len` windows.
+#[derive(Clone)]
+pub struct TinyStoriesBatcher {
+    /// Window length the batch is padded against.
+    seq_len: usize,
+}
+
+impl TinyStoriesBatcher {
+    /// A batcher padding to whole windows of `seq_len` tokens.
+    pub fn new(seq_len: usize) -> Self {
+        Self { seq_len }
+    }
+}
 
 impl Batcher<TinyStoriesItem, TinyStoriesBatch> for TinyStoriesBatcher {
     fn batch(&self, items: Vec<TinyStoriesItem>, device: &Device) -> TinyStoriesBatch {
         let batch_size = items.len();
-        // The item is a whole run (`run_len · seq_len` scored positions); the
-        // training loop slices its windows out with `TinyStoriesBatch::window`.
-        let run = items[0].tokens.len() - 1;
-        let mut inputs = Vec::with_capacity(batch_size * run);
-        let mut targets = Vec::with_capacity(batch_size * run);
-        for item in &items {
-            assert_eq!(item.tokens.len(), run + 1);
-            inputs.extend(item.tokens[..run].iter().map(|&t| t as i32));
+        // One scored position per token but the first, which has no predecessor
+        // to be predicted from. A model that opens the sequence with something of
+        // its own can score that one too, out of the extra output positions
+        // `lm_output` picks up; this side neither knows nor asks.
+        let scored: Vec<usize> = items.iter().map(|item| item.tokens.len() - 1).collect();
+        let windows = scored
+            .iter()
+            .map(|n| n.div_ceil(self.seq_len))
+            .max()
+            .expect("a batch holds at least one story");
+        let padded = windows * self.seq_len;
+
+        let mut inputs = Vec::with_capacity(batch_size * padded);
+        let mut targets = Vec::with_capacity(batch_size * padded);
+        for (item, &n) in items.iter().zip(&scored) {
+            // Token 0 pads both sides; every padded position is dropped from the
+            // loss by `scored`, so which token it is only matters for the state
+            // of a slot whose own story is already over.
+            inputs.extend(item.tokens[..n].iter().map(|&t| t as i32));
             targets.extend(item.tokens[1..].iter().map(|&t| t as i32));
+            inputs.resize(inputs.len() + (padded - n), 0);
+            targets.resize(targets.len() + (padded - n), 0);
         }
-        let shape = [batch_size, run];
+        let shape = [batch_size, padded];
         TinyStoriesBatch {
             inputs: Tensor::<1, Int>::from_ints(inputs.as_slice(), device).reshape(shape),
             targets: Tensor::<1, Int>::from_ints(targets.as_slice(), device).reshape(shape),
+            scored,
+            seq_len: self.seq_len,
         }
     }
 }

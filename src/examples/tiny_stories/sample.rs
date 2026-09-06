@@ -1,10 +1,24 @@
 //! Sampling characters from a trained character LM.
 //!
-//! [`generate`] is the whole sampler for any [`VocabNetwork`], and shows a
-//! library's two execution modes back to back: the prompt is consumed by one
-//! chunkwise [`forward`](VocabNetwork::forward) (prefill), and every generated
-//! character then costs one [`step`](VocabNetwork::step) against the same cache
-//! — O(state) per token, with no growing KV cache.
+//! [`generate`] is *a* sampler for any [`VocabNetwork`] — one policy, not the
+//! contract — and shows a library's three execution modes back to back: whatever
+//! the model splices in front of a sequence is replayed by one
+//! [`prime`](VocabNetwork::prime) (which needs no input token, and answers with
+//! the first character's distribution when there was anything to replay), a
+//! prompt — when there is one — is consumed by one chunkwise
+//! [`forward`](VocabNetwork::forward) (prefill), and every generated character
+//! then costs one [`step`](VocabNetwork::step) against the same cache — O(state)
+//! per token, with no growing KV cache.
+//!
+//! A model that opens sequences differently — or not at all — wants a different
+//! opening, and is free to write one: the loops in [`lm`](super::lm) ask only for
+//! an unprompted sample, never for this particular way of producing it. A model
+//! with no class markers has no seedless opening here and must be prompted.
+//!
+//! One call generates **one** story: it opens the sequence, so the
+//! [`ClassCursors`] it threads are used up. A second story wants a second call,
+//! against a **reset** (zero) cache, since a story never followed another in
+//! training.
 //!
 //! A consumer whose network is an *enum* over families (rather than the generic
 //! container) cannot call [`generate`]; it writes the same loop over its own
@@ -13,23 +27,33 @@
 use crate::examples::device::FloatElement;
 use crate::examples::tiny_stories::dataset::{VOCAB, VOCAB_SIZE};
 use crate::modules::{Block, VocabNetwork};
+use crate::utils::ClassCursors;
 use burn::prelude::*;
 use burn::tensor::ElementConversion;
 use burn::tensor::activation::softmax;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
-/// Continue `prompt` with `n_chars` sampled characters.
+/// Sample `n_chars` characters of one story, continuing `prompt` when there is
+/// one.
 ///
-/// The prompt is case-folded and filtered through the alphabet (see [`VOCAB`])
-/// and must not come out empty. `temperature` scales the logits before the
-/// softmax; `<= 0` samples greedily (argmax). Returns only the generated
-/// continuation, not the prompt.
+/// With `prompt: None` the model writes from its own opening: `prime` replays
+/// whatever it splices in front of a sequence and hands back the distribution of
+/// the first character, so nothing has to be fed in — and nothing
+/// out-of-distribution is, which a seed character taken from the corpus would be.
+/// A model that splices nothing has no such opening and panics here; prompt it,
+/// or write the sampler its opening calls for.
+///
+/// A prompt is case-folded and filtered through the alphabet (see [`VOCAB`]) and
+/// must not come out empty; anything the model opens with is spliced in front of
+/// it by the same cursors, exactly as in training. `temperature` scales the
+/// logits before the softmax; `<= 0` samples greedily (argmax). Returns only the
+/// generated characters, not the prompt.
 pub fn generate<M: Block>(
     model: &VocabNetwork<M>,
     device: &Device,
     options: M::Options,
-    prompt: &str,
+    prompt: Option<&str>,
     n_chars: usize,
     temperature: f64,
     seed: u64,
@@ -37,21 +61,39 @@ pub fn generate<M: Block>(
 where
     M::Options: Clone,
 {
-    let tokens = VOCAB.encode(prompt);
-    assert!(
-        !tokens.is_empty(),
-        "the prompt has no character inside the alphabet: {prompt:?}"
-    );
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
+    // One story: the cursors open the sequence here and are threaded through
+    // every call below, so the opening is emitted once.
+    let mut class = ClassCursors::stream();
 
-    // Prefill: one chunkwise pass over the whole prompt, keeping its cache and
-    // the logits of its last character (what the next character is drawn from).
-    let ids: Vec<i32> = tokens.iter().map(|&t| t as i32).collect();
-    let prompt_len = ids.len();
-    let input = Tensor::<1, Int>::from_ints(ids.as_slice(), device).reshape([1, prompt_len]);
-    let (logits, caches) = model.forward(input, None, options, None);
-    let mut logits = logits.narrow(1, prompt_len - 1, 1).squeeze_dim::<2>(1); // [1, VOCAB_SIZE]
-    let mut caches = Some(caches);
+    let (mut logits, mut caches) = match prompt {
+        // Prefill: one chunkwise pass over the opening and the whole prompt,
+        // keeping its cache and the logits of its last character (what the next
+        // character is drawn from).
+        Some(prompt) => {
+            let tokens = VOCAB.encode(prompt);
+            assert!(
+                !tokens.is_empty(),
+                "the prompt has no character inside the alphabet: {prompt:?}"
+            );
+            let ids: Vec<i32> = tokens.iter().map(|&t| t as i32).collect();
+            let input = Tensor::<1, Int>::from_ints(ids.as_slice(), device).reshape([1, ids.len()]);
+            let (logits, caches) = model.forward(input, None, options, Some(&mut class));
+            let last = logits.dims()[1] - 1;
+            (logits.narrow(1, last, 1).squeeze_dim::<2>(1), Some(caches))
+        }
+        // Seedless: the opening alone, which already predicts the first
+        // character.
+        None => {
+            let (logits, caches) = model.prime(1, None, Some(&mut class));
+            (
+                logits.expect(
+                    "the model has no class latents to prime from; pass a prompt instead",
+                ),
+                caches,
+            )
+        }
+    };
 
     // Decode: one `step` per character, against that same cache.
     let mut out = String::with_capacity(n_chars);
@@ -59,7 +101,7 @@ where
         let token = sample_token(logits, temperature, &mut rng);
         out.push(VOCAB.character(token));
         let next = Tensor::<1, Int>::from_ints([token as i32], device);
-        let (next_logits, next_caches) = model.step(next, caches.take(), None);
+        let (next_logits, next_caches) = model.step(next, caches.take(), Some(&mut class));
         logits = next_logits;
         caches = Some(next_caches);
     }

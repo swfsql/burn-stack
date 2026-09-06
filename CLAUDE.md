@@ -88,11 +88,15 @@ src/
 │  ├─ mnist/         dataset.rs (download + batching), classify.rs (the epoch
 │  │                 loops + the MnistModel seam), render.rs (a digit beside
 │  │                 its class distribution, as text or PNG)
-│  └─ tiny_stories/  dataset.rs (character corpus: alphabet, datasets-server
-│                    paging + cache, windowing into runs), lm.rs
+│  └─ tiny_stories/  dataset.rs (character corpus: alphabet, whole-parquet
+│                    download + text cache, one story per item, batches padded
+│                    to whole windows with a per-slot `scored` count), lm.rs
 │                    (TinyStoriesConfig + CLI overrides, the FrontierGate, the
-│                    epoch loops + the cache-carrying LmModel seam), sample.rs
-│                    (prefill/decode sampler over VocabNetwork<M>)
+│                    epoch loops + the cache-carrying LmModel seam; lm_output
+│                    scores any extra output positions the model spliced in
+│                    against the story's first character, and gathers the padding
+│                    away — class markers are offered, never assumed), sample.rs
+│                    (one prime/prefill/decode sampler over VocabNetwork<M>)
 ├─ optim/            Muon parameter groups (feature `optim`); allowlist, not denylist
 │  ├─ mod.rs         MuonPlan: specs → ModuleOptimizer (AdamW fallback + Muon groups)
 │  ├─ spec.rs        ProjSpec/ProjSegment: fused-weight column seams → ParamGroup;
