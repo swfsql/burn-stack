@@ -23,8 +23,10 @@
 //! the row groups up to the requested rows are ever decompressed.
 //!
 //! The stories that come out are normalized and cached again, as text, one file
-//! per `(split, story count)` — so a second run reads a few MB of text and never
-//! opens (or needs) the parquet at all.
+//! per `(split, story count)`, records divided by [`STORY_SEPARATOR`] — so a
+//! second run reads a few MB of text and never opens (or needs) the parquet at
+//! all. A cache whose record count disagrees with its name was written by an
+//! older separator and is rebuilt in place.
 //!
 //! Splits follow the dataset card's suggested row ranges (the rows are
 //! pre-shuffled, so a contiguous range is already a random sample): rows
@@ -73,10 +75,15 @@ pub const VOCAB_SIZE: usize = ALPHABET.len();
 /// Token id reserved by [`Vocab`] for "not in the alphabet".
 const NO_TOKEN: u8 = u8::MAX;
 
-/// Record separator of the **text cache** — a blank line, which never occurs
-/// inside a story (single `\n` separates its paragraphs). It is a property of
-/// that file only: it is never encoded, so the model never sees it.
-pub const STORY_SEPARATOR: &str = "\n\n";
+/// Record separator of the **text cache**: ASCII `RS` (0x1E), which is outside
+/// [`ALPHABET`] and therefore removed from every story by [`normalize`] — so a
+/// story *cannot* contain one, and splitting the file on it is exact.
+///
+/// A blank line would be the obvious choice and is the wrong one: the dataset
+/// card allows `\n` as a paragraph separator without forbidding two in a row,
+/// and 5 of the first 32,768 training stories do carry one. It is a property of
+/// the cache file only — never encoded, so the model never sees it.
+pub const STORY_SEPARATOR: &str = "\u{1e}";
 
 /// Byte ↔ token-id tables for [`ALPHABET`], with `A-Z` folded onto `a-z`.
 pub struct Vocab {
@@ -204,6 +211,10 @@ fn cache_dir() -> PathBuf {
 /// Case-fold `story`, drop the (vanishingly rare, ~5 per million) characters
 /// outside [`ALPHABET`], and trim the surrounding whitespace — after which the
 /// text is exactly the token stream, opening on a real symbol.
+///
+/// Dropping everything outside the alphabet is also what keeps
+/// [`STORY_SEPARATOR`] unambiguous: it is one of those characters. Interior
+/// newlines are left exactly as the corpus has them, blank lines included.
 fn normalize(story: &str) -> String {
     story
         .bytes()
@@ -278,17 +289,23 @@ pub fn stories(split: Split, n_stories: usize) -> Vec<String> {
     let path = cache_dir().join(format!("{}-{n_stories}.txt", split.name()));
     if let Ok(cached) = std::fs::read_to_string(&path) {
         let stories: Vec<String> = cached.split(STORY_SEPARATOR).map(str::to_owned).collect();
-        assert_eq!(
+        if stories.len() == n_stories {
+            return stories;
+        }
+        // Not a corrupt file: a cache written when the separator was a blank
+        // line, which a handful of stories carry inside them and which was
+        // therefore splitting those in two. Rebuilding costs one pass over the
+        // (already downloaded) parquet, so it beats asking for a manual delete.
+        println!(
+            "the text cache {path:?} holds {} records for {n_stories} stories \
+             (an older separator); rebuilding it",
             stories.len(),
-            n_stories,
-            "the text cache {path:?} holds a different number of stories; delete it to rebuild",
         );
-        return stories;
     }
     let stories = read_parquet(split, n_stories);
     // The separator is the cache file's only structure, so a story carrying one
-    // would make the file unreadable. It never happens (paragraphs inside a
-    // story are separated by a single `\n`), and `normalize` trims the ends.
+    // would make the file unreadable. `normalize` drops every byte outside the
+    // alphabet, and the separator is one of them, so this cannot fire.
     assert!(
         !stories.iter().any(|s| s.contains(STORY_SEPARATOR)),
         "a story contains the cache separator",
