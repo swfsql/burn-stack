@@ -23,7 +23,7 @@ Split out of [`burn-mamba`](../burn-mamba), which is its first consumer.
 ```bash
 cargo check                 # type-check the lib surface
 cargo check --all-targets   # + tests
-cargo test --lib            # run tests (any backend; flex = CPU default)
+cargo test --lib -- --test-threads=1 # run tests (any backend; flex = CPU default)
 cargo doc --no-deps         # build docs
 ```
 
