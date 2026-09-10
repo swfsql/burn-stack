@@ -15,19 +15,20 @@
 macro_rules! impl_backend_ext_for_burn_backends {
     ($trait_name:path) => {
         #[cfg(feature = "backend-ndarray")]
-        impl<F, I> $trait_name for burn::backend::NdArray<F, I> {}
+        impl $trait_name for burn::backend::NdArray {}
 
         #[cfg(feature = "backend-flex")]
         impl $trait_name for burn::backend::Flex {}
 
         #[cfg(any(feature = "backend-tch-cpu", feature = "backend-tch-gpu"))]
-        impl<F, I> $trait_name for burn::backend::libtorch::LibTorch<F, I> {}
+        impl $trait_name for burn::backend::libtorch::LibTorch {}
 
         #[cfg(feature = "backend-remote")]
-        impl<F, I> $trait_name for burn::backend::RemoteBackend<F, I> {}
+        impl $trait_name for burn::backend::Remote {}
 
+        // Every cubecl runtime is this one type; the device says which of them.
         #[cfg(feature = "cubecl")]
-        impl<R> $trait_name for burn_cubecl::CubeBackend<R> where R: burn_cubecl::CubeRuntime {}
+        impl $trait_name for burn_cubecl::CubeBackend {}
 
         // Fusion delegates to the inner backend's default impl.
         #[cfg(feature = "fusion")]

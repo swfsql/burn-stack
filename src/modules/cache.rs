@@ -29,10 +29,10 @@ pub trait CacheStack: Sized {
     /// hold bare tensors, not `Param`s — a `Module`-based conversion would
     /// silently skip every one of them.
     ///
-    /// # Panics
-    /// `Tensor::inner` panics on a tensor that is already off the autodiff
-    /// backend, so the caller must have checked
-    /// [`Device::is_autodiff`](burn::prelude::Device::is_autodiff) first.
+    /// `Tensor::inner` returns a tensor that is already off the autodiff backend
+    /// unchanged, so this is inert there rather than an error — a caller that
+    /// wants to skip the round-trip asks
+    /// [`Device::is_autodiff`](burn::prelude::Device::is_autodiff) itself.
     fn cache_to_inner(cache: Self::Cache) -> Self::Cache;
 
     /// Lift one cache slot back **from** the inner backend, as a fresh graph
@@ -48,8 +48,7 @@ pub trait CacheStack: Sized {
     /// is still registered (see [`detach_params`](crate::utils::detach_params));
     /// the backend hop is what drops the graph.
     ///
-    /// # Panics
-    /// See [`Self::cache_to_inner`]: the cache must be on an autodiff device.
+    /// Inert off the autodiff backend — see [`Self::cache_to_inner`].
     fn detach(self) -> Self {
         let slots = self
             .into_slots()

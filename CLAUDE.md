@@ -215,13 +215,14 @@ it. `reference/tests.rs` pins it for `RefBlock`.
   (`F<B,D>`, `Backward<B,_>` nodes, `Autodiff<B>` ext impls).
 - **A no-grad region means the inner backend, not `detach`** — Burn registers
   untracked ops in the graph anyway, so detaching cuts gradients while
-  **retaining every activation** (measured: 3144 MB vs 208 MB at 64 virtual
+  **retaining every activation** (measured: 2765 MB vs 550 MB at 64 virtual
   layers; see `utils/detach.rs`). `grad_horizon` runs its untracked segments on
-  `AutodiffModule::valid(self)`. Three consequences: `.inner()`/`.valid()`
-  **panic** off autodiff (unlike `detach`, a no-op there), so the `is_autodiff`
-  guard is load-bearing; caches convert by hand (`Module::map` is a no-op on
+  `AutodiffModule::valid(self)`. Three consequences: `.inner()`/`.valid()` are
+  idempotent off autodiff, so the `is_autodiff` guard only skips a round-trip
+  that would save nothing; caches convert by hand (`Module::map` is a no-op on
   plain `Tensor` fields, all a cache holds); and `is_require_grad` only reports
-  `Requirement::Grad` leaves, so tests assert gradient *reachability*.
+  `Requirement::Grad` leaves, so tests assert gradient *reachability*
+  (`is_tracked` is the graph-participation probe).
 - **Muon sees split projections, the model does not** — Burn's `Muon`
   orthogonalises a whole 2-D weight, which is wrong for a fused `in_proj`
   (independent maps sharing one allocation) and panics for rank ≠ 2. `optim`

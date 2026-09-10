@@ -165,11 +165,10 @@ where
     /// [`Schedule::Cyclic`] stack, once per real layer for a
     /// [`Schedule::Stretched`] one, arbitrarily for a [`GradHorizon::Mask`].
     ///
-    /// Returns `None` off the autodiff backend: a cut is taken with
-    /// `Tensor::inner`/`AutodiffModule::valid`, which **panic** there (unlike
-    /// `detach`, a documented no-op), so the guard is load-bearing rather than an
-    /// optimisation — a horizon left set in a config has to fall through to the
-    /// untouched path at inference. The module's own device is what decides,
+    /// Returns `None` off the autodiff backend: `Tensor::inner` /
+    /// `AutodiffModule::valid` are idempotent there, so a cut would buy nothing
+    /// but its own round-trip — a horizon left set in a config falls through to
+    /// the untouched path at inference. The module's own device is what decides,
     /// since [`Self::prime`] has no input tensor to ask.
     fn grad_tracked(&self, n: usize) -> Option<Vec<bool>> {
         let on_autodiff = self.real_layers[0]
@@ -250,9 +249,9 @@ where
         // while an inner-backend prefix was flat. The memory probe in this
         // module's tests reproduces both curves.
         //
-        // `Tensor::inner`/`AutodiffModule::valid` **panic** off the autodiff
-        // backend (unlike `detach`, which is a documented no-op there), so a cut
-        // is taken only when the input really is on one — at inference
+        // `Tensor::inner`/`AutodiffModule::valid` are idempotent off the autodiff
+        // backend, so a cut there would cost a round-trip and save nothing; it is
+        // taken only when the stack really is on one, and at inference
         // `grad_horizon` is simply inert.
         //
         // The mask is not a single boundary: it may turn off and on again any

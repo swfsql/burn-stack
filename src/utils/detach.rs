@@ -26,10 +26,10 @@
 //! can still retrieve it — so its output stays retained. Measured on a
 //! 64-virtual-layer `Layers` of an SSM block (flex, `d_model` 128, batch 4,
 //! seq 512),
-//! peak RSS with a 2-layer gradient horizon was 3144 MB with a detached prefix
-//! against 208 MB with an inner-backend one, and only the latter is flat in
-//! depth. Detaching buys the gradient semantics and essentially none of the
-//! memory.
+//! peak RSS with a 2-layer gradient horizon was 2765 MB with a detached prefix
+//! against 550 MB with an inner-backend one — and the latter is the floor, what
+//! the same forward costs with no autodiff at all (501 MB). Detaching buys the
+//! gradient semantics and essentially none of the memory.
 //!
 //! # What this does *not* reach
 //!

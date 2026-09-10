@@ -1,6 +1,6 @@
 [package]
 name = "burn-stack"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2024"
 description = "Block-generic layer/network composition on Burn: Pre-LN layers, virtual-layer stacks, bidirectional pairs, latent/vocab networks, multi-gate residuals, class tokens, and Muon parameter groups."
 
@@ -76,19 +76,19 @@ pico-args = { version = "0.5.0", features = ["eq-separator", "combined-flags"], 
 rand = { version = "0.9.2", optional = true }
 rand_chacha = { version = "0.9.0", optional = true }
 temp-dir = { version = "0.1.16", optional = true }
-burn-flex = { version = "0.22.0-pre.3", default-features = false, optional = true }
-# burn-flex = { git = "https://github.com/tracel-ai/burn.git", rev = "13f0a12b71ad83c1f9edeac22dea325dcb612397", default-features = false, optional = true }
+# burn-flex = { version = "0.22.0-pre.3", default-features = false, optional = true }
+burn-flex = { git = "https://github.com/tracel-ai/burn.git", rev = "4a0d726530644dd5ecf1a4cb5d06bb9cb043dd60", default-features = false, optional = true }
 
 ### For the main branch. ###
-burn = { version = "0.22.0-pre.3", default-features = false, features = ["extension"]}
-burn-cubecl = { version = "0.22.0-pre.3", default-features = false, optional = true}
-burn-fusion = { version = "0.22.0-pre.3", default-features = false, optional = true}
+# burn = { version = "0.22.0-pre.3", default-features = false, features = ["extension"]}
+# burn-cubecl = { version = "0.22.0-pre.3", default-features = false, optional = true}
+# burn-fusion = { version = "0.22.0-pre.3", default-features = false, optional = true}
 # `examples-common` only: the MNIST download path.
-burn-dataset = { version = "0.22.0-pre.3", features = ["network"], optional = true }
-# burn = { git = "https://github.com/tracel-ai/burn.git", rev = "13f0a12b71ad83c1f9edeac22dea325dcb612397", default-features = false, features = ["extension"] }
-# burn-cubecl = { git = "https://github.com/tracel-ai/burn.git", rev = "13f0a12b71ad83c1f9edeac22dea325dcb612397", default-features = false, optional = true}
-# burn-fusion = { git = "https://github.com/tracel-ai/burn.git", rev = "13f0a12b71ad83c1f9edeac22dea325dcb612397", default-features = false, optional = true}
-# burn-dataset = { git = "https://github.com/tracel-ai/burn.git", rev = "13f0a12b71ad83c1f9edeac22dea325dcb612397", features = ["network"], optional = true }
+# burn-dataset = { version = "0.22.0-pre.3", features = ["network"], optional = true }
+burn = { git = "https://github.com/tracel-ai/burn.git", rev = "4a0d726530644dd5ecf1a4cb5d06bb9cb043dd60", default-features = false, features = ["extension"] }
+burn-cubecl = { git = "https://github.com/tracel-ai/burn.git", rev = "4a0d726530644dd5ecf1a4cb5d06bb9cb043dd60", default-features = false, optional = true}
+burn-fusion = { git = "https://github.com/tracel-ai/burn.git", rev = "4a0d726530644dd5ecf1a4cb5d06bb9cb043dd60", default-features = false, optional = true}
+burn-dataset = { git = "https://github.com/tracel-ai/burn.git", rev = "4a0d726530644dd5ecf1a4cb5d06bb9cb043dd60", features = ["network"], optional = true }
 
 ### For local development. ###
 # burn = { path = "../burn/crates/burn", default-features = false, features = ["extension"] }
@@ -97,8 +97,8 @@ burn-dataset = { version = "0.22.0-pre.3", features = ["network"], optional = tr
 
 [dev-dependencies]
 ### For the main branch. ###
-burn = { version = "0.22.0-pre.3", default-features = false, features = ["autodiff", "std", "optim", "extension"]}
-# burn = { git = "https://github.com/tracel-ai/burn.git", rev = "13f0a12b71ad83c1f9edeac22dea325dcb612397", default-features = false, features = ["autodiff", "std", "optim"]}
+# burn = { version = "0.22.0-pre.3", default-features = false, features = ["autodiff", "std", "optim", "extension"]}
+burn = { git = "https://github.com/tracel-ai/burn.git", rev = "4a0d726530644dd5ecf1a4cb5d06bb9cb043dd60", default-features = false, features = ["autodiff", "std", "optim", "extension"]}
 
 ### For local development. ###
 # burn = { path = "../burn/crates/burn", default-features = false, features = ["autodiff", "std"] }
