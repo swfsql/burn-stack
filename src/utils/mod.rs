@@ -31,11 +31,14 @@ pub mod scheduler;
 /// `max_abs_diff` + gradient-comparison macros used across the test suites.
 #[cfg(any(test, feature = "test-helpers"))]
 pub mod test_helpers;
+/// Parameters held once per application of a real layer instead of tied.
+pub mod untied;
 
 pub use class::{ClassCursor, ClassCursors, ClassLatent, ClassToken};
 pub use detach::detach_params;
 pub use init::InitPolicy;
-pub use schedule::{BidiSchedule, GradHorizon, Schedule};
+pub use schedule::{Applications, BidiSchedule, GradHorizon, Schedule};
+pub use untied::UntiedParam;
 pub use scheduler::{ConstantLr, CosineAnnealingLr, Lr};
 
 /// A small `dtype`-specific epsilon for safe division (`x / (y + eps)`),

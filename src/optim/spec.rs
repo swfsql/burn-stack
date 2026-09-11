@@ -74,14 +74,18 @@ pub struct ProjSpec {
     /// Where `path` is anchored.
     pub scope: ProjScope,
     /// The column blocks, in order; their widths must sum to the weight's output
-    /// width.
+    /// width — or, when [`Self::tiled`], to one copy of it.
     pub segments: Vec<ProjSegment>,
+    /// The weight is [untied](crate::utils::untied) along its fused axis: any
+    /// whole number of copies of `segments` side by side, one per application,
+    /// each copy's blocks stepped on their own.
+    pub tiled: bool,
 }
 
 impl ProjSpec {
     /// A fused weight of the SSM block.
     pub fn block(path: impl Into<String>, segments: Vec<ProjSegment>) -> Self {
-        Self { path: path.into(), scope: ProjScope::Block, segments }
+        Self { path: path.into(), scope: ProjScope::Block, segments, tiled: false }
     }
 
     /// An unfused weight of the SSM block, Muon owns it in full.
@@ -91,7 +95,13 @@ impl ProjSpec {
 
     /// A fused weight matched by plain path substring.
     pub fn path(path: impl Into<String>, segments: Vec<ProjSegment>) -> Self {
-        Self { path: path.into(), scope: ProjScope::Path, segments }
+        Self { path: path.into(), scope: ProjScope::Path, segments, tiled: false }
+    }
+
+    /// This spec over an untied weight (see [`Self::tiled`]).
+    pub fn tiled(mut self) -> Self {
+        self.tiled = true;
+        self
     }
 
     /// An unfused weight matched by plain path substring, Muon owns it in full.
@@ -110,9 +120,10 @@ impl ProjSpec {
     }
 
     /// Whether Muon owns the whole tensor as a single block (so stock
-    /// [`Muon`](burn::optim::Muon) applies directly, no splitting needed).
+    /// [`Muon`](burn::optim::Muon) applies directly, no splitting needed) — never
+    /// a [tiled](Self::tiled) weight, whose copies are separate matrices.
     pub fn is_whole_muon(&self) -> bool {
-        self.segments.len() == 1 && self.segments[0].muon
+        !self.tiled && self.segments.len() == 1 && self.segments[0].muon
     }
 
     /// The path substrings a parameter must **all** contain to be this spec's:

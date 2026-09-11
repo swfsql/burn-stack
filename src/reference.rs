@@ -3,7 +3,9 @@
 //! It exists for two reasons: it is what this crate's own test suite composes
 //! (so the containers are exercised without depending on any real mixer
 //! family), and it is a worked example of the four things a family has to
-//! supply — a cache, a [`CacheStack`], [`Block`], and [`BlockConfig`].
+//! supply — a cache, a [`CacheStack`], [`Block`], and [`BlockConfig`]. It
+//! unties its decay and its gate map on request ([`RefUntied`]), so the
+//! containers' untied path is exercised the same way.
 //!
 //! The recurrence is a gated exponential moving average, one state vector per
 //! token channel:
@@ -22,6 +24,7 @@
 //! Enabled by the `test-helpers` feature (or inside this crate's own tests).
 
 use crate::modules::{Block, BlockConfig, CacheStack, Silu};
+use crate::utils::untied::{self, UntiedParam};
 use burn::config::Config;
 use burn::module::Param;
 use burn::nn::{Linear, LinearConfig};
@@ -65,6 +68,17 @@ impl CacheStack for RefCaches {
     }
 }
 
+/// A [`RefBlock`] parameter that may be held once per application instead of
+/// tied (see [`crate::utils::untied`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum RefUntied {
+    /// The decay [`RefBlock::decay_raw`], its copies along its only axis.
+    Decay,
+    /// The gate map [`RefBlock::gate_proj`], its copies along the output axis —
+    /// the untied 2-D weight Muon has to step a copy at a time.
+    GateProj,
+}
+
 /// The reference mixer block.
 #[derive(Module, Debug)]
 pub struct RefBlock {
@@ -76,6 +90,9 @@ pub struct RefBlock {
     pub out_proj: Linear,
     /// Pre-sigmoid per-channel decay, shape `[d_model]`.
     pub decay_raw: Param<Tensor<1>>,
+    /// The parameters held once per application.
+    #[module(skip)]
+    pub untied: Vec<RefUntied>,
 }
 
 impl RefBlock {
@@ -149,6 +166,16 @@ impl Block for RefBlock {
         let [batch, _d] = x_bd.dims();
         self.zero_caches(batch, n_virtual, &x_bd.device())
     }
+
+    fn untied_params(&self) -> Vec<UntiedParam> {
+        self.untied
+            .iter()
+            .map(|part| match part {
+                RefUntied::Decay => UntiedParam::new(&self.decay_raw, 0),
+                RefUntied::GateProj => UntiedParam::new(&self.gate_proj.weight, 1),
+            })
+            .collect()
+    }
 }
 
 /// Config for [`RefBlock`].
@@ -156,17 +183,35 @@ impl Block for RefBlock {
 pub struct RefBlockConfig {
     /// Model width.
     pub d_model: usize,
+    /// The parameters held once per application instead of tied.
+    #[config(default = "Vec::new()")]
+    pub untied: Vec<RefUntied>,
 }
 
 impl RefBlockConfig {
-    /// Allocate the block on `device`.
+    /// Allocate the block on `device`, for a single application.
     pub fn init(&self, device: &Device) -> RefBlock {
+        self.init_applications(1, device)
+    }
+
+    /// Allocate the block on `device` for `n_applications` applications, every
+    /// [`Self::untied`] parameter tiled that many times.
+    pub fn init_applications(&self, n_applications: usize, device: &Device) -> RefBlock {
         let lin = || LinearConfig::new(self.d_model, self.d_model).with_bias(false).init(device);
+        let mut gate_proj = lin();
+        if self.untied.contains(&RefUntied::GateProj) {
+            gate_proj.weight = untied::tile(gate_proj.weight, 1, n_applications);
+        }
+        let mut decay_raw = Param::from_tensor(Tensor::zeros([self.d_model], device));
+        if self.untied.contains(&RefUntied::Decay) {
+            decay_raw = untied::tile(decay_raw, 0, n_applications);
+        }
         RefBlock {
             in_proj: lin(),
-            gate_proj: lin(),
+            gate_proj,
             out_proj: lin(),
-            decay_raw: Param::from_tensor(Tensor::zeros([self.d_model], device)),
+            decay_raw,
+            untied: self.untied.clone(),
         }
     }
 }
@@ -178,18 +223,23 @@ impl BlockConfig for RefBlockConfig {
         self.d_model
     }
 
-    fn init_block(&self, device: &Device) -> RefBlock {
-        self.init(device)
+    fn init_block(&self, n_applications: usize, device: &Device) -> RefBlock {
+        self.init_applications(n_applications, device)
     }
 
-    /// Three plain (unfused) square maps; the `[d_model]` decay is rank 1 and so
-    /// stays on the fallback optimizer.
+    /// Three plain (unfused) square maps, the gate one per application when
+    /// untied; the `[d_model]` decay is rank 1 and so stays on the fallback
+    /// optimizer.
     #[cfg(feature = "optim")]
     fn muon_projections(&self) -> Vec<crate::optim::ProjSpec> {
         use crate::optim::ProjSpec;
+        let gate = ProjSpec::block_whole("gate_proj.weight", self.d_model);
         vec![
             ProjSpec::block_whole("in_proj.weight", self.d_model),
-            ProjSpec::block_whole("gate_proj.weight", self.d_model),
+            match self.untied.contains(&RefUntied::GateProj) {
+                true => gate.tiled(),
+                false => gate,
+            },
             ProjSpec::block_whole("out_proj.weight", self.d_model),
         ]
     }

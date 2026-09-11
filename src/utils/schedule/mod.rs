@@ -14,6 +14,9 @@
 //! A [`GradHorizon`] rides on top of that mapping: it says which of the virtual
 //! layers back-propagate, counted **per real layer** so that no weight set is
 //! left untrained, whichever way a schedule spreads it.
+//!
+//! [`Applications`] reads the map the other way — which application of its real
+//! layer each virtual layer is — for the parameters a layer unties.
 
 /// How a unidirectional layer stack maps virtual layer indices to real
 /// (weight-bearing) layer indices.
@@ -52,6 +55,46 @@ impl Schedule {
             Schedule::Stretched => (virtual_idx * real_len) / virtual_len,
             Schedule::Custom(map) => *map.get(virtual_idx).unwrap(),
         }
+    }
+
+    /// The [`Applications`] of this schedule over `virtual_len` layers.
+    pub fn applications(&self, virtual_len: usize, real_len: usize) -> Applications {
+        Applications::new(
+            (0..virtual_len).map(|i| self.real_idx(i, virtual_len, real_len)),
+            real_len,
+        )
+    }
+}
+
+/// Which **application** of its real layer each virtual layer is: the
+/// virtual→real map read the other way, counting how often a weight set has
+/// already been used. It is what an untied parameter is indexed by (see
+/// [`crate::utils::untied`]); [`GradHorizon::Depth`] counts the same thing from
+/// the top.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Applications {
+    /// Per virtual layer: how many virtual layers below it share its real layer.
+    pub index: Vec<usize>,
+    /// Per real layer: how many applications it has — at least one, since a
+    /// real layer the schedule never reaches is still built.
+    pub count: Vec<usize>,
+}
+
+impl Applications {
+    /// From each virtual layer's real index, bottom-up.
+    pub fn new(real_of: impl IntoIterator<Item = usize>, real_len: usize) -> Self {
+        let mut count = vec![0; real_len];
+        let index = real_of
+            .into_iter()
+            .map(|real| {
+                count[real] += 1;
+                count[real] - 1
+            })
+            .collect();
+        for c in &mut count {
+            *c = (*c).max(1);
+        }
+        Self { index, count }
     }
 }
 
@@ -225,6 +268,15 @@ impl BidiSchedule {
             BidiSchedule::SymmetricStretched => (virtual_outer_idx * real_len) / virtual_outer_len,
             BidiSchedule::Custom(map) => *map.get(virtual_idx).unwrap(),
         }
+    }
+
+    /// The [`Applications`] of this schedule over `virtual_len` layers, both
+    /// directions counted against the one real layer they index.
+    pub fn applications(&self, virtual_len: usize, real_len: usize) -> Applications {
+        Applications::new(
+            (0..virtual_len).map(|i| self.real_idx(i, virtual_len, real_len)),
+            real_len,
+        )
     }
 }
 

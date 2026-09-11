@@ -1,6 +1,6 @@
-use crate::modules::{Residuals, ResidualsConfig, RmsNorm, RmsNormConfig};
+use crate::modules::{LayerUntied, Residuals, ResidualsConfig, RmsNorm};
 use crate::prelude::*;
-use crate::utils::BidiSchedule;
+use crate::utils::{Applications, BidiSchedule};
 use crate::utils::class::{class_marker_output_indices, init_class_emb, insert_class_markers};
 use crate::utils::{ClassCursor, ClassCursors, ClassLatent};
 use burn::config::Config;
@@ -155,11 +155,9 @@ where
 /// The straight + reverse + merge computation of a bidirectional pair, over
 /// **borrowed** sub-modules.
 ///
-/// Taking references (rather than owning clones) is load-bearing: a Burn `Param`
-/// that is still lazily-initialised re-runs its random initialiser **on every
-/// clone**, so cloning a not-yet-materialised block per forward would resample
-/// fresh random weights each call. [`BidiLayers`] therefore calls this directly
-/// on its real layers instead of building a transient (cloned) [`BidiLayerPair`].
+/// [`BidiLayers`] calls this directly on its real layers (or their application
+/// views, when they untie anything) instead of building a transient
+/// [`BidiLayerPair`].
 #[allow(clippy::too_many_arguments)]
 fn bidi_pair_forward<M: Block>(
     straight_norm: &RmsNorm,
@@ -296,13 +294,16 @@ where
                 self.n_real_layers
             });
 
-        let caches =
-            caches.unwrap_or_else(|| self.real_layers[0].block.zero_caches_3d(&x, n));
+        // Sized from a view: an untied block's own tensors hold every
+        // application's copy.
+        let caches = caches
+            .unwrap_or_else(|| self.real_layers[0].application(0).block.zero_caches_3d(&x, n));
         assert_eq!(
             caches.slot_count(),
             n,
             "straight and reverse layers cannot share caches"
         );
+        let apps = bidi_applications(&self.n_virtual_layers, self.n_real_layers);
 
         let mut slots = caches.into_slots();
         // MultiGate carries up to `n_stream` parallel streams (the input is the
@@ -320,8 +321,10 @@ where
                 } else {
                     (straight_i, reverse_i)
                 };
-            let straight_layer = &self.real_layers[straight_idx];
-            let reverse_layer = &self.real_layers[reverse_idx];
+            // Each direction as its own application of its real layer sees it,
+            // should that layer untie anything.
+            let straight_layer = self.real_layers[straight_idx].application(apps.index[straight_i]);
+            let reverse_layer = self.real_layers[reverse_idx].application(apps.index[reverse_i]);
 
             let straight_cache = slots[straight_i].take().unwrap();
             let reverse_cache = slots[reverse_i].take().unwrap();
@@ -337,10 +340,8 @@ where
                 _ => None,
             };
 
-            // Run the pair directly on the (borrowed) real layers — never clone a
-            // block, since cloning a lazily-initialised `Param` resamples its
-            // random weights (see [`bidi_pair_forward`]). Stack-level class
-            // latents were already spliced above; pairs carry none of their own.
+            // Run the pair directly on the layers above. Stack-level class
+            // latents were already spliced; pairs carry none of their own.
             //
             // The pair returns its merged transform `F_l` without the residual.
             // The merge is a per-real-pair weight set (`n_real_layers / 2` of
@@ -424,21 +425,28 @@ pub struct BidiLayersBuilder<C> {
     pub class_latents: Vec<ClassLatent>,
     /// Inter-pair residual scheme (defaults to plain additive).
     pub residuals: ResidualsConfig,
+    /// The layers' own parameters held once per application instead of tied
+    /// (see [`Layer::application`]); the block's are its config's to name.
+    pub untied: Vec<LayerUntied>,
 }
 
 impl<C: BlockConfig> BidiLayersBuilder<C> {
     /// Allocate and initialise the bidirectional stack on `device`.
     pub fn init(&self, device: &Device) -> BidiLayers<C::Block> {
         let d_model = self.block.d_model();
-        let real_layers = (0..self.n_real_layers)
-            .map(|_| Layer {
-                norm: RmsNormConfig::new(d_model).init(device),
-                block: self.block.init_block(device),
+        let real_layers = bidi_applications(&self.n_virtual_layers, self.n_real_layers)
+            .count
+            .into_iter()
+            .map(|n_applications| {
                 // The bidirectional stack has no feed-forward interleave.
-                norm2: None,
-                mlp: None,
-                class_latents: Vec::new(),
-                class_latents_emb: None,
+                Layer::init(
+                    self.block.init_block(n_applications, device),
+                    d_model,
+                    None,
+                    &self.untied,
+                    n_applications,
+                    device,
+                )
             })
             .collect();
         let outputs_merge = (0..self.n_real_layers / 2)
@@ -465,6 +473,18 @@ impl<C: BlockConfig> BidiLayersBuilder<C> {
             class_latents_emb: init_class_emb(self.class_latents.len(), d_model, device),
             class_latents: self.class_latents.clone(),
         }
+    }
+}
+
+/// The [`Applications`] of a bidirectional stack of `n_real_layers` under this
+/// optional virtual scheduling (none ⇒ each real layer applied once).
+fn bidi_applications(
+    n_virtual_layers: &Option<(usize, BidiSchedule)>,
+    n_real_layers: usize,
+) -> Applications {
+    match n_virtual_layers {
+        Some((n, schedule)) => schedule.applications(*n, n_real_layers),
+        None => Applications::new(0..n_real_layers, n_real_layers),
     }
 }
 

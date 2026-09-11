@@ -130,6 +130,25 @@ fn grad_horizon_depth_rejects_a_custom_schedule() {
 }
 
 #[test]
+fn applications_count_each_real_layers_uses_bottom_up() {
+    let apps = Schedule::Cyclic.applications(8, 3);
+    assert_eq!(apps.index, vec![0, 0, 0, 1, 1, 1, 2, 2]);
+    assert_eq!(apps.count, vec![3, 3, 2]);
+    let apps = Schedule::Stretched.applications(8, 3);
+    assert_eq!(apps.index, vec![0, 1, 2, 0, 1, 2, 0, 1]);
+    assert_eq!(apps.count, vec![3, 3, 2]);
+    // A real layer no virtual layer reaches is still built, once.
+    let apps = Schedule::Custom(vec![0, 0, 2, 0]).applications(4, 3);
+    assert_eq!(apps.index, vec![0, 1, 0, 2]);
+    assert_eq!(apps.count, vec![3, 1, 1]);
+    // Both directions of a bidirectional stack count against the real layer
+    // they index: `SymmetricCyclic` runs 0 0 1 1 0 0 1 1.
+    let apps = BidiSchedule::SymmetricCyclic.applications(8, 2);
+    assert_eq!(apps.index, vec![0, 1, 0, 1, 2, 3, 2, 3]);
+    assert_eq!(apps.count, vec![4, 4]);
+}
+
+#[test]
 #[should_panic(expected = "one flag per virtual layer")]
 fn grad_horizon_mask_must_match_the_stack() {
     GradHorizon::Mask(vec![true, false]).tracked(Some(&Schedule::Cyclic), 8, 3);

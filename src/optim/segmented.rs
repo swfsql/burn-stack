@@ -61,6 +61,7 @@ pub struct Segmented {
     optims: Vec<BlockOptim>,
     widths: Vec<usize>,
     dim: usize,
+    tiled: bool,
 }
 
 impl Segmented {
@@ -79,7 +80,7 @@ impl Segmented {
             })
             .collect();
         let widths = spec.segments.iter().map(|s| s.width).collect();
-        Self { optims, widths, dim }
+        Self { optims, widths, dim, tiled: spec.tiled }
     }
 
     /// The axis the blocks are laid out along.
@@ -103,30 +104,33 @@ impl Optimizer for Segmented {
             "Segmented: split dim {} out of range for a {D}D parameter",
             self.dim
         );
-        let total: usize = self.widths.iter().sum();
+        let per_copy: usize = self.widths.iter().sum();
+        let width = tensor.shape().dims::<D>()[self.dim];
+        // An untied weight holds one copy of the segments per application.
+        let copies = if self.tiled { width / per_copy } else { 1 };
         assert_eq!(
-            tensor.shape().dims::<D>()[self.dim],
-            total,
+            width,
+            per_copy * copies,
             "Segmented: the parameter's dim-{} width does not match the projection spec",
             self.dim
         );
+        let n_blocks = self.optims.len() * copies;
+        let widths: Vec<usize> = self.widths.iter().copied().cycle().take(n_blocks).collect();
 
-        let tensors = tensor.split_with_sizes(self.widths.clone(), self.dim);
-        let grads = grad.split_with_sizes(self.widths.clone(), self.dim);
+        let tensors = tensor.split_with_sizes(widths.clone(), self.dim);
+        let grads = grad.split_with_sizes(widths, self.dim);
 
         // A missing (first-step) state, or one whose length drifted from the
         // spec, restarts every block from scratch rather than mis-pairing them.
         let mut prev: Vec<Option<BlockState<D>>> = match state {
-            Some(s) if s.blocks.len() == self.optims.len() => {
-                s.blocks.into_iter().map(Some).collect()
-            }
-            _ => (0..self.optims.len()).map(|_| None).collect(),
+            Some(s) if s.blocks.len() == n_blocks => s.blocks.into_iter().map(Some).collect(),
+            _ => (0..n_blocks).map(|_| None).collect(),
         };
 
-        let mut out = Vec::with_capacity(self.optims.len());
-        let mut blocks = Vec::with_capacity(self.optims.len());
+        let mut out = Vec::with_capacity(n_blocks);
+        let mut blocks = Vec::with_capacity(n_blocks);
 
-        for (i, optim) in self.optims.iter().enumerate() {
+        for (i, optim) in self.optims.iter().cycle().take(n_blocks).enumerate() {
             let (t, g) = (tensors[i].clone(), grads[i].clone());
             match optim {
                 BlockOptim::Muon(muon) => {
@@ -151,7 +155,7 @@ impl Optimizer for Segmented {
         }
 
         // Both inner optimizers always return a state, so `blocks` is complete.
-        assert_eq!(blocks.len(), self.optims.len());
+        assert_eq!(blocks.len(), n_blocks);
         (Tensor::cat(out, self.dim), Some(SegmentedState { blocks }))
     }
 

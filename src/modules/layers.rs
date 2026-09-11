@@ -1,6 +1,6 @@
-use crate::modules::{GatedMlpConfig, Residuals, ResidualsConfig, RmsNormConfig};
+use crate::modules::{GatedMlpConfig, LayerUntied, Residuals, ResidualsConfig};
 use crate::prelude::*;
-use crate::utils::{GradHorizon, Schedule};
+use crate::utils::{Applications, GradHorizon, Schedule};
 use crate::utils::class::{
     assert_full_len_known, class_chunk_plan, class_emb_table, class_emb_width,
     class_marker_output_indices, class_prime_plan, class_row, init_class_emb,
@@ -157,6 +157,12 @@ where
         }
     }
 
+    /// Which application of its real layer each virtual layer is — the copy an
+    /// untied parameter is read at (see [`Layer::application`]).
+    fn applications(&self) -> Applications {
+        stack_applications(&self.n_virtual_layers, self.n_real_layers)
+    }
+
     /// Which of the `n` virtual layers back-propagate, per
     /// [`Self::grad_horizon`]: a `false` layer runs on the inner backend, a
     /// `true` one builds the graph. `None` ⇒ no cut anywhere.
@@ -185,6 +191,17 @@ where
             .grad_horizon
             .as_ref()?
             .tracked(schedule, n, self.n_real_layers);
+        // An untied copy is read by its own application alone, so one left
+        // untracked would never train.
+        for (i, _) in tracked.iter().enumerate().filter(|(_, t)| !**t) {
+            let real = self.real_idx(i);
+            assert!(
+                !self.real_layers[real].has_untied(),
+                "grad_horizon leaves virtual layer {i} untracked, and its real layer {real} unties \
+                 parameters across its applications: that application's own copies would never \
+                 train — track every application of a layer with untied weights",
+            );
+        }
         // An all-tracked mask *is* the untouched stack, so take no cut at all —
         // which is what keeps a horizon deeper than every real layer's
         // application count a no-op down to the graph it builds.
@@ -235,8 +252,10 @@ where
         // The sequence the layers see is longer by the stack's own latents; each
         // layer then lengthens it further for the ones above it.
         let mut full = class.full_len.map(|l| l + self.class_latents.len());
-        let caches =
-            caches.unwrap_or_else(|| self.real_layers[0].block.zero_caches_3d(&x, n));
+        // Sized from a view: an untied block's own tensors hold every
+        // application's copy.
+        let caches = caches
+            .unwrap_or_else(|| self.real_layers[0].application(0).block.zero_caches_3d(&x, n));
         assert_eq!(caches.slot_count(), n, "one cache per virtual layer");
 
         // An untracked layer must build no graph, and in Burn that means running
@@ -281,6 +300,7 @@ where
         // first, the early layers append the rest); Standard threads the single
         // tensor `x` directly (streams stays `None`).
         let mut streams = self.multi_gate_streams_seed(&x);
+        let apps = self.applications();
 
         // `i` is the virtual-layer index (schedule, cut boundary, residual
         // flags); the slot lookup is incidental, and the bound stays `n` so a
@@ -332,7 +352,8 @@ where
                 Some(d) if !track => d,
                 _ => self,
             };
-            let layer = &this.real_layers[real];
+            // As its own application sees it, should the layer untie anything.
+            let layer = this.real_layers[real].application(apps.index[i]);
             // The slot rides the same hop as the layer it belongs to: a cache
             // handed in from a tracked segment comes down with an untracked one
             // (Burn cannot mix backends within an op) and goes back up below.
@@ -484,8 +505,8 @@ where
     ) -> (Tensor<2>, M::Caches) {
         let [batch, d_model] = x.dims();
         let n = self.n_virtual_count();
-        let caches =
-            caches.unwrap_or_else(|| self.real_layers[0].block.zero_caches_2d(&x, n));
+        let caches = caches
+            .unwrap_or_else(|| self.real_layers[0].application(0).block.zero_caches_2d(&x, n));
         assert_eq!(caches.slot_count(), n, "one cache per virtual layer");
         if let Some(c) = class.as_deref_mut() {
             c.fit(n);
@@ -556,6 +577,7 @@ where
     ) -> Vec<Tensor<2>> {
         let n = slots.len();
         let has_mg = matches!(&self.residuals, Residuals::MultiGate(_));
+        let apps = self.applications();
 
         // The same mask `forward` takes, layer for layer: an untracked virtual
         // layer runs on an inner-backend copy of the stack, so it builds no graph
@@ -652,7 +674,8 @@ where
                 Some(d) if !track => d,
                 _ => self,
             };
-            let layer = &this.real_layers[real];
+            // As its own application sees it, should the layer untie anything.
+            let layer = this.real_layers[real].application(apps.index[pos]);
             let mg = match &this.residuals {
                 Residuals::Standard(_noop) => None,
                 Residuals::MultiGate(mg) => Some(mg),
@@ -897,6 +920,7 @@ where
             // The call started cacheless and only some layers ran; the others
             // hold the zero state they started from.
             let zeros = self.real_layers[0]
+                .application(0)
                 .block
                 .zero_caches_2d(sample, n)
                 .into_slots();
@@ -910,6 +934,29 @@ where
     }
 
 
+}
+
+impl<M: Block> Layers<M> {
+    /// Reset every real layer's untied parameters to copies of their first
+    /// application ([`Layer::retie`]) — what a post-build
+    /// [`InitPolicy`], which redraws a 2-D `weight`
+    /// element by element, leaves to undo.
+    pub fn retie(mut self) -> Self {
+        self.real_layers = self.real_layers.into_iter().map(Layer::retie).collect();
+        self
+    }
+}
+
+/// The [`Applications`] of a stack of `n_real_layers` under this optional
+/// virtual scheduling (none ⇒ each real layer applied once).
+fn stack_applications(
+    n_virtual_layers: &Option<(usize, Schedule)>,
+    n_real_layers: usize,
+) -> Applications {
+    match n_virtual_layers {
+        Some((n, schedule)) => schedule.applications(*n, n_real_layers),
+        None => Applications::new(0..n_real_layers, n_real_layers),
+    }
 }
 
 /// Plain (non-serde) factory for [`Layers`]. A family's serializable surface is
@@ -936,6 +983,9 @@ pub struct LayersBuilder<C> {
     /// Back-propagate only some of the (virtual) layers (see
     /// [`Layers::grad_horizon`]). `None` ⇒ track the whole stack.
     pub grad_horizon: Option<GradHorizon>,
+    /// The layer's own parameters held once per application instead of tied
+    /// (see [`Layer::application`]); the block's are its config's to name.
+    pub untied: Vec<LayerUntied>,
 }
 
 impl<C: BlockConfig> LayersBuilder<C> {
@@ -951,7 +1001,15 @@ impl<C: BlockConfig> LayersBuilder<C> {
             residuals: ResidualsConfig::Standard,
             mlp: None,
             grad_horizon: None,
+            untied: Vec::new(),
         }
+    }
+
+    /// Hold these layer parameters once per application (see
+    /// [`Layer::application`]). Empty ties them all.
+    pub fn with_untied(mut self, untied: Vec<LayerUntied>) -> Self {
+        self.untied = untied;
+        self
     }
 
     /// Back-propagate only some of the (virtual) layers (see
@@ -1006,18 +1064,20 @@ impl<C: BlockConfig> LayersBuilder<C> {
             .as_ref()
             .map(|(l, _)| *l)
             .unwrap_or(self.n_real_layers);
-        let real_layers = (0..self.n_real_layers)
-            .map(|_| Layer {
-                norm: RmsNormConfig::new(d_model).init(device),
-                block: self.block.init_block(device),
-                // `norm2` exists exactly when `mlp` does — `Layer` relies on it.
-                norm2: self
-                    .mlp
-                    .as_ref()
-                    .map(|_| RmsNormConfig::new(d_model).init(device)),
-                mlp: self.mlp.as_ref().map(|mlp| mlp.init(device)),
-                class_latents: Vec::new(),
-                class_latents_emb: None,
+        // Each real layer holds its untied copies for as many applications as
+        // the schedule gives it.
+        let real_layers = stack_applications(&self.n_virtual_layers, self.n_real_layers)
+            .count
+            .into_iter()
+            .map(|n_applications| {
+                Layer::init(
+                    self.block.init_block(n_applications, device),
+                    d_model,
+                    self.mlp.as_ref(),
+                    &self.untied,
+                    n_applications,
+                    device,
+                )
             })
             .collect();
         Layers {

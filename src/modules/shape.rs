@@ -17,7 +17,7 @@
 //!
 //! ```text
 //!   NetworkShape   depth, virtual layers, grad horizon, residuals, class
-//!                  latents, the SwiGLU MLP, the global init policy
+//!                  latents, the SwiGLU MLP, untied norms, the global init policy
 //!   LatentShape    + input_size / output_size / final_norm / class tokens
 //!   VocabShape     + vocab_size / vocab padding / tied LM head
 //!   BidiShape      the bidirectional counterpart (pairs, per-pair merges)
@@ -36,8 +36,9 @@
 //! asked for.
 
 use crate::modules::{
-    BidiLayers, BidiLayersBuilder, BlockConfig, GatedMlpConfig, LatentNetwork,
-    LatentNetworkBuilder, Layers, LayersBuilder, OutputMergeConfig, ResidualsConfig, VocabNetwork,
+    BidiLayers, BidiLayersBuilder, Block, BlockConfig, GatedMlpConfig, LatentNetwork,
+    LatentNetworkBuilder, LayerUntied, Layers, LayersBuilder, OutputMergeConfig, ResidualsConfig,
+    VocabNetwork,
     VocabNetworkBuilder,
 };
 use crate::utils::{BidiSchedule, ClassLatent, ClassToken, GradHorizon, InitPolicy, Schedule};
@@ -95,6 +96,13 @@ pub struct NetworkShape {
     #[config(default = "None")]
     pub mlp: Option<GatedMlpConfig>,
 
+    /// The layer's own parameters held once per application of its real layer
+    /// instead of tied across them — the block's are its config's to name. Only
+    /// virtual layers give a real layer more than one application. See
+    /// [`crate::utils::untied`].
+    #[config(default = "Vec::new()")]
+    pub untied: Vec<LayerUntied>,
+
     /// Optional post-build re-initialisation of the whole network (the
     /// reference `initializer_range` + residual rescale). `None` ⇒ keep Burn's
     /// per-module defaults. See [`InitPolicy`].
@@ -149,11 +157,22 @@ impl NetworkShape {
             .with_ignore_last_residual(self.ignore_last_residual)
             .with_class_latents(self.class_latents.clone())
             .with_mlp(self.mlp.clone())
+            .with_untied(self.untied.clone())
     }
 
     /// Allocate the bare layer stack on `device`, with the init policy applied.
     pub fn init<C: BlockConfig>(&self, block: C, device: &Device) -> Layers<C::Block> {
-        self.apply_init(self.layers(block).init(device))
+        self.retie(self.apply_init(self.layers(block).init(device)))
+    }
+
+    /// Tie a stack's untied copies back together after [`Self::apply_init`],
+    /// whose redraw of every 2-D `weight` would start each application from a
+    /// draw of its own (see [`Layers::retie`]). A no-op without an init policy.
+    pub fn retie<M: Block>(&self, layers: Layers<M>) -> Layers<M> {
+        match self.init {
+            Some(_) => layers.retie(),
+            None => layers,
+        }
     }
 
     /// The [`MuonPlan`](crate::optim::MuonPlan) for a stack of this shape at
@@ -205,7 +224,9 @@ impl LatentShape {
 
     /// Allocate the network on `device`, with the stack's init policy applied.
     pub fn init<C: BlockConfig>(&self, block: C, device: &Device) -> LatentNetwork<C::Block> {
-        self.stack.apply_init(self.build(block).init(device))
+        let mut net = self.stack.apply_init(self.build(block).init(device));
+        net.layers = self.stack.retie(net.layers);
+        net
     }
 }
 
@@ -241,7 +262,9 @@ impl VocabShape {
 
     /// Allocate the model on `device`, with the stack's init policy applied.
     pub fn init<C: BlockConfig>(&self, block: C, device: &Device) -> VocabNetwork<C::Block> {
-        self.stack.apply_init(self.build(block).init(device))
+        let mut net = self.stack.apply_init(self.build(block).init(device));
+        net.layers = self.stack.retie(net.layers);
+        net
     }
 }
 
@@ -275,6 +298,10 @@ pub struct BidiShape {
     /// Inter-pair residual scheme.
     #[config(default = "ResidualsConfig::Standard")]
     pub residuals: ResidualsConfig,
+    /// The layers' own parameters held once per application instead of tied
+    /// (see [`NetworkShape::untied`]).
+    #[config(default = "Vec::new()")]
+    pub untied: Vec<LayerUntied>,
 }
 
 impl BidiShape {
@@ -289,6 +316,7 @@ impl BidiShape {
             outputs_merge: self.outputs_merge.clone(),
             class_latents: self.class_latents.clone(),
             residuals: self.residuals.clone(),
+            untied: self.untied.clone(),
         }
     }
 

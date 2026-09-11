@@ -11,10 +11,13 @@
 
 use super::*;
 use crate::modules::bidi::{BidiLayersBuilder, OutputMergeConfig};
-use crate::modules::{LatentNetworkBuilder, LayersBuilder, ResidualsConfig};
+use crate::modules::{
+    GatedMlpConfig, LatentNetworkBuilder, LayerUntied, Layers, LayersBuilder, ResidualsConfig,
+};
 use crate::utils::class::init_class_emb;
 use crate::utils::test_helpers::max_abs_diff;
-use crate::utils::{ClassLatent, ClassToken, GradHorizon, Schedule};
+use crate::utils::{BidiSchedule, ClassLatent, ClassToken, GradHorizon, Schedule};
+use burn::module::{ModuleMapper, Param};
 use burn::tensor::Distribution;
 
 const D_MODEL: usize = 8;
@@ -398,6 +401,7 @@ fn bidi_virtual_pairs_share_the_real_pair_merge() {
         outputs_merge: vec![OutputMergeConfig::CatLinear; 2],
         class_latents: Vec::new(),
         residuals: ResidualsConfig::Standard,
+        untied: Vec::new(),
     }
     .init(&device);
 
@@ -478,6 +482,204 @@ fn class_latents_receive_gradients() {
 }
 
 // ---------------------------------------------------------------------------
+// Untied parameters
+// ---------------------------------------------------------------------------
+
+/// Two real layers over five virtual ones (`Cyclic`: three applications and
+/// two), untying everything that can be — both pre-norms and both of
+/// `RefBlock`'s untiable tensors.
+fn untied_builder() -> LayersBuilder<RefBlockConfig> {
+    LayersBuilder {
+        n_virtual_layers: Some((5, Schedule::Cyclic)),
+        block: block_config().with_untied(vec![RefUntied::Decay, RefUntied::GateProj]),
+        mlp: Some(GatedMlpConfig::new(D_MODEL, D_MODEL * 2)),
+        untied: vec![LayerUntied::Norm, LayerUntied::Norm2],
+        ..layers_builder(2)
+    }
+}
+
+/// `layers` with every real layer replaced by its application-0 view: the tied
+/// stack an untied one starts as.
+fn tied_view(layers: &Layers<RefBlock>) -> Layers<RefBlock> {
+    Layers {
+        real_layers: layers.real_layers.iter().map(|l| l.application(0).into_owned()).collect(),
+        ..layers.clone()
+    }
+}
+
+/// Adds noise to every parameter, so an untied stack's copies stop agreeing.
+struct Jitter;
+
+impl ModuleMapper for Jitter {
+    fn map_float<const D: usize>(&mut self, param: Param<Tensor<D>>) -> Param<Tensor<D>> {
+        param.map(|t| {
+            let noise = Tensor::random(t.shape(), Distribution::Normal(0.0, 0.5), &t.device());
+            t + noise
+        })
+    }
+}
+
+/// An untied stack is the *unshared* stack of its application views: virtual
+/// layer `i` runs application `index[i]` of its real layer, in `forward` and
+/// `step` alike. The copies are jittered apart first, so reading the wrong one
+/// shows.
+#[test]
+fn an_untied_stack_is_the_unshared_stack_of_its_application_views() {
+    let device: Device = Default::default();
+    let layers = untied_builder().init(&device).map(&mut Jitter);
+    let n = layers.n_virtual_count();
+    let apps = Schedule::Cyclic.applications(n, 2);
+    let unshared = Layers {
+        n_real_layers: n,
+        n_virtual_layers: None,
+        real_layers: (0..n)
+            .map(|i| {
+                let real = Schedule::Cyclic.real_idx(i, n, 2);
+                layers.real_layers[real].application(apps.index[i]).into_owned()
+            })
+            .collect(),
+        ..layers.clone()
+    };
+    let x = randn3(2, 4, &device);
+
+    let (y, _) = layers.forward(x.clone(), None, (), None);
+    let (want, _) = unshared.forward(x.clone(), None, (), None);
+    assert!(max_abs_diff(y.clone(), want) < TOL);
+
+    let mut caches = None;
+    let mut ys = Vec::new();
+    for t in 0..4 {
+        let x_t = x.clone().narrow(1, t, 1).squeeze_dim::<2>(1);
+        let (y_t, c) = layers.step(x_t, caches, None);
+        caches = Some(c);
+        ys.push(y_t.unsqueeze_dim::<3>(1));
+    }
+    assert!(max_abs_diff(y.clone(), Tensor::cat(ys, 1)) < TOL);
+
+    // Both comparisons prove nothing unless the copies really differ.
+    let (y_tied, _) = tied_view(&layers).forward(x, None, (), None);
+    assert!(max_abs_diff(y, y_tied) > TOL);
+}
+
+/// Every copy of `g` (the untied gradient, copies along `axis`) is non-zero,
+/// and together they sum to copy 0 of `g_tied` — the gradient the tied weight
+/// collects, which lands on copy 0 alone.
+fn assert_copies_split<const D: usize>(g: Tensor<D>, g_tied: Tensor<D>, axis: usize, n: usize) {
+    let copies = g.chunk(n, axis);
+    for copy in &copies {
+        let peak = copy.clone().abs().max().into_scalar::<f32>();
+        assert!(peak > 0.0, "every application trains its own copy");
+    }
+    let sum = copies.into_iter().reduce(|a, b| a + b).expect("n >= 1");
+    let len = sum.dims()[axis];
+    assert!(max_abs_diff(sum, g_tied.narrow(axis, 0, len)) < TOL);
+}
+
+/// Untied copies start as the tied weight: the untied stack computes exactly
+/// its application-0 view, and the tied weight's gradient is the sum of its
+/// copies' — the copies part under training alone.
+#[test]
+fn untied_copies_start_tied_and_split_the_tied_gradient() {
+    let device = Device::default().autodiff();
+    let layers = untied_builder().init(&device);
+    let tied = tied_view(&layers);
+    let x = randn3(2, 4, &device);
+
+    let (y, _) = layers.forward(x.clone(), None, (), None);
+    let (y_tied, _) = tied.forward(x, None, (), None);
+    assert!(max_abs_diff(y.clone(), y_tied.clone()) < TOL);
+
+    // A view reads the stored parameters, so both gradients land on them.
+    let grads = y.sum().backward();
+    let grads_tied = y_tied.sum().backward();
+    for layer in &layers.real_layers {
+        let n = layer.n_applications;
+        let norm2 = layer.norm2.as_ref().expect("the builder sets an mlp");
+        for (param, axis) in [
+            (&layer.norm.gamma, 0),
+            (&norm2.gamma, 0),
+            (&layer.block.decay_raw, 0),
+        ] {
+            let g = param.val().grad(&grads).expect("untied gradient");
+            let g_tied = param.val().grad(&grads_tied).expect("tied gradient");
+            assert_copies_split(g, g_tied, axis, n);
+        }
+        let w = &layer.block.gate_proj.weight;
+        let g = w.val().grad(&grads).expect("untied gradient");
+        let g_tied = w.val().grad(&grads_tied).expect("tied gradient");
+        assert_copies_split(g, g_tied, 1, n);
+    }
+}
+
+/// A copy is read by its own application alone, so a cut through a layer that
+/// unties anything would leave copies that never train — it panics instead.
+#[test]
+#[should_panic(expected = "unties parameters across its applications")]
+fn grad_horizon_refuses_to_cut_an_untied_layer() {
+    let device = Device::default().autodiff();
+    let layers = LayersBuilder {
+        grad_horizon: Some(GradHorizon::Depth(1)),
+        ..untied_builder()
+    }
+    .init(&device);
+    let _ = layers.forward(randn3(1, 3, &device), None, (), None);
+}
+
+/// A post-build `InitPolicy` redraws every 2-D `weight` element by element; the
+/// shape ties an untied one back to copies of its first application.
+#[test]
+fn an_init_policy_keeps_untied_copies_tied() {
+    use crate::modules::NetworkShape;
+    use crate::utils::InitPolicy;
+
+    let device: Device = Default::default();
+    let layers = NetworkShape::new(1)
+        .with_n_virtual_layers(Some((3, Schedule::Cyclic)))
+        .with_init(Some(InitPolicy::new()))
+        .init(block_config().with_untied(vec![RefUntied::GateProj]), &device);
+    let w = layers.real_layers[0].block.gate_proj.weight.val();
+    assert_eq!(w.dims(), [D_MODEL, 3 * D_MODEL]);
+    let copies = w.chunk(3, 1);
+    for copy in &copies[1..] {
+        assert_eq!(max_abs_diff(copies[0].clone(), copy.clone()), 0.0);
+    }
+}
+
+/// Both directions of a bidirectional pair are applications of the real layer
+/// they index: every copy an untied bidi stack holds is read, and trains.
+#[test]
+fn bidi_untied_copies_each_train() {
+    let device = Device::default().autodiff();
+    let layers = BidiLayersBuilder {
+        n_real_layers: 2,
+        n_virtual_layers: Some((6, BidiSchedule::SymmetricCyclic)),
+        block: block_config().with_untied(vec![RefUntied::Decay]),
+        ignore_first_residual: false,
+        ignore_last_residual: false,
+        outputs_merge: vec![OutputMergeConfig::Mean],
+        class_latents: Vec::new(),
+        residuals: ResidualsConfig::Standard,
+        untied: vec![LayerUntied::Norm],
+    }
+    .init(&device);
+    // `SymmetricCyclic` runs 0 0 1 1 0 0.
+    let counts: Vec<_> = layers.real_layers.iter().map(|l| l.n_applications).collect();
+    assert_eq!(counts, vec![4, 2]);
+
+    let (y, _) = layers.forward(randn3(2, 4, &device), None, (), None);
+    let grads = y.sum().backward();
+    for layer in &layers.real_layers {
+        for param in [&layer.norm.gamma, &layer.block.decay_raw] {
+            let g = param.val().grad(&grads).expect("untied gradient");
+            for copy in g.chunk(layer.n_applications, 0) {
+                let peak = copy.abs().max().into_scalar::<f32>();
+                assert!(peak > 0.0, "every application trains its own copy");
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Muon plan
 // ---------------------------------------------------------------------------
 
@@ -508,4 +710,41 @@ fn muon_plan_matches_only_existing_rank_2_weights() {
             "the rank-1 decay stays on the fallback optimizer: {line}",
         );
     }
+}
+
+/// An untied projection is one matrix per application: Muon orthogonalises each
+/// copy on its own, and the plan hands the untied weight to that stepping.
+#[cfg(feature = "optim")]
+#[test]
+fn muon_steps_an_untied_projection_one_copy_at_a_time() {
+    use crate::optim::{MuonPlan, ProjSpec, Segmented, muon_config};
+    use burn::optim::{AdamWConfig, Optimizer};
+
+    let device: Device = Default::default();
+    let n = 3;
+    let spec = ProjSpec::block_whole("gate_proj.weight", D_MODEL).tiled();
+    let muon = muon_config(0.0).build();
+    let segmented = Segmented::new(&spec, muon.clone(), AdamWConfig::new().build(), 1);
+    let w = Tensor::<2>::random([D_MODEL, n * D_MODEL], Distribution::Normal(0.0, 1.0), &device);
+    let g = Tensor::<2>::random([D_MODEL, n * D_MODEL], Distribution::Normal(0.0, 1.0), &device);
+    let (stepped, _) = segmented.step(1e-2, w.clone(), g.clone(), None);
+    for ((got, w), g) in stepped.chunk(n, 1).into_iter().zip(w.chunk(n, 1)).zip(g.chunk(n, 1)) {
+        let (want, _) = muon.step(1e-2, w, g, None);
+        assert!(max_abs_diff(got, want) < TOL);
+    }
+
+    let config = block_config().with_untied(vec![RefUntied::GateProj]);
+    let layers = LayersBuilder {
+        n_virtual_layers: Some((n, Schedule::Cyclic)),
+        block: config.clone(),
+        ..layers_builder(1)
+    }
+    .init(&device);
+    let report = MuonPlan::new(BlockConfig::muon_projections(&config)).describe(&layers);
+    assert!(
+        report
+            .lines()
+            .any(|l| l.contains("gate_proj.weight") && l.contains("muon[all:8]×3")),
+        "{report}",
+    );
 }

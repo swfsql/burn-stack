@@ -68,7 +68,7 @@ pub mod utils;
 pub mod prelude {
     pub use crate::modules::{
         BidiLayerPair, BidiLayers, Block, BlockConfig, CacheStack, GatedMlp, GatedMlpConfig,
-        LatentNetwork, Layer, Layers, LayersBuilder, MultiGateResidualConfig, OutputMerge,
+        LatentNetwork, Layer, LayerUntied, Layers, LayersBuilder, MultiGateResidualConfig, OutputMerge,
         OutputMergeConfig, Residuals, ResidualsConfig, RmsNorm, RmsNormConfig, VocabNetwork,
     };
     pub use crate::utils::{

@@ -56,7 +56,7 @@ pub use norm::rms_score::{normed_score, rms_denom, score_scale};
 
 pub use bidi::{BidiLayerPair, BidiLayers, BidiLayersBuilder, OutputMerge, OutputMergeConfig};
 pub use cache::CacheStack;
-pub use layer::Layer;
+pub use layer::{Layer, LayerUntied};
 pub use layers::{Layers, LayersBuilder};
 pub use multi_gate::{
     MultiGate, MultiGateResidual, MultiGateResidualConfig, Residuals, ResidualsConfig,
@@ -103,6 +103,15 @@ pub trait Block: Module + burn::module::ModuleDisplay + burn::module::AutodiffMo
     fn zero_caches_3d(&self, x: &Tensor<3>, n_virtual: usize) -> Self::Caches;
     /// Build `n_virtual` zero caches sized for a `[batch, d_model]` input.
     fn zero_caches_2d(&self, x: &Tensor<2>, n_virtual: usize) -> Self::Caches;
+
+    /// The parameters this block stores **once per application** of its real
+    /// layer rather than once, each with the axis its copies are laid along —
+    /// empty when its config unties nothing. The [`BlockConfig`] decides which
+    /// they are and tiles them; the containers run the block only through
+    /// [`Layer::application`], which narrows each one to the running
+    /// application's copy (and sizes the zero caches from that view too). See
+    /// [`crate::utils::untied`].
+    fn untied_params(&self) -> Vec<crate::utils::UntiedParam>;
 }
 
 /// A block *config* that knows its `d_model` and how to build its [`Block`].
@@ -112,8 +121,11 @@ pub trait BlockConfig: Config {
     type Block: Block;
     /// Model width, used to size each layer's pre-norm.
     fn d_model(&self) -> usize;
-    /// Allocate and initialise the block on `device`.
-    fn init_block(&self, device: &Device) -> Self::Block;
+    /// Allocate and initialise the block on `device`, for a real layer applied
+    /// `n_applications` times: every parameter the config unties is
+    /// [tiled](crate::utils::untied::tile) that many times, every other one is
+    /// built once. A config that unties nothing ignores the count.
+    fn init_block(&self, n_applications: usize, device: &Device) -> Self::Block;
 
     /// The block's 2-D weights Muon may own, and where their fused columns
     /// split. See [`crate::optim`] for what is (and is not) listed.

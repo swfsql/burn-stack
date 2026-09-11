@@ -36,12 +36,13 @@ impl Block for MyBlock {
         -> (Tensor<2>, MyCache) { … }  // recurrent: decode
     fn zero_caches_3d(&self, x: &Tensor<3>, n: usize) -> MyCaches { … }
     fn zero_caches_2d(&self, x: &Tensor<2>, n: usize) -> MyCaches { … }
+    fn untied_params(&self) -> Vec<UntiedParam> { … } // empty ⇒ all tied
 }
 
 impl BlockConfig for MyBlockConfig {
     type Block = MyBlock;
     fn d_model(&self) -> usize { … }
-    fn init_block(&self, device: &Device) -> MyBlock { … }
+    fn init_block(&self, n_applications: usize, device: &Device) -> MyBlock { … }
     fn muon_projections(&self) -> Vec<ProjSpec> { … }   // feature `optim`
 }
 ```

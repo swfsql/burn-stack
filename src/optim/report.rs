@@ -65,7 +65,9 @@ impl MuonPlan {
                 Some(spec) => {
                     let muon_width: usize =
                         spec.segments.iter().filter(|s| s.muon).map(|s| s.width).sum();
-                    on_muon += muon_width * row.dims[0];
+                    // An untied weight holds one copy of the segments per application.
+                    let copies = if spec.tiled { row.dims[1] / spec.width() } else { 1 };
+                    on_muon += muon_width * copies * row.dims[0];
                     let segments = spec
                         .segments
                         .iter()
@@ -75,7 +77,8 @@ impl MuonPlan {
                         })
                         .collect::<Vec<_>>()
                         .join(" ");
-                    format!("muon[{segments}]")
+                    let tiling = if spec.tiled { format!("×{copies}") } else { String::new() };
+                    format!("muon[{segments}]{tiling}")
                 }
             };
 

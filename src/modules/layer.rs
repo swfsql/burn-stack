@@ -4,9 +4,10 @@ use crate::utils::class::{
     assert_full_len_known, class_chunk_plan, class_emb_width, class_prime_plan, class_row,
     insert_class_markers,
 };
-use crate::utils::{ClassCursor, ClassLatent};
+use crate::utils::{ClassCursor, ClassLatent, UntiedParam};
 use burn::module::Param;
 use burn::prelude::*;
+use std::borrow::Cow;
 
 /// A single Pre-LN block wrapper computing `M(RMSNorm(x))` — the residual is
 /// **not** applied here. The enclosing [`Layers`] owns
@@ -38,6 +39,12 @@ use burn::prelude::*;
 /// sees the same lengthened sequence; [`Self::prime`] steps the ones waiting for
 /// the next token *without* that token. They are independent of any class
 /// latents on the enclosing [`Layers`].
+///
+/// Built for a real layer applied several times, it may **untie** parameters —
+/// its [`LayerUntied`] pre-norms and its block's ([`Block::untied_params`]) —
+/// holding one copy per application. A container runs application `k` as
+/// [`Self::application`]`(k)`, the layer that application sees; every other
+/// method acts on the layer it is called on.
 #[derive(Module, Debug)]
 pub struct Layer<M: Module> {
     /// Pre-norm applied before the inner block.
@@ -55,9 +62,115 @@ pub struct Layer<M: Module> {
     pub class_latents: Vec<ClassLatent>,
     /// The class-latent embeddings, `[num_class_latents, d_model]` (`None` ⇒ none).
     pub class_latents_emb: Option<Param<Tensor<2>>>,
+    /// The pre-norms held once per application ([`LayerUntied`]); empty ⇒ both
+    /// tied.
+    #[module(skip)]
+    pub untied: Vec<LayerUntied>,
+    /// How many applications the untied parameters — the layer's and its
+    /// block's — hold a copy for: `1` for a layer applied once, and for every
+    /// [`Self::application`] view.
+    #[module(skip)]
+    pub n_applications: usize,
+}
+
+/// A [`Layer`] parameter that may be **untied**: held once per application of
+/// its real layer (see [`crate::utils::untied`]). The block's own are its
+/// config's to name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum LayerUntied {
+    /// The mixer's pre-norm gain ([`Layer::norm`]).
+    Norm,
+    /// The feed-forward's pre-norm gain ([`Layer::norm2`]); needs [`Layer::mlp`].
+    Norm2,
 }
 
 impl<M: Block> Layer<M> {
+    /// A fresh layer around `block`, for a real layer applied `n_applications`
+    /// times: the pre-norms `untied` names get one gain per application.
+    pub(crate) fn init(
+        block: M,
+        d_model: usize,
+        mlp: Option<&GatedMlpConfig>,
+        untied: &[LayerUntied],
+        n_applications: usize,
+        device: &Device,
+    ) -> Self {
+        assert!(
+            mlp.is_some() || !untied.contains(&LayerUntied::Norm2),
+            "LayerUntied::Norm2 unties the feed-forward's pre-norm, and this layer has no feed-forward",
+        );
+        let norm = |part: LayerUntied| {
+            let RmsNorm { gamma } = RmsNormConfig::new(d_model).init(device);
+            let gamma = match untied.contains(&part) {
+                true => crate::utils::untied::tile(gamma, 0, n_applications),
+                false => gamma,
+            };
+            RmsNorm { gamma }
+        };
+        Layer {
+            norm: norm(LayerUntied::Norm),
+            block,
+            // `norm2` exists exactly when `mlp` does — `Layer` relies on it.
+            norm2: mlp.map(|_| norm(LayerUntied::Norm2)),
+            mlp: mlp.map(|mlp| mlp.init(device)),
+            class_latents: Vec::new(),
+            class_latents_emb: None,
+            untied: untied.to_vec(),
+            n_applications,
+        }
+    }
+
+    /// Every parameter of this layer held once per application: its untied
+    /// pre-norms, then its block's ([`Block::untied_params`]).
+    pub fn untied_params(&self) -> Vec<UntiedParam> {
+        let own = self.untied.iter().map(|part| match part {
+            LayerUntied::Norm => UntiedParam::new(&self.norm.gamma, 0),
+            LayerUntied::Norm2 => {
+                let norm2 = self.norm2.as_ref().expect("`Norm2` is untied only alongside an `mlp`");
+                UntiedParam::new(&norm2.gamma, 0)
+            }
+        });
+        own.chain(self.block.untied_params()).collect()
+    }
+
+    /// Whether any of this layer's weights differ between its applications.
+    pub fn has_untied(&self) -> bool {
+        self.n_applications > 1 && !self.untied_params().is_empty()
+    }
+
+    /// This layer as its `application`-th application sees it: each untied
+    /// parameter narrowed to that application's copy, everything else shared
+    /// (see [`crate::utils::untied`]). The view is a plain tied layer
+    /// (`n_applications = 1`).
+    ///
+    /// Borrows the layer itself when nothing differs between its applications —
+    /// so a layer built for a single one reads that copy at any application.
+    ///
+    /// # Panics
+    /// An `application` past the count the layer was built for, if it unties
+    /// anything.
+    pub fn application(&self, application: usize) -> Cow<'_, Self> {
+        if self.n_applications == 1 {
+            return Cow::Borrowed(self);
+        }
+        let params = self.untied_params();
+        if params.is_empty() {
+            return Cow::Borrowed(self);
+        }
+        let mut view = crate::utils::untied::view(self, &params, application, self.n_applications);
+        view.n_applications = 1;
+        Cow::Owned(view)
+    }
+
+    /// Reset every untied parameter to copies of its first application: the
+    /// copies [`BlockConfig::init_block`] starts from, over a layer something has
+    /// since redrawn (see [`crate::utils::untied::retie`]).
+    pub fn retie(self) -> Self {
+        let params = self.untied_params();
+        let n_applications = self.n_applications;
+        crate::utils::untied::retie(self, &params, n_applications)
+    }
+
     /// Splice this layer's class latents into the chunk `x` (no-op when there
     /// are none), advancing `class` past it.
     ///

@@ -56,7 +56,8 @@ src/
 ├─ modules/          composition + shared NN modules
 │  ├─ mod.rs         Block / BlockConfig traits (the whole plug-in surface)
 │  ├─ layer.rs       Layer<M>: Pre-LN block M(RMSNorm(·)) + optional norm2/mlp;
-│  │                 returns the layer's total delta, outer residual by Layers
+│  │                 returns the layer's total delta, outer residual by Layers;
+│  │                 application(k): the view application k runs (LayerUntied)
 │  ├─ layers.rs      Layers<M>: virtual-layer stack over real weight sets;
 │  │                 grad_horizon truncates BPTT to a tracked-layer mask
 │  │                 (forward/step/prime cut alike)
@@ -99,8 +100,9 @@ src/
 │                    (one prime/prefill/decode sampler over VocabNetwork<M>)
 ├─ optim/            Muon parameter groups (feature `optim`); allowlist, not denylist
 │  ├─ mod.rs         MuonPlan: specs → ModuleOptimizer (AdamW fallback + Muon groups)
-│  ├─ spec.rs        ProjSpec/ProjSegment: fused-weight column seams → ParamGroup;
-│  │                 BLOCK_CONTAINERS = the field names a block is stored under
+│  ├─ spec.rs        ProjSpec/ProjSegment: fused-weight column seams → ParamGroup
+│  │                 (`tiled`: one copy per application); BLOCK_CONTAINERS = the
+│  │                 field names a block is stored under
 │  ├─ segmented.rs   Segmented: one optimizer per column block of a fused weight
 │  └─ report.rs      MuonPlan::describe(&module): per-param optimizer assignment
 └─ utils/            lower-level plumbing
@@ -109,7 +111,9 @@ src/
    │                 ClassCursor(s): offsets + full-length hint, shared by
    │                 forward/step/prime
    ├─ schedule/      Schedule + BidiSchedule (virtual→real index mapping) +
-   │                 GradHorizon (which virtual layers back-propagate)
+   │                 Applications (which application of its real layer each
+   │                 virtual layer is) + GradHorizon (which virtual layers
+   │                 back-propagate)
    ├─ scheduler/     LR schedulers (cosine + warmup, constant)
    ├─ backend_macros.rs  impl_backend_ext_for_burn_backends! /
    │                     decl_autodiff_backend_ext! — per-backend BackendExt impls
@@ -119,7 +123,9 @@ src/
    │                     N(0,std) on 2-D weights, zero biases, optional residual
    │                     rescale; leaves a block's bespoke params alone
    ├─ fprim.rs           F<B,D>: rank-tagged FloatTensor-primitive wrapper
-   └─ test_helpers.rs    max_abs_diff + grad-comparison macros
+   ├─ test_helpers.rs    max_abs_diff + grad-comparison macros
+   └─ untied.rs          UntiedParam + tile/view/retie: a parameter held once per
+                         application, copies side by side along an existing axis
 ```
 
 ---
@@ -131,10 +137,12 @@ src/
 A block family supplies three impls and gets every container for free:
 
 - **`Block`** — `block_forward` (chunked: training + prefill), `block_step`
-  (recurrent: decode), and the zero-cache constructors. Associated types `Cache`, `Caches`,
+  (recurrent: decode), the zero-cache constructors, and `untied_params` (empty
+  when nothing is untied). Associated types `Cache`, `Caches`,
   `Options` (the per-call algorithm/chunk selector; `()` when there is nothing
   to choose).
-- **`BlockConfig`** — `d_model`, `init_block`, `muon_projections`.
+- **`BlockConfig`** — `d_model`, `init_block(n_applications, …)` (tiles what it
+  unties), `muon_projections`.
 - **`CacheStack`** on its `Caches` — slot count, move-in/move-out, and the
   inner-backend hop `grad_horizon` performs.
 
@@ -201,6 +209,14 @@ it. `reference/tests.rs` pins it for `RefBlock`.
   one; only then does gated mixing start. Being a convex mean-pool, it leaves an
   `O(1)` output where the additive skip grows with depth, so a latent head wants
   `final_norm`. Class markers ride along at every level. See the module header.
+- **Untied parameters** (`utils/untied.rs`): a real layer may hold some
+  parameters once per application instead of tied — its `LayerUntied` pre-norms,
+  a block's as its config lists (`Block::untied_params`). Copies tile an existing
+  axis from one draw, so an untied stack starts as the tied one (copy gradients
+  sum to the tied gradient); containers run `Layer::application(k)` (borrowed
+  when nothing differs) and size caches from view 0. A `grad_horizon` cut through
+  an untying layer panics; shapes `retie` after their `InitPolicy`;
+  `ProjSpec::tiled` steps each copy alone.
 
 ---
 
