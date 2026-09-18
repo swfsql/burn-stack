@@ -47,7 +47,8 @@ use crate::examples::cli::AppArgs;
 use crate::examples::tiny_stories::dataset::{
     Split, TinyStoriesBatch, TinyStoriesBatcher, TinyStoriesDataset, VOCAB_SIZE,
 };
-use crate::examples::training::{BatchBudget, TrainingConfig, metric_current};
+use crate::examples::session::{Cadence, Session, TrainingProgress};
+use crate::examples::training::{TrainingConfig, metric_current};
 use crate::utils::ClassCursors;
 use burn::optim::{GradientsParams, ModuleOptimizer};
 use burn::prelude::*;
@@ -199,8 +200,6 @@ pub struct Overrides {
     pub train_stories: Option<usize>,
     /// `--valid-stories <usize>`: stories pulled from the validation split.
     pub valid_stories: Option<usize>,
-    /// `--epochs <usize>`: passes over the corpus.
-    pub epochs: Option<usize>,
     /// `--batch-size <usize>`: windows per optimizer step.
     pub batch_size: Option<usize>,
     /// `--no-muon`: keep the block's hidden weight matrices on AdamW instead of
@@ -220,7 +219,6 @@ impl Overrides {
             no_frontier: pargs.contains("--no-frontier"),
             train_stories: pargs.opt_value_from_str("--train-stories").unwrap(),
             valid_stories: pargs.opt_value_from_str("--valid-stories").unwrap(),
-            epochs: pargs.opt_value_from_str("--epochs").unwrap(),
             batch_size: pargs.opt_value_from_str("--batch-size").unwrap(),
             no_muon: pargs.contains("--no-muon"),
         };
@@ -248,9 +246,6 @@ impl Overrides {
         }
         if let Some(valid_stories) = self.valid_stories {
             config.valid_stories = valid_stories;
-        }
-        if let Some(epochs) = self.epochs {
-            config.training.num_epochs = epochs;
         }
         if let Some(batch_size) = self.batch_size {
             config.training.batch_size = batch_size;
@@ -337,10 +332,12 @@ pub trait LmModel: Sized {
 
 /// Load (downloading once) the train and validation splits and window them into
 /// dataloaders. Training batches must live on `training_device` (to match the
-/// model weights); validation runs on its inner backend.
+/// model weights) and are shuffled from where `progress` resumes (see
+/// [`TrainingProgress::shuffle_seed`]); validation runs on its inner backend.
 pub fn dataloaders(
     config: &TinyStoriesConfig,
     training_device: &Device,
+    progress: &TrainingProgress,
 ) -> (Dataloader, Dataloader) {
     let (seq_len, run_len) = (config.seq_len, config.run_len);
     let batcher = TinyStoriesBatcher::new(seq_len);
@@ -360,7 +357,7 @@ pub fn dataloaders(
     );
     let dataloader_train = DataLoaderBuilder::new(batcher.clone())
         .batch_size(config.training.batch_size)
-        .shuffle(config.training.seed)
+        .shuffle(progress.shuffle_seed(config.training.seed))
         .num_workers(config.training.num_workers)
         .set_device(training_device.clone())
         .build(train_set);
@@ -373,20 +370,26 @@ pub fn dataloaders(
     (dataloader_train, dataloader_valid)
 }
 
-/// Optimizer steps between two checkpoint/validate/sample points. Held in
-/// *steps* rather than dataloader iterations, since a run's window count is the
-/// story's and so differs from batch to batch.
-const CHECKPOINT_STEPS: usize = 300;
+/// The cadence the character LMs default to: checkpoint, run a 10-story
+/// validation and sample a story every 300 steps. Held in *steps* rather than
+/// dataloader iterations, since a run's window count is the story's and so
+/// differs from batch to batch.
+pub const CADENCE: Cadence = Cadence {
+    checkpoint_every: Some(300),
+    valid_every: Some(300),
+    valid_batches: Some(10),
+};
 
-/// Train for a single epoch: walk each story window by window, taking one
-/// optimizer step per window and carrying the state into the next window for as
-/// long as `frontier` admits it; periodically validate, sample and checkpoint.
-/// Returns the updated model.
+/// Train for (the rest of) one epoch: walk each story window by window, taking
+/// one optimizer step per window and carrying the state into the next window for
+/// as long as `frontier` admits it; validate, sample and checkpoint at the
+/// `session`'s cadence. Returns the updated model.
 ///
-/// The epoch ends early once `batch_budget` (the `--max-batches` cap) runs out;
-/// the caller's epoch loop should then stop, seeing
-/// [`BatchBudget::is_exhausted`]. The budget is spent per **window** — i.e. per
-/// optimizer step, which is what it meant before runs existed.
+/// The epoch ends early once the session's budget (the `--max-batches` cap) runs
+/// out; the caller's epoch loop should then stop, seeing
+/// [`Session::is_exhausted`]. The budget is spent per **window** — i.e. per
+/// optimizer step, which is what it meant before runs existed — while the
+/// session's position within the epoch counts stories.
 #[allow(clippy::too_many_arguments)]
 pub fn epoch_train<W: LmModel>(
     dataloader_train: Dataloader,
@@ -394,30 +397,27 @@ pub fn epoch_train<W: LmModel>(
     mut training_model: W,
     config: &TinyStoriesConfig,
     optim: &mut ModuleOptimizer,
-    metric_meta: &mut MetricMetadata,
+    session: &mut Session,
     frontier: &mut Frontier,
     epoch: usize,
-    batch_budget: &mut BatchBudget,
-    valid_loop_limit: Option<usize>,
     app_args: &AppArgs,
     valid_device: Device,
 ) -> W {
     let mut loss_metric = burn::train::metric::LossMetric::new();
     let mut acc_metric = burn::train::metric::AccuracyMetric::new();
     let mut iteration_speed_metric = burn::train::metric::IterationSpeedMetric::new();
-    let batches = dataloader_train.num_items() / config.training.batch_size + 1;
-    let mut steps_since_checkpoint = 0;
+    let batches = dataloader_train.num_items().div_ceil(config.training.batch_size);
     frontier.reset_stats();
 
     // training loop: one batch of stories — every slot advancing through its own
     // story in lockstep, for as many windows as the longest of them spans — per
     // iteration.
-    for (mut b, run) in dataloader_train
+    for run in dataloader_train
         .iter()
         .map(|batch| batch.expect("dataloader batch"))
-        .enumerate()
+        .take(session.batch_limit(batches))
     {
-        b += 1;
+        let b = session.begin_batch();
         let [batch_size, _windows_seq_len] = run.inputs.dims();
         let windows = run.num_windows();
         let mut caches: Option<W::Caches> = None;
@@ -431,19 +431,17 @@ pub fn epoch_train<W: LmModel>(
         let mut lr = f64::NAN;
 
         for w in 0..windows {
-            batch_budget.spend();
-            metric_meta.iteration = Some(metric_meta.iteration.unwrap() + 1);
-            metric_meta.progress.items_processed += batch_size;
+            let (_step, step_lr) = session.begin_step(batch_size);
+            lr = step_lr;
 
             let (train_output, final_caches) =
                 training_model.train_window(run.window(w), caches.take(), &mut class);
             let pre_metrics = &train_output.item;
 
-            loss_metric.update(&pre_metrics.adapt(), metric_meta);
-            acc_metric.update(&pre_metrics.adapt(), metric_meta);
-            iteration_speed_metric.update(&pre_metrics.adapt(), metric_meta);
+            loss_metric.update(&pre_metrics.adapt(), session.meta());
+            acc_metric.update(&pre_metrics.adapt(), session.meta());
+            iteration_speed_metric.update(&pre_metrics.adapt(), session.meta());
 
-            lr = config.training.lr.get_lr(metric_meta.iteration.unwrap());
             training_model = training_model.optim_step(optim, lr, train_output.grads);
             depth = w + 1;
 
@@ -451,8 +449,10 @@ pub fn epoch_train<W: LmModel>(
             // `running_value()` the epoch average) and must be consulted on
             // every one of them: window 0 is what sets its baseline.
             loss = metric_current(loss_metric.value());
+            let acc = metric_current(acc_metric.value());
+            session.log_train(&[("loss", loss), ("acc", acc), ("window", w as f64)]);
             let admitted = frontier.admit(w, loss);
-            if !admitted || depth == windows || batch_budget.is_exhausted() {
+            if !admitted || depth == windows || session.is_exhausted() {
                 break;
             }
             // Advance the frontier: the state's values are kept, the graph that
@@ -463,8 +463,7 @@ pub fn epoch_train<W: LmModel>(
         // Windows the gate dropped are corpus this epoch will not see, so the LR
         // schedule — sized in windows, not in runs — skips them too; otherwise a
         // stalling frontier would leave the cosine unfinished at the last epoch.
-        metric_meta.iteration = Some(metric_meta.iteration.unwrap() + (windows - depth));
-        steps_since_checkpoint += depth;
+        session.skip_steps(windows - depth);
 
         println!(
             "Epoch {}/{}, Batch {b:0>4}/{batches}, Windows {depth}/{windows} (mean {:.2}), \
@@ -477,20 +476,22 @@ pub fn epoch_train<W: LmModel>(
             metric_current(iteration_speed_metric.value()),
         );
 
-        if steps_since_checkpoint >= CHECKPOINT_STEPS {
-            steps_since_checkpoint = 0;
-            // save assets
+        if session.checkpoint_due() {
             training_model.save(app_args);
-            app_args.save_optim(optim);
+            app_args.save_optim(optim, session.progress());
+        }
 
-            println!("running validation (batch iteration limit: {valid_loop_limit:?})");
+        if session.valid_due() {
+            let valid_batches = session.cadence().valid_batches;
+            println!("running validation (batch iteration limit: {valid_batches:?})");
             let valid_model = training_model.valid();
             epoch_valid::<W>(
                 std::sync::Arc::clone(&dataloader_valid),
                 &valid_model,
                 config,
                 epoch,
-                valid_loop_limit,
+                valid_batches,
+                session,
             );
 
             // Sample a story into a fresh per-step file, to watch the text
@@ -512,7 +513,7 @@ pub fn epoch_train<W: LmModel>(
             println!("--- sample ---\n{sample}\n--- saved to {sample_path:?} ---");
         }
 
-        if batch_budget.is_exhausted() {
+        if session.is_exhausted() {
             break;
         }
     }
@@ -525,6 +526,7 @@ pub fn epoch_train<W: LmModel>(
         metric_current(loss_metric.running_value()),
         metric_current(acc_metric.running_value()),
     );
+    session.end_epoch(batches);
 
     training_model
 }
@@ -533,13 +535,15 @@ pub fn epoch_train<W: LmModel>(
 /// loss (also as bits per character) and next-character accuracy, with the state
 /// threaded through each whole story, *ungated* — the one regime that exists,
 /// since a story is scored the way it is generated: opened once and never
-/// restarted part-way through.
+/// restarted part-way through. The averages also go to the `session`'s metrics
+/// log.
 pub fn epoch_valid<W: LmModel>(
     dataloader_valid: Dataloader,
     valid_model: &W::Valid,
     config: &TinyStoriesConfig,
     epoch: usize,
     valid_loop_limit: Option<usize>,
+    session: &mut Session,
 ) {
     let valid_loop_limit = valid_loop_limit.unwrap_or(usize::MAX);
     let valid_num_items = dataloader_valid.num_items();
@@ -553,12 +557,13 @@ pub fn epoch_valid<W: LmModel>(
     let mut acc_metric = burn::train::metric::AccuracyMetric::new();
 
     // validation loop
-    for (_r, run) in dataloader_valid
+    let mut batches = 0;
+    for run in dataloader_valid
         .iter()
         .map(|batch| batch.expect("dataloader batch"))
-        .enumerate()
         .take(valid_loop_limit)
     {
+        batches += 1;
         let [batch_size, _windows_seq_len] = run.inputs.dims();
         let mut caches: Option<W::Caches> = None;
         let mut class = ClassCursors::stream();
@@ -577,12 +582,15 @@ pub fn epoch_valid<W: LmModel>(
 
     // Display the averaged validation metrics.
     let loss = metric_current(loss_metric.running_value());
+    let bits = loss / std::f64::consts::LN_2;
+    let acc = metric_current(acc_metric.running_value());
+    session.log_valid(
+        "valid",
+        &[("loss", loss), ("bits", bits), ("acc", acc), ("batches", batches as f64)],
+    );
     println!(
-        "Epoch {}/{}, Avg Valid Loss {loss:.4} ({:.3} bits/char), Avg Valid Acc: {}",
-        epoch,
-        config.training.num_epochs,
-        loss / std::f64::consts::LN_2,
-        metric_current(acc_metric.running_value()),
+        "Epoch {}/{}, Avg Valid Loss {loss:.4} ({bits:.3} bits/char), Avg Valid Acc: {acc}",
+        epoch, config.training.num_epochs,
     );
 }
 

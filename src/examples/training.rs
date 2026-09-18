@@ -8,7 +8,8 @@
 //!
 //! [`BatchBudget`] is the run-length knob that is *not* part of the config: the
 //! `--max-batches` cap, which belongs to the invocation rather than to the
-//! persisted hyperparameters.
+//! persisted hyperparameters (the loops reach it through their
+//! [`Session`](crate::examples::session::Session)).
 
 use burn::{
     optim::{AdamWConfig, ModuleOptimizer, MuonConfig},
@@ -64,11 +65,14 @@ impl OptimizerConfig {
 /// A runtime cap on how many training mini-batches a run may take, spanning
 /// every epoch (`--max-batches`; `None` ⇒ unlimited).
 ///
-/// It is a *budget*, not a per-epoch limit: the epoch loops take it by `&mut`,
-/// bound their `take()` by what is left and spend one per batch, so a cap of
-/// 600 stops 600 batches into the run whichever epoch that lands in. Checking
-/// [`is_exhausted`](Self::is_exhausted) after each epoch is what breaks the
-/// outer loop (the caller still checkpoints and validates first).
+/// It is a *budget*, not a per-epoch limit: the epoch loops' [`Session`] holds
+/// it, bounds their `take()` by what is left and spends one per optimizer step,
+/// so a cap of 600 stops 600 steps into the run whichever epoch that lands in.
+/// Checking [`Session::is_exhausted`] after each epoch is what breaks the outer
+/// loop (the caller still checkpoints and validates first).
+///
+/// [`Session`]: crate::examples::session::Session
+/// [`Session::is_exhausted`]: crate::examples::session::Session::is_exhausted
 ///
 /// It deliberately lives outside [`TrainingConfig`]: it describes this
 /// invocation ("stop early so I can look at it"), not the hyperparameters the

@@ -82,7 +82,12 @@ src/
 │  └─ misc/          gqa, segsum, split, sanity
 ├─ examples/         example scaffolding shared by the consumer crates
 │  │                 (feature `examples-common`, off by default; dev-only)
-│  ├─ cli.rs         AppArgs: parsing, artifact dir, model/optim/config I/O
+│  ├─ cli.rs         AppArgs: parsing (training-config overrides, --resume,
+│  │                 cadence), artifact dir, model/optim/config I/O; the optim
+│  │                 is saved with its TrainingProgress (progress.json)
+│  ├─ session.rs     Session, what every epoch loop threads: TrainingProgress
+│  │                 (step, epoch, batch; a resumed epoch finishes from a fresh
+│  │                 shuffle), BatchBudget, Cadence, MetricsLog (metrics.jsonl)
 │  ├─ device.rs      Device dtype configuration (`dev-f16`) + FloatElement
 │  ├─ training.rs    TrainingConfig + OptimizerConfig (AdamW, optional Muon);
 │  │                 BatchBudget: the `--max-batches` run cap (not config state)

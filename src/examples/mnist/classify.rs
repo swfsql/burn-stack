@@ -13,7 +13,8 @@
 use crate::examples::cli::AppArgs;
 use crate::examples::mnist::dataset::{MnistBatch, MnistBatcher, MnistDataset};
 use crate::examples::mnist::render;
-use crate::examples::training::{BatchBudget, TrainingConfig, metric_current};
+use crate::examples::session::{Cadence, Session};
+use crate::examples::training::{TrainingConfig, metric_current};
 use burn::optim::{GradientsParams, ModuleOptimizer};
 use burn::prelude::*;
 use burn::{
@@ -60,12 +61,21 @@ pub fn sample_images(n: usize, device: &Device) -> (Tensor<4>, Vec<u8>) {
     (images, labels)
 }
 
-/// Train for a single epoch, stepping the optimizer per batch and periodically
-/// validating + checkpointing; returns the updated model.
+/// The cadence the MNIST examples default to: checkpoint and run a 10-batch
+/// validation (plus the prediction PNGs) every 100 steps.
+pub const CADENCE: Cadence = Cadence {
+    checkpoint_every: Some(100),
+    valid_every: Some(100),
+    valid_batches: Some(10),
+};
+
+/// Train for (the rest of) one epoch, stepping the optimizer per batch and
+/// checkpointing and validating at the `session`'s cadence; returns the updated
+/// model.
 ///
-/// The epoch ends early once `batch_budget` (the `--max-batches` cap) runs out;
-/// the caller's epoch loop should then stop, seeing
-/// [`BatchBudget::is_exhausted`].
+/// The epoch ends early once the session's budget (the `--max-batches` cap) runs
+/// out; the caller's epoch loop should then stop, seeing
+/// [`Session::is_exhausted`].
 #[allow(clippy::too_many_arguments)]
 pub fn epoch_train<W: MnistModel>(
     dataloader_train: Dataloader,
@@ -73,14 +83,12 @@ pub fn epoch_train<W: MnistModel>(
     mut training_model: W,
     training_config: &TrainingConfig,
     optim: &mut ModuleOptimizer,
-    metric_meta: &mut MetricMetadata,
+    session: &mut Session,
     epoch: usize,
-    batch_budget: &mut BatchBudget,
-    valid_loop_limit: Option<usize>,
     app_args: &AppArgs,
     valid_device: Device,
 ) -> W {
-    let training_loop_limit = batch_budget.take_limit();
+    let batches = dataloader_train.num_items().div_ceil(training_config.batch_size);
     let mut loss_metric = burn::train::metric::LossMetric::new();
     let mut acc_metric = burn::train::metric::AccuracyMetric::new();
     let mut iteration_speed_metric = burn::train::metric::IterationSpeedMetric::new();
@@ -90,51 +98,52 @@ pub fn epoch_train<W: MnistModel>(
     let (sample_imgs, sample_labels) = sample_images(NUM_SAMPLES, &valid_device);
 
     // training loop
-    for (mut b, batch) in dataloader_train
+    for batch in dataloader_train
         .iter()
         .map(|batch| batch.expect("dataloader batch"))
-        .enumerate()
-        .take(training_loop_limit)
+        .take(session.batch_limit(batches))
     {
-        b += 1;
-        batch_budget.spend();
+        let b = session.begin_batch();
         let [batch_size, _, _, _] = batch.images.dims();
-        metric_meta.iteration = Some(metric_meta.iteration.unwrap() + 1);
-        metric_meta.progress.items_processed += batch_size;
+        let (_step, lr) = session.begin_step(batch_size);
 
         let train_output = TrainStep::step(&training_model, batch);
         let pre_metrics = &train_output.item;
 
-        loss_metric.update(&pre_metrics.adapt(), metric_meta);
-        acc_metric.update(&pre_metrics.adapt(), metric_meta);
-        iteration_speed_metric.update(&pre_metrics.adapt(), metric_meta);
+        loss_metric.update(&pre_metrics.adapt(), session.meta());
+        acc_metric.update(&pre_metrics.adapt(), session.meta());
+        iteration_speed_metric.update(&pre_metrics.adapt(), session.meta());
 
-        let lr = training_config.lr.get_lr(metric_meta.iteration.unwrap());
         training_model = training_model.optim_step(optim, lr, train_output.grads);
 
-        println!(
-            "Epoch {}/{}, Batch {b:0>4}/{}, Loss {:.4}, Acc {:0>6.2}, lr {lr:0>6.2e}, it/s {:.2}",
-            epoch,
-            training_config.num_epochs,
-            dataloader_train.num_items() / training_config.batch_size + 1,
+        let (loss, acc) = (
             metric_current(loss_metric.value()),
             metric_current(acc_metric.value()),
+        );
+        session.log_train(&[("loss", loss), ("acc", acc)]);
+        println!(
+            "Epoch {}/{}, Batch {b:0>4}/{batches}, Loss {loss:.4}, Acc {acc:0>6.2}, lr {lr:0>6.2e}, it/s {:.2}",
+            epoch,
+            training_config.num_epochs,
             metric_current(iteration_speed_metric.value()),
         );
 
-        if b % 100 == 0 {
-            // save assets
+        if session.checkpoint_due() {
             training_model.save(app_args);
-            app_args.save_optim(optim);
+            app_args.save_optim(optim, session.progress());
+        }
 
-            println!("running validation (batch iteration limit: {valid_loop_limit:?})");
+        if session.valid_due() {
+            let valid_batches = session.cadence().valid_batches;
+            println!("running validation (batch iteration limit: {valid_batches:?})");
             let valid_model = training_model.valid();
             epoch_valid(
                 std::sync::Arc::clone(&dataloader_valid),
                 &valid_model,
                 training_config,
                 epoch,
-                valid_loop_limit,
+                valid_batches,
+                session,
             );
 
             // Save digit + class-probability PNGs into a fresh per-step dir.
@@ -155,18 +164,20 @@ pub fn epoch_train<W: MnistModel>(
         metric_current(loss_metric.running_value()),
         metric_current(acc_metric.running_value()),
     );
+    session.end_epoch(batches);
 
     training_model
 }
 
-/// Run validation over (up to `valid_loop_limit`) batches and report the
-/// average loss and accuracy.
+/// Run validation over (up to `valid_loop_limit`) batches, report the average
+/// loss and accuracy, and log them into the `session`'s metrics log.
 pub fn epoch_valid<V>(
     dataloader_valid: Dataloader,
     valid_model: &V,
     training_config: &TrainingConfig,
     epoch: usize,
     valid_loop_limit: Option<usize>,
+    session: &mut Session,
 ) where
     V: InferenceStep<Input = MnistBatch, Output = ClassificationOutput>,
 {
@@ -182,10 +193,9 @@ pub fn epoch_valid<V>(
     let mut acc_metric = burn::train::metric::AccuracyMetric::new();
 
     // validation loop
-    for (_b, batch) in dataloader_valid
+    for batch in dataloader_valid
         .iter()
         .map(|batch| batch.expect("dataloader batch"))
-        .enumerate()
         .take(valid_loop_limit)
     {
         let [batch_size, _, _, _] = batch.images.dims();
@@ -198,12 +208,15 @@ pub fn epoch_valid<V>(
     }
 
     // Display the averaged validation metrics
-    println!(
-        "Epoch {}/{}, Avg Valid Loss {:.4}, Avg Valid Acc: {}",
-        epoch,
-        training_config.num_epochs,
+    let (loss, acc) = (
         metric_current(loss_metric.running_value()),
         metric_current(acc_metric.running_value()),
+    );
+    let batches = metric_meta.iteration.unwrap() as f64;
+    session.log_valid("valid", &[("loss", loss), ("acc", acc), ("batches", batches)]);
+    println!(
+        "Epoch {}/{}, Avg Valid Loss {loss:.4}, Avg Valid Acc: {acc}",
+        epoch, training_config.num_epochs,
     );
 }
 

@@ -1,14 +1,16 @@
 //! CLI plumbing shared by the examples: argument parsing into [`AppArgs`],
 //! artifact-directory management, and load/save of the training config, model
-//! config, model weights, and optimizer state.  See [`HELP`] for the full
-//! command-line behaviour.
+//! config, model weights, and optimizer state (with the run's
+//! [`TrainingProgress`]), plus the [`Session`] a training run threads through its
+//! epoch loops.  See [`HELP`] for the full command-line behaviour.
 //!
 //! The one thing this module cannot know is *whose* example is running, so
 //! [`AppArgs::parse`] takes the prefix of the auto-created artifacts directory
 //! (conventionally `concat!(env!("CARGO_PKG_NAME"), "-", env!("CARGO_BIN_NAME"),
 //! "-")`, evaluated in the example crate).
 
-use crate::examples::training::BatchBudget;
+use crate::examples::session::{Cadence, MetricsLog, Session, TrainingProgress};
+use crate::examples::training::{BatchBudget, Lr, TrainingConfig};
 use crate::modules::ModelConfigExt;
 use burn::optim::ModuleOptimizer;
 use burn::prelude::*;
@@ -33,8 +35,12 @@ BEHAVIOR OVERVIEW
 - If --training-config or --model-config is given, the corresponding config is loaded from the specified file and saved to the artifacts directory (overwriting any existing file).
 - If no explicit config file is provided for a component, the program attempts to load it from the artifacts directory; if absent, a default configuration is created and saved.
 - The artifacts directory (--artifacts-path) is used to read/write model weights, optimizer state, and configurations. If not specified, a new temporary directory is created and its path is printed.
-- With --remove-artifacts, any existing model and optimizer files in the artifacts directory are deleted before training (if --training is active).
+- With --remove-artifacts, any existing model and optimizer files (and the saved progress) in the artifacts directory are deleted before training (if --training is active).
 - Model and optimizer weights are loaded from the artifacts directory if present; otherwise new ones are created and saved.
+- With --seed, --epochs or --max-lr, the given value replaces the training config's (loaded or created) before the config is saved, so later runs from the same artifacts directory inherit it. --epochs also rescales a cosine LR schedule's length by the same factor, so the schedule still spans the run.
+- The optimizer state is saved together with the run's progress: the LR-schedule step, the epoch, and the batch within it. A run that loads it starts over at step 0 of epoch 1, unless --resume is given, which continues from the saved progress. The interrupted epoch then trains only the batches it has left, drawn from a fresh shuffle (the dataloader workers' batch order cannot be replayed).
+- Training checkpoints at every epoch end and when it stops. --checkpoint-every adds a checkpoint every that many optimizer steps, --valid-every a periodic validation, and --valid-batches caps the batches that validation reads; each example has its own defaults for these three.
+- Every training step and validation is appended as one JSON line to metrics.jsonl in the artifacts directory; each run opens with a \"start\" line.
 - If both --training and --inference are specified, training executes first, followed by inference using the trained model.
 - With --max-batches, training stops after that many mini-batches in total (counted across epochs), checkpointing as usual before it returns. One mini-batch is one optimizer step, which for the character LM is one window of a run rather than one dataloader item.
 - Any arguments following -- are captured as-is and forwarded to downstream processing.
@@ -52,6 +58,14 @@ OPTIONS:
     -m, --model-config <PATH>   Load model configuration from this file (overrides any config in artifacts directory)
     -b, --max-batches <N>       Stop training after N mini-batches in total (across epochs), regardless of the
                                 configured number of epochs. Unlimited when absent.
+    -s, --seed <N>              Replace the training config's RNG seed (model init, data shuffling, sampling)
+        --epochs <N>            Replace the training config's number of epochs (rescaling a cosine LR schedule)
+        --max-lr <LR>           Replace the LR schedule's peak rate (a constant schedule's only one)
+        --resume                Continue from the progress saved with the optimizer state (schedule step, epoch,
+                                batch) instead of from step 0 (has no effect on a new optimizer)
+        --checkpoint-every <N>  Also checkpoint every N optimizer steps (0: only at epoch ends)
+        --valid-every <N>       Validate every N optimizer steps (0: no periodic validation)
+        --valid-batches <N>     Batches a periodic validation reads
     -a, --artifacts-path <PATH>
                                 Directory where configurations, model weights, and optimizer state are saved and loaded.
                                 If the directory does not exist, it will be created.
@@ -78,8 +92,26 @@ pub struct AppArgs {
     /// Directory for configs, model weights, and optimizer state.
     pub artifacts_path: PathBuf,
     /// Optional cap on the total number of training mini-batches; see
-    /// [`AppArgs::batch_budget`].
+    /// [`BatchBudget`].
     pub max_batches: Option<usize>,
+    /// Optional replacement for the training config's seed; see
+    /// [`AppArgs::override_training_config`].
+    pub seed: Option<u64>,
+    /// Optional replacement for the training config's number of epochs; see
+    /// [`AppArgs::override_training_config`].
+    pub epochs: Option<usize>,
+    /// Optional replacement for the LR schedule's peak rate; see
+    /// [`AppArgs::override_training_config`].
+    pub max_lr: Option<f64>,
+    /// Whether a loaded optimizer continues from its saved [`TrainingProgress`]
+    /// (see [`AppArgs::load_or_save_optim`]) rather than from step `0`.
+    pub resume: bool,
+    /// Optional override of [`Cadence::checkpoint_every`] (`0` ⇒ none).
+    pub checkpoint_every: Option<usize>,
+    /// Optional override of [`Cadence::valid_every`] (`0` ⇒ none).
+    pub valid_every: Option<usize>,
+    /// Optional override of [`Cadence::valid_batches`].
+    pub valid_batches: Option<usize>,
     /// Arguments after `--`, forwarded verbatim to downstream processing.
     pub extra_args: Vec<OsString>,
 }
@@ -117,6 +149,12 @@ impl AppArgs {
                 .opt_value_from_os_str(["-c", "--training-config"], parse_path)?,
             model_config: pargs.opt_value_from_os_str(["-m", "--model-config"], parse_path)?,
             max_batches: pargs.opt_value_from_str(["-b", "--max-batches"])?,
+            seed: pargs.opt_value_from_str(["-s", "--seed"])?,
+            epochs: pargs.opt_value_from_str("--epochs")?,
+            max_lr: pargs.opt_value_from_str("--max-lr")?,
+            checkpoint_every: pargs.opt_value_from_str("--checkpoint-every")?,
+            valid_every: pargs.opt_value_from_str("--valid-every")?,
+            valid_batches: pargs.opt_value_from_str("--valid-batches")?,
             artifacts_path: pargs
                 .opt_value_from_os_str(["-a", "--artifacts-path"], parse_path)?
                 .unwrap_or_else(|| {
@@ -132,6 +170,7 @@ impl AppArgs {
             training: pargs.contains(["-t", "--training"]),
             inference: pargs.contains(["-i", "--inference"]),
             remove_artifacts: pargs.contains(["-r", "--remove-artifacts"]),
+            resume: pargs.contains("--resume"),
             extra_args,
         };
 
@@ -143,10 +182,42 @@ impl AppArgs {
         Ok(args)
     }
 
-    /// The `--max-batches` cap as a fresh [`BatchBudget`] for one training run
-    /// (uncapped when the flag is absent).
-    pub fn batch_budget(&self) -> BatchBudget {
-        BatchBudget::new(self.max_batches)
+    /// The example's `defaults` under the `--checkpoint-every` /
+    /// `--valid-every` / `--valid-batches` overrides.
+    pub fn cadence(&self, defaults: Cadence) -> Cadence {
+        let every = |flag: Option<usize>, default| match flag {
+            Some(0) => None,
+            Some(every) => Some(every),
+            None => default,
+        };
+        Cadence {
+            checkpoint_every: every(self.checkpoint_every, defaults.checkpoint_every),
+            valid_every: every(self.valid_every, defaults.valid_every),
+            valid_batches: self.valid_batches.or(defaults.valid_batches),
+        }
+    }
+
+    /// Start a training [`Session`] from `progress` (what
+    /// [`load_or_save_optim`](Self::load_or_save_optim) returned), following
+    /// `training`'s LR schedule over a training split of `items_total` items,
+    /// at the example's `cadence` defaults (see [`cadence`](Self::cadence)).
+    /// Its budget is `--max-batches`; its log, the artifacts directory's
+    /// metrics log.
+    pub fn session(
+        &self,
+        progress: TrainingProgress,
+        training: &TrainingConfig,
+        cadence: Cadence,
+        items_total: usize,
+    ) -> Session {
+        Session::new(
+            progress,
+            BatchBudget::new(self.max_batches),
+            self.cadence(cadence),
+            training.lr.clone(),
+            items_total,
+            MetricsLog::open(&self.artifacts_path),
+        )
     }
 
     /// Create the artifacts directory (removing model/optim first if requested).
@@ -178,6 +249,30 @@ impl AppArgs {
                     .with_added_extension("json");
                 load_training_config(&path)
             })
+    }
+
+    /// Apply the invocation's overrides (`--seed`, `--epochs`, `--max-lr`) onto
+    /// `training`, the loaded or freshly created config, before it is saved.
+    ///
+    /// `--epochs` rescales a cosine schedule's `total_steps` by the same factor,
+    /// so a schedule sized to the run still spans it (a resumed run then lands
+    /// where the longer or shorter cosine has it); the warmup is left alone.
+    pub fn override_training_config(&self, training: &mut TrainingConfig) {
+        if let Some(seed) = self.seed {
+            training.seed = seed;
+        }
+        if let Some(epochs) = self.epochs {
+            if let Lr::CosineAnnealing(cosine) = &mut training.lr {
+                cosine.total_steps = cosine.total_steps * epochs / training.num_epochs.max(1);
+            }
+            training.num_epochs = epochs;
+        }
+        if let Some(max_lr) = self.max_lr {
+            match &mut training.lr {
+                Lr::CosineAnnealing(cosine) => cosine.max_lr = max_lr,
+                Lr::Constant(constant) => constant.lr = max_lr,
+            }
+        }
     }
 
     /// Save the model config into the artifacts directory.
@@ -234,9 +329,11 @@ impl AppArgs {
         })
     }
 
-    /// Save the optimizer state into the artifacts directory.
-    pub fn save_optim(&self, optim: &ModuleOptimizer) {
-        save_optim(&self.artifacts_path, optim)
+    /// Save the optimizer state into the artifacts directory, together with the
+    /// `progress` it was taken at (what `--resume` continues from).
+    pub fn save_optim(&self, optim: &ModuleOptimizer, progress: &TrainingProgress) {
+        save_optim(&self.artifacts_path, optim);
+        save_progress(&self.artifacts_path, progress);
     }
 
     /// Load optimizer state from the artifacts directory into `optim`, if
@@ -247,15 +344,43 @@ impl AppArgs {
     }
 
     /// Load the optimizer state into `optim` if saved, otherwise save `optim` as
-    /// the initial state.
-    pub fn load_or_save_optim(&self, optim: ModuleOptimizer) -> ModuleOptimizer {
+    /// the initial state. Also returns the progress to start from: the one saved
+    /// with the loaded state under `--resume`, a fresh one otherwise.
+    pub fn load_or_save_optim(&self, optim: ModuleOptimizer) -> (ModuleOptimizer, TrainingProgress) {
         match self.load_optim(optim.clone()) {
-            Some(loaded) => loaded,
+            Some(loaded) => (loaded, self.resumed_progress()),
             None => {
                 println!("Initializing new optim");
-                self.save_optim(&optim);
-                optim
+                let progress = TrainingProgress::new();
+                self.save_optim(&optim, &progress);
+                (optim, progress)
             }
+        }
+    }
+
+    /// The progress a loaded optimizer continues from.
+    fn resumed_progress(&self) -> TrainingProgress {
+        let saved = load_progress(&self.artifacts_path);
+        match (self.resume, saved) {
+            (true, Some(progress)) => {
+                println!(
+                    "Resuming at step {}, epoch {}, batch {}",
+                    progress.step, progress.epoch, progress.batch
+                );
+                progress
+            }
+            (true, None) => panic!(
+                "--resume: no {PROGRESS_NAME}.json was saved with the optim in {:?}",
+                self.artifacts_path
+            ),
+            (false, Some(progress)) if progress.step > 0 => {
+                println!(
+                    "Starting over at step 0 (saved at step {}; --resume continues it)",
+                    progress.step
+                );
+                TrainingProgress::new()
+            }
+            (false, _) => TrainingProgress::new(),
         }
     }
 }
@@ -271,11 +396,13 @@ pub fn create_artifact_dir(artifact_dir: &Path, delete: bool) {
     if delete {
         // enforce that the removal should not have errors,
         // including for when files didn't exist
-        println!("removing {artifact_dir:?}/{{model,optim}}.{RECORD_EXT}");
+        println!("removing {artifact_dir:?}/{{model,optim}}.{RECORD_EXT} and {PROGRESS_NAME}.json");
         std::fs::remove_file(artifact_dir.join(MODEL_NAME).with_extension(RECORD_EXT))
             .expect("failed to remove the model");
         std::fs::remove_file(artifact_dir.join(OPTIM_NAME).with_extension(RECORD_EXT))
             .expect("failed to remove the optim");
+        std::fs::remove_file(artifact_dir.join(PROGRESS_NAME).with_added_extension("json"))
+            .expect("failed to remove the progress");
     }
     std::fs::create_dir_all(artifact_dir).ok();
 }
@@ -388,4 +515,23 @@ pub fn load_optim(artifact_dir: &Path, optim: ModuleOptimizer) -> Option<ModuleO
     println!("Loading initial optim from {path:?}");
     let optim = optim.load(&path).expect("Failed to load the initial optim");
     Some(optim)
+}
+
+/// Base filename (without extension) for the persisted [`TrainingProgress`].
+pub const PROGRESS_NAME: &str = "progress";
+/// Save the training progress as JSON into `artifact_dir`.
+pub fn save_progress(artifact_dir: &Path, progress: &TrainingProgress) {
+    let path = artifact_dir.join(PROGRESS_NAME).with_added_extension("json");
+    println!(
+        "Saving progress (step {}, epoch {}, batch {}) into {path:?}",
+        progress.step, progress.epoch, progress.batch
+    );
+    progress.save(path).expect("Failed to save the progress");
+}
+
+/// Load the training progress from `artifact_dir`, or `None` if absent.
+pub fn load_progress(artifact_dir: &Path) -> Option<TrainingProgress> {
+    let path = artifact_dir.join(PROGRESS_NAME).with_added_extension("json");
+    let exists = std::fs::exists(&path).expect("failed to check {path:?}");
+    exists.then(|| TrainingProgress::load(&path).expect("Failed to load the progress"))
 }
