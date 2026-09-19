@@ -278,9 +278,7 @@ where
         // `grad_horizon`), and each transition is a full hop of everything the
         // loop carries.
         let tracked = self.grad_tracked(n);
-        let inner_stack = tracked
-            .is_some()
-            .then(|| burn::module::AutodiffModule::valid(self));
+        let inner_stack = tracked.is_some().then(|| Module::valid(self));
         let mut slots = caches.into_slots();
         // Straight-through carry (see `grad_horizon`): a value-**zero** tracked
         // tensor standing in for what entered the untracked segment currently
@@ -586,9 +584,7 @@ where
         // those layers' own cache slots — and is lifted back where the graph
         // resumes, as many times as the mask alternates.
         let tracked = self.grad_tracked(n);
-        let inner_stack = tracked
-            .is_some()
-            .then(|| burn::module::AutodiffModule::valid(self));
+        let inner_stack = tracked.is_some().then(|| Module::valid(self));
         // The straight-through carry `forward` builds, one entry per token of
         // the stream entering the current untracked segment (see
         // `grad_horizon`); `Some` exactly while inside one. It may open empty —

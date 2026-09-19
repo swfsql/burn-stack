@@ -73,13 +73,13 @@ pub use network::{
 /// stacks, bidirectional pairs, latent/vocab networks, class tokens, the Muon
 /// plan — applies unchanged.
 ///
-/// `ModuleDisplay` and `AutodiffModule` are supertraits so that the generic
-/// containers are themselves `Module`/`AutodiffModule` (Burn's derive requires
-/// both of every module-typed generic), which is what lets
+/// `ModuleDisplay` is a supertrait so that the generic containers are themselves
+/// `Module`s (Burn's derive requires it of every module-typed generic); `Module`'s
+/// own `valid` is what lets
 /// [`Layers::grad_horizon`](crate::modules::Layers::grad_horizon) move the stack
 /// to the inner backend for its no-grad prefix. A `#[derive(Module)]` block
 /// satisfies them.
-pub trait Block: Module + burn::module::ModuleDisplay + burn::module::AutodiffModule {
+pub trait Block: Module + burn::module::ModuleDisplay {
     /// Per-block streaming cache (one layer's worth of state).
     type Cache;
     /// The per-network cache collection for this family.
