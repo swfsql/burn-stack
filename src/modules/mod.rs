@@ -89,11 +89,20 @@ pub trait Block: Module + burn::module::ModuleDisplay {
     type Options;
 
     /// Full-sequence (chunked) pass — training / prefill.
+    ///
+    /// `pad` (`[batch, sequence]`, `true` at padding; `None` ⇒ every row real)
+    /// is **right** padding: in every slot it follows all of the real rows. A
+    /// padded row is absent — the outputs of the real rows and the returned
+    /// cache are exactly those of the slot's real rows run alone, which is
+    /// `step` unrolled over them — and its own output is unspecified. The
+    /// containers keep the mask right-padded whatever class markers they splice
+    /// (see [`crate::utils::padding`]).
     fn block_forward(
         &self,
         x: Tensor<3>,
         cache: Option<Self::Cache>,
         options: Self::Options,
+        pad: Option<Tensor<2, Bool>>,
     ) -> (Tensor<3>, Self::Cache);
 
     /// Single-token recurrent step — decoding.

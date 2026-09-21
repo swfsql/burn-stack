@@ -142,7 +142,7 @@ fn redrawn_weights_still_receive_gradient() {
     let net = policy().apply(net(&device));
 
     let x = Tensor::<3>::random([2, 3, 4], burn::tensor::Distribution::Normal(0.0, 1.0), &device);
-    let (y, _) = net.forward(x, None, (), None);
+    let (y, _) = net.forward(x, None, (), None, None);
     let grads = y.sum().backward();
 
     let layer = &net.layers.real_layers[0];

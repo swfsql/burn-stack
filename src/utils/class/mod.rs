@@ -1,3 +1,4 @@
+use crate::utils::Padding;
 use burn::config::Config;
 use burn::module::Param;
 use burn::nn::Initializer;
@@ -180,6 +181,12 @@ impl ClassCursor {
             full_len: Some(len),
         }
     }
+
+    /// Whether a chunk of `chunk_len` tokens placed from this cursor is the
+    /// entire sequence: nothing emitted before it, and nothing announced after.
+    pub fn covers_whole(&self, chunk_len: usize) -> bool {
+        self.offset == 0 && self.full_len == Some(chunk_len)
+    }
 }
 
 /// Everything a `forward` (chunk) or `step` (single token) call needs in order
@@ -249,11 +256,12 @@ impl ClassCursors {
         );
     }
 
-    /// Enter the inner level, whose sequence is longer by the `extra` markers
-    /// this level splices in. Returns the previous hint, for [`Self::leave`].
-    pub(crate) fn enter(&mut self, extra: usize) -> Option<usize> {
+    /// Enter the inner level, whose sequence is longer by the `markers` this
+    /// level splices in — those that land ([`landing_count`]). Returns the
+    /// previous hint, for [`Self::leave`].
+    pub(crate) fn enter<M: ClassMarker>(&mut self, markers: &[M]) -> Option<usize> {
         let saved = self.full_len;
-        self.full_len = saved.map(|l| l + extra);
+        self.full_len = saved.map(|l| l + landing_count(markers, l));
         saved
     }
 
@@ -261,6 +269,17 @@ impl ClassCursors {
     pub(crate) fn leave(&mut self, saved: Option<usize>) {
         self.full_len = saved;
     }
+}
+
+/// How many of `markers` land in a sequence of `len` tokens — every one but a
+/// `Custom` at or past its end, which has no token to precede. The level above
+/// sees a sequence this much longer, which is what its own `Middle`/`End` are
+/// placed against.
+pub fn landing_count<M: ClassMarker>(markers: &[M], len: usize) -> usize {
+    markers
+        .iter()
+        .filter(|m| m.closes_sequence() || m.insert_pos(len) < len)
+        .count()
 }
 
 /// Panic if any marker's position needs the whole sequence length while none is
@@ -384,12 +403,28 @@ pub fn insert_class_markers<M: ClassMarker>(
     cursor: &mut ClassCursor,
     who: &str,
 ) -> Tensor<3> {
+    insert_class_markers_padded(x, None, markers, emb, cursor, who).0
+}
+
+/// [`insert_class_markers`] over a padded batch: the rows are spliced exactly
+/// as there, and `padding` (`None` ⇒ every row real) follows them — see
+/// [`Padding::splice`].
+pub fn insert_class_markers_padded<M: ClassMarker>(
+    x: Tensor<3>,
+    padding: Option<Padding>,
+    markers: &[M],
+    emb: Option<&Param<Tensor<2>>>,
+    cursor: &mut ClassCursor,
+    who: &str,
+) -> (Tensor<3>, Option<Padding>) {
     let [_batch, chunk_len, width] = x.dims();
+    let whole = cursor.covers_whole(chunk_len);
     let plan = class_chunk_plan(markers, chunk_len, cursor, who);
     if plan.is_empty() {
-        return x;
+        return (x, padding);
     }
-    splice_class_rows(x, &plan, &class_emb_table(markers, emb, width))
+    let padding = padding.map(|p| p.splice(&plan, markers, whole, who));
+    (splice_class_rows(x, &plan, &class_emb_table(markers, emb, width)), padding)
 }
 
 /// The class-marker embedding table (`[markers.len(), width]`), checked against

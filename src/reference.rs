@@ -125,14 +125,19 @@ impl Block for RefBlock {
     /// Nothing to select — the block has one algorithm.
     type Options = ();
 
+    /// A padded row keeps the state it found — the recurrence skips it.
     fn block_forward(
         &self,
         x_bsd: Tensor<3>,
         cache: Option<RefCache>,
         _options: (),
+        pad: Option<Tensor<2, Bool>>,
     ) -> (Tensor<3>, RefCache) {
         let [batch, sequence, _d_model] = x_bsd.dims();
         let device = x_bsd.device();
+        if let Some(pad_bs) = &pad {
+            assert_right_padded(pad_bs.clone());
+        }
         let mut state_bd = match cache {
             Some(c) => c.state_bd,
             None => self.zero_state(batch, &device),
@@ -140,8 +145,14 @@ impl Block for RefBlock {
         let mut ys = Vec::with_capacity(sequence);
         for t in 0..sequence {
             let x_bd = x_bsd.clone().narrow(1, t, 1).squeeze_dim(1);
-            let (y_bd, next_bd) = self.recurrence(x_bd, state_bd);
-            state_bd = next_bd;
+            let (y_bd, next_bd) = self.recurrence(x_bd, state_bd.clone());
+            state_bd = match &pad {
+                Some(pad_bs) => {
+                    let pad_bd = pad_bs.clone().narrow(1, t, 1).expand(next_bd.dims());
+                    next_bd.mask_where(pad_bd, state_bd)
+                }
+                None => next_bd,
+            };
             ys.push(y_bd.unsqueeze_dim(1));
         }
         (Tensor::cat(ys, 1), RefCache { state_bd })
@@ -175,6 +186,21 @@ impl Block for RefBlock {
                 RefUntied::GateProj => UntiedParam::new(&self.gate_proj.weight, 1),
             })
             .collect()
+    }
+}
+
+/// Panic unless every slot's padding follows all of its real rows. The
+/// reference block would skip padding anywhere, but a real one leans on the
+/// right padding [`Block::block_forward`] promises — so the reference checks
+/// that the containers keep that promise, whatever they splice.
+fn assert_right_padded(pad_bs: Tensor<2, Bool>) {
+    let [_batch, sequence] = pad_bs.dims();
+    let pad = pad_bs.into_data().try_to_vec::<bool>().expect("a bool mask");
+    for (b, row) in pad.chunks(sequence).enumerate() {
+        assert!(
+            row.windows(2).all(|w| !w[0] || w[1]),
+            "slot {b}: a real row follows padding ({row:?})",
+        );
     }
 }
 

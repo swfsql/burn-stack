@@ -4,9 +4,9 @@ use crate::utils::{Applications, GradHorizon, Schedule};
 use crate::utils::class::{
     assert_full_len_known, class_chunk_plan, class_emb_table, class_emb_width,
     class_marker_output_indices, class_prime_plan, class_row, init_class_emb,
-    insert_class_markers, splice_class_rows,
+    insert_class_markers_padded, landing_count, splice_class_rows,
 };
-use crate::utils::{ClassCursor, ClassCursors, ClassLatent};
+use crate::utils::{ClassCursor, ClassCursors, ClassLatent, Padding};
 use burn::module::Param;
 use burn::prelude::*;
 
@@ -127,18 +127,24 @@ where
     }
 
     /// Splice this stack's own class latents into the chunk `x` (no-op when
-    /// there are none), advancing the stack-level cursor.
-    fn insert_latents(&self, x: Tensor<3>, class: &mut ClassCursors) -> Tensor<3> {
+    /// there are none), advancing the stack-level cursor; `padding` follows.
+    fn insert_latents(
+        &self,
+        x: Tensor<3>,
+        padding: Option<Padding>,
+        class: &mut ClassCursors,
+    ) -> (Tensor<3>, Option<Padding>) {
         let mut cursor = ClassCursor::at(class.stack, class.full_len);
-        let x = insert_class_markers(
+        let out = insert_class_markers_padded(
             x,
+            padding,
             &self.class_latents,
             self.class_latents_emb.as_ref(),
             &mut cursor,
             "Layers",
         );
         class.stack = cursor.offset;
-        x
+        out
     }
 
     /// Number of (virtual) layers this stack runs.
@@ -233,6 +239,13 @@ where
     /// aggregator over the resulting identical streams reproduces the row, so
     /// the layer above reads it back exactly as the additive skip hands it on).
     ///
+    /// `pad` (`[batch, sequence]`, `true` at padding; `None` ⇒ none) marks a
+    /// right-padded batch: every slot comes out as its own sequence would alone —
+    /// its real rows' outputs and its caches — with every class latent placed
+    /// against that slot's own length (see [`crate::utils::padding`]). Rows are
+    /// still returned in the batch-wide order, class latents where the plan for
+    /// the padded length puts them.
+    ///
     /// [`MultiGate`]: crate::modules::MultiGate
     /// [`Layer`]: crate::modules::Layer
     pub fn forward(
@@ -241,6 +254,20 @@ where
         caches: Option<M::Caches>,
         options: M::Options,
         class: Option<&mut ClassCursors>,
+        pad: Option<Tensor<2, Bool>>,
+    ) -> (Tensor<3>, M::Caches) {
+        self.forward_padded(x, caches, options, class, pad.map(Padding::new))
+    }
+
+    /// [`Self::forward`] with the padding already tracked — what a container
+    /// that splices markers of its own below this stack hands on.
+    pub(crate) fn forward_padded(
+        &self,
+        x: Tensor<3>,
+        caches: Option<M::Caches>,
+        options: M::Options,
+        class: Option<&mut ClassCursors>,
+        padding: Option<Padding>,
     ) -> (Tensor<3>, M::Caches) {
         let n = self.n_virtual_count();
         // No cursors ⇒ this one call covers the whole sequence.
@@ -248,10 +275,12 @@ where
         let class = class.unwrap_or(&mut whole);
         class.fit(n);
 
-        let mut x = self.insert_latents(x, class);
+        let (mut x, mut padding) = self.insert_latents(x, padding, class);
         // The sequence the layers see is longer by the stack's own latents; each
         // layer then lengthens it further for the ones above it.
-        let mut full = class.full_len.map(|l| l + self.class_latents.len());
+        let mut full = class
+            .full_len
+            .map(|l| l + landing_count(&self.class_latents, l));
         // Sized from a view: an untied block's own tensors hold every
         // application's copy.
         let caches = caches
@@ -369,10 +398,12 @@ where
             // exactly by the (convex, all-scores-equal) aggregator, so the layer
             // above reads the latent back just as the Standard skip hands it on.
             let mut cursor = ClassCursor::at(class.per_layer[i], full);
+            let whole = cursor.covers_whole(x.dims()[1]);
             let plan = class_chunk_plan(&layer.class_latents, x.dims()[1], &mut cursor, "Layer");
             class.per_layer[i] = cursor.offset;
-            full = full.map(|l| l + layer.class_latents.len());
+            full = full.map(|l| l + landing_count(&layer.class_latents, l));
             if !plan.is_empty() {
+                padding = padding.map(|p| p.splice(&plan, &layer.class_latents, whole, "Layer"));
                 let emb = class_emb_table(
                     &layer.class_latents,
                     layer.class_latents_emb.as_ref(),
@@ -404,16 +435,17 @@ where
                     // (no clone, no add).
                     let x_l = x;
                     let (out, c_) = if first || last {
-                        layer.forward(x_l, Some(cache), options.clone())
+                        layer.forward(x_l, Some(cache), options.clone(), padding.as_ref())
                     } else {
-                        let (out, c_) = layer.forward(x_l.clone(), Some(cache), options.clone());
+                        let (out, c_) =
+                            layer.forward(x_l.clone(), Some(cache), options.clone(), padding.as_ref());
                         (out + x_l, c_)
                     };
                     x = out;
                     slots[i] = Some(c_);
                 }
                 Residuals::MultiGate(mg) => {
-                    let (out, c_) = layer.forward(x, Some(cache), options.clone());
+                    let (out, c_) = layer.forward(x, Some(cache), options.clone(), padding.as_ref());
                     slots[i] = Some(c_);
                     let s = streams.take().unwrap();
                     // A skipped residual here drops every carried stream, which
@@ -613,7 +645,7 @@ where
         let mut full = class
             .as_deref()
             .and_then(|c| c.full_len)
-            .map(|l| l + self.class_latents.len());
+            .map(|l| l + landing_count(&self.class_latents, l));
         // `pos` is the virtual-layer index (schedule, cut boundary); the slot
         // lookup is incidental.
         #[allow(clippy::needless_range_loop)]
@@ -697,7 +729,7 @@ where
                 assert_full_len_known(&layer.class_latents, None, "Layer");
                 Vec::new()
             };
-            full = full.map(|l| l + layer.class_latents.len());
+            full = full.map(|l| l + landing_count(&layer.class_latents, l));
             // The stream count this layer leaves behind — mirroring `forward`:
             // a suppressed last residual leaves the streams untouched, a
             // suppressed first restarts them from `F_0`, and otherwise the

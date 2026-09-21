@@ -1,8 +1,10 @@
 use crate::modules::{LayerUntied, Residuals, ResidualsConfig, RmsNorm};
 use crate::prelude::*;
 use crate::utils::{Applications, BidiSchedule};
-use crate::utils::class::{class_marker_output_indices, init_class_emb, insert_class_markers};
-use crate::utils::{ClassCursor, ClassCursors, ClassLatent};
+use crate::utils::class::{
+    class_marker_output_indices, init_class_emb, insert_class_markers_padded,
+};
+use crate::utils::{ClassCursor, ClassCursors, ClassLatent, Padding};
 use burn::config::Config;
 use burn::module::Param;
 use burn::nn::{Linear, LinearConfig};
@@ -111,13 +113,19 @@ where
     M::Options: Clone,
 {
     /// Splice this bidi-layer-pair's class latents into the chunk `x` (no-op
-    /// when there are none), advancing `class` past it. `None` ⇒ this chunk is
-    /// the whole sequence.
-    fn insert_latents(&self, x: Tensor<3>, class: Option<&mut ClassCursor>) -> Tensor<3> {
+    /// when there are none), advancing `class` past it; `padding` follows.
+    /// `None` ⇒ this chunk is the whole sequence.
+    fn insert_latents(
+        &self,
+        x: Tensor<3>,
+        padding: Option<Padding>,
+        class: Option<&mut ClassCursor>,
+    ) -> (Tensor<3>, Option<Padding>) {
         let mut whole = ClassCursor::whole(x.dims()[1]);
         let cursor = class.unwrap_or(&mut whole);
-        insert_class_markers(
+        insert_class_markers_padded(
             x,
+            padding,
             &self.class_latents,
             self.class_latents_emb.as_ref(),
             cursor,
@@ -129,6 +137,9 @@ where
     /// updated direction caches. (`sequence` grows by the class-latent count.)
     /// Returns the merged directions **without** the residual — the enclosing
     /// [`BidiLayers`] adds it.
+    ///
+    /// `pad` marks a right-padded batch (`None` ⇒ none), as in
+    /// [`BidiLayers::forward`].
     pub fn forward(
         &self,
         x: Tensor<3>,
@@ -136,8 +147,9 @@ where
         reverse_cache: Option<M::Cache>,
         options: M::Options,
         class: Option<&mut ClassCursor>,
+        pad: Option<Tensor<2, Bool>>,
     ) -> (Tensor<3>, M::Cache, M::Cache) {
-        let x = self.insert_latents(x, class);
+        let (x, padding) = self.insert_latents(x, pad.map(Padding::new), class);
         bidi_pair_forward(
             &self.straight_norm,
             &self.reverse_norm,
@@ -148,6 +160,7 @@ where
             straight_cache,
             reverse_cache,
             options,
+            padding.as_ref(),
         )
     }
 }
@@ -158,6 +171,10 @@ where
 /// [`BidiLayers`] calls this directly on its real layers (or their application
 /// views, when they untie anything) instead of building a transient
 /// [`BidiLayerPair`].
+///
+/// Under `padding` the reversed read is each slot's **real** rows backwards
+/// ([`Padding::reversed`]) rather than the flipped batch, whose padding would
+/// then lead.
 #[allow(clippy::too_many_arguments)]
 fn bidi_pair_forward<M: Block>(
     straight_norm: &RmsNorm,
@@ -169,25 +186,40 @@ fn bidi_pair_forward<M: Block>(
     straight_cache: Option<M::Cache>,
     reverse_cache: Option<M::Cache>,
     options: M::Options,
+    padding: Option<&Padding>,
 ) -> (Tensor<3>, M::Cache, M::Cache)
 where
     M::Options: Clone,
 {
     let [batch, sequence, d_model] = x.dims();
 
-    // x reads >x₀>x₁>…; x_rev (flipped) reads the sequence backwards.
-    let x_rev = x.clone().flip([1]);
-    let x = straight_norm.forward(x);
-    let x_rev = reverse_norm.forward(x_rev);
-
-    let (x, straight_cache) = straight_block.block_forward(x, straight_cache, options.clone());
+    let (x, straight_cache, x_rev, reverse_cache) = match padding {
+        None => {
+            // x reads >x₀>x₁>…; x_rev (flipped) reads the sequence backwards.
+            let x_rev = x.clone().flip([1]);
+            let x = straight_norm.forward(x);
+            let x_rev = reverse_norm.forward(x_rev);
+            let (x, straight_cache) =
+                straight_block.block_forward(x, straight_cache, options.clone(), None);
+            let (x_rev, reverse_cache) = reverse_block.block_forward(x_rev, reverse_cache, options, None);
+            // Re-align the reversed read.
+            (x, straight_cache, x_rev.flip([1]), reverse_cache)
+        }
+        Some(padding) => {
+            let x_rev = reverse_norm.forward(x.clone());
+            let x = straight_norm.forward(x);
+            let (x, straight_cache) = padding.in_slot_order(x, |x, pad_bs| {
+                straight_block.block_forward(x, straight_cache, options.clone(), Some(pad_bs))
+            });
+            let (x_rev, reverse_cache) = padding.reversed().in_slot_order(x_rev, |x_rev, pad_bs| {
+                reverse_block.block_forward(x_rev, reverse_cache, options, Some(pad_bs))
+            });
+            (x, straight_cache, x_rev, reverse_cache)
+        }
+    };
     assert_eq!([batch, sequence, d_model], x.dims());
-
-    let (x_rev, reverse_cache) = reverse_block.block_forward(x_rev, reverse_cache, options);
     assert_eq!([batch, sequence, d_model], x_rev.dims());
 
-    // Re-align the reversed read, then merge.
-    let x_rev = x_rev.flip([1]);
     let merged = output_merge.forward(x, x_rev);
     (merged, straight_cache, reverse_cache)
 }
@@ -234,17 +266,23 @@ where
 
     /// Splice this stack's own class latents into the chunk `x` (no-op when
     /// there are none), advancing the stack-level cursor.
-    fn insert_latents(&self, x: Tensor<3>, class: &mut ClassCursors) -> Tensor<3> {
+    fn insert_latents(
+        &self,
+        x: Tensor<3>,
+        padding: Option<Padding>,
+        class: &mut ClassCursors,
+    ) -> (Tensor<3>, Option<Padding>) {
         let mut cursor = ClassCursor::at(class.stack, class.full_len);
-        let x = insert_class_markers(
+        let out = insert_class_markers_padded(
             x,
+            padding,
             &self.class_latents,
             self.class_latents_emb.as_ref(),
             &mut cursor,
             "BidiLayers",
         );
         class.stack = cursor.offset;
-        x
+        out
     }
 
     /// Seed the MultiGate streams from a full-sequence input — the **single**
@@ -268,17 +306,25 @@ where
     /// fewer than `n_stream` exist) or is gated into every stream (see
     /// [`MultiGate`]).
     ///
+    /// `pad` (`[batch, sequence]`, `true` at padding; `None` ⇒ none) marks a
+    /// right-padded batch: each slot comes out as its own sequence would alone,
+    /// both directions reading only its real rows — the reversed one from the
+    /// slot's own last row, not from the batch's (see
+    /// [`crate::utils::padding`]).
+    ///
     /// [`MultiGate`]: crate::modules::MultiGate
     pub fn forward(
         &self,
-        mut x: Tensor<3>,
+        x: Tensor<3>,
         caches: Option<M::Caches>,
         options: M::Options,
         class: Option<&mut ClassCursors>,
+        pad: Option<Tensor<2, Bool>>,
     ) -> (Tensor<3>, M::Caches) {
         // No cursors ⇒ this one call covers the whole sequence.
         let mut whole = ClassCursors::new(x.dims()[1]);
-        x = self.insert_latents(x, class.unwrap_or(&mut whole));
+        let (mut x, padding) =
+            self.insert_latents(x, pad.map(Padding::new), class.unwrap_or(&mut whole));
         let n = self
             .n_virtual_layers
             .as_ref()
@@ -359,6 +405,7 @@ where
                 Some(straight_cache),
                 Some(reverse_cache),
                 options.clone(),
+                padding.as_ref(),
             );
             slots[straight_i] = Some(sc);
             slots[reverse_i] = Some(rc);

@@ -4,7 +4,7 @@ use crate::utils::class::{
     assert_full_len_known, class_chunk_plan, class_emb_width, class_prime_plan, class_row,
     insert_class_markers,
 };
-use crate::utils::{ClassCursor, ClassLatent, UntiedParam};
+use crate::utils::{ClassCursor, ClassLatent, Padding, UntiedParam};
 use burn::module::Param;
 use burn::prelude::*;
 use std::borrow::Cow;
@@ -226,15 +226,25 @@ impl<M: Block> Layer<M> {
     ///
     /// The caller owns any class-latent insertion ([`Self::insert_latents`]) and
     /// the outer residual.
+    ///
+    /// `pad` marks the padded rows of a right-padded batch (`None` ⇒ none): the
+    /// block runs on each slot's rows in that slot's own order (see
+    /// [`Padding::in_slot_order`]), everything else here being per row.
     pub fn forward(
         &self,
         x: Tensor<3>,
         cache: Option<M::Cache>,
         options: M::Options,
+        pad: Option<&Padding>,
     ) -> (Tensor<3>, M::Cache) {
         let residual = self.mlp_residual(&x);
         let normed = self.norm.forward(x);
-        let (h1, cache) = self.block.block_forward(normed, cache, options);
+        let (h1, cache) = match pad {
+            None => self.block.block_forward(normed, cache, options, None),
+            Some(pad) => pad.in_slot_order(normed, |normed, pad_bs| {
+                self.block.block_forward(normed, cache, options, Some(pad_bs))
+            }),
+        };
         (self.add_mlp_delta(residual, h1), cache)
     }
 

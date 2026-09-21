@@ -51,7 +51,7 @@ fn block_forward_equals_step_unrolled() {
     let block = block_config().init(&device);
     let x = randn3(2, 6, &device);
 
-    let (y_fwd, cache_fwd) = block.block_forward(x.clone(), None, ());
+    let (y_fwd, cache_fwd) = block.block_forward(x.clone(), None, (), None);
 
     let mut cache = None;
     let mut ys = Vec::new();
@@ -75,9 +75,9 @@ fn block_forward_is_chunkable_through_the_cache() {
     let block = block_config().init(&device);
     let x = randn3(2, 6, &device);
 
-    let (y_all, _) = block.block_forward(x.clone(), None, ());
-    let (y_a, cache) = block.block_forward(x.clone().narrow(1, 0, 4), None, ());
-    let (y_b, _) = block.block_forward(x.narrow(1, 4, 2), Some(cache), ());
+    let (y_all, _) = block.block_forward(x.clone(), None, (), None);
+    let (y_a, cache) = block.block_forward(x.clone().narrow(1, 0, 4), None, (), None);
+    let (y_b, _) = block.block_forward(x.narrow(1, 4, 2), Some(cache), (), None);
 
     assert!(max_abs_diff(y_all, Tensor::cat(vec![y_a, y_b], 1)) < TOL);
 }
@@ -94,7 +94,7 @@ fn layers_forward_equals_step_unrolled() {
     let layers = layers(3, &device);
     let x = randn3(2, 5, &device);
 
-    let (y_fwd, _) = layers.forward(x.clone(), None, (), None);
+    let (y_fwd, _) = layers.forward(x.clone(), None, (), None, None);
 
     let mut caches = None;
     let mut ys = Vec::new();
@@ -123,11 +123,11 @@ fn layer_mlp_reproduces_two_separate_residuals() {
     .init(&device);
     let x = randn3(2, 4, &device);
 
-    let (got, _) = layers.forward(x.clone(), None, (), None);
+    let (got, _) = layers.forward(x.clone(), None, (), None, None);
 
     // Reference: the two residuals written out.
     let layer = &layers.real_layers[0];
-    let (h1, _) = layer.block.block_forward(layer.norm.forward(x.clone()), None, ());
+    let (h1, _) = layer.block.block_forward(layer.norm.forward(x.clone()), None, (), None);
     let residual = x + h1;
     let norm2 = layer.norm2.as_ref().expect("norm2 present with an mlp");
     let mlp = layer.mlp.as_ref().expect("mlp present");
@@ -150,7 +150,7 @@ fn virtual_layers_share_weights_and_keep_one_cache_each() {
 
     let x = Tensor::random([2, 4, D_MODEL], Distribution::Normal(0.0, 1.0), &device)
         .require_grad();
-    let (y, caches) = layers.forward(x.clone(), None, (), None);
+    let (y, caches) = layers.forward(x.clone(), None, (), None, None);
     assert_eq!(caches.slot_count(), 6);
 
     let grads = y.sum().backward();
@@ -172,12 +172,12 @@ fn grad_horizon_cuts_the_prefix_but_not_the_input() {
         .require_grad();
 
     let full = layers_builder(4).init(&device);
-    let (y_full, _) = full.forward(x.clone(), None, (), None);
+    let (y_full, _) = full.forward(x.clone(), None, (), None, None);
 
     let mut uncut = layers_builder(4).init(&device);
     uncut.real_layers = full.real_layers.clone();
     uncut.grad_horizon = Some(GradHorizon::last(4, 4));
-    let (y_uncut, _) = uncut.forward(x.clone(), None, (), None);
+    let (y_uncut, _) = uncut.forward(x.clone(), None, (), None, None);
     assert!(
         max_abs_diff(y_full, y_uncut) < TOL,
         "a horizon tracking everything must reproduce the untouched stack exactly",
@@ -186,7 +186,7 @@ fn grad_horizon_cuts_the_prefix_but_not_the_input() {
     let mut cut = layers_builder(4).init(&device);
     cut.real_layers = uncut.real_layers.clone();
     cut.grad_horizon = Some(GradHorizon::last(1, 4));
-    let (y_cut, _) = cut.forward(x.clone(), None, (), None);
+    let (y_cut, _) = cut.forward(x.clone(), None, (), None, None);
     let grads = y_cut.sum().backward();
 
     assert!(
@@ -222,12 +222,12 @@ fn grad_horizon_stretched_trains_every_real_layer() {
     .init(&device);
 
     let uncut = build();
-    let (y_uncut, caches_uncut) = uncut.forward(x.clone(), None, (), None);
+    let (y_uncut, caches_uncut) = uncut.forward(x.clone(), None, (), None, None);
 
     let mut cut = build();
     cut.real_layers = uncut.real_layers.clone();
     cut.grad_horizon = Some(GradHorizon::Depth(1));
-    let (y_cut, caches_cut) = cut.forward(x.clone(), None, (), None);
+    let (y_cut, caches_cut) = cut.forward(x.clone(), None, (), None, None);
 
     assert!(
         max_abs_diff(y_uncut, y_cut.clone()) < TOL,
@@ -278,7 +278,7 @@ fn grad_horizon_mask_alternates_and_keeps_forward_step_parity() {
         }
         .init(&device);
         let uncut = build();
-        let (y_uncut, _) = uncut.forward(x.clone(), None, (), None);
+        let (y_uncut, _) = uncut.forward(x.clone(), None, (), None, None);
 
         let mut cut = build();
         cut.real_layers = uncut.real_layers.clone();
@@ -286,7 +286,7 @@ fn grad_horizon_mask_alternates_and_keeps_forward_step_parity() {
         // Tracked, cut, tracked, cut, … — four boundaries.
         let mask = vec![true, false, true, false, false, true];
         cut.grad_horizon = Some(GradHorizon::Mask(mask.clone()));
-        let (y_cut, _) = cut.forward(x.clone(), None, (), None);
+        let (y_cut, _) = cut.forward(x.clone(), None, (), None, None);
         assert!(
             max_abs_diff(y_uncut, y_cut.clone()) < TOL,
             "an alternating mask changes the graph, never the values",
@@ -329,7 +329,7 @@ fn grad_horizon_ghosts_an_untracked_layers_class_latent() {
     layers.real_layers[0].class_latents_emb = init_class_emb(1, D_MODEL, &device);
     layers.grad_horizon = Some(GradHorizon::Mask(vec![false, true, false]));
 
-    let (y, _) = layers.forward(randn3(2, 4, &device), None, (), None);
+    let (y, _) = layers.forward(randn3(2, 4, &device), None, (), None, None);
     assert_eq!(y.dims()[1], 5, "the layer's latent lengthens the sequence");
 
     let grads = y.sum().backward();
@@ -369,7 +369,7 @@ fn multi_gate_forward_equals_step_and_stays_bounded() {
     .init(&device);
     let x = randn3(2, 5, &device);
 
-    let (y_fwd, _) = layers.forward(x.clone(), None, (), None);
+    let (y_fwd, _) = layers.forward(x.clone(), None, (), None, None);
 
     let mut caches = None;
     let mut ys = Vec::new();
@@ -407,7 +407,7 @@ fn bidi_virtual_pairs_share_the_real_pair_merge() {
 
     let x = Tensor::random([2, 6, D_MODEL], Distribution::Normal(0.0, 1.0), &device)
         .require_grad();
-    let (y, _) = layers.forward(x, None, (), None);
+    let (y, _) = layers.forward(x, None, (), None, None);
     assert_eq!(y.dims(), [2, 6, D_MODEL]);
 
     let grads = y.sum().backward();
@@ -442,7 +442,7 @@ fn class_token_placement_is_the_same_for_forward_and_step() {
 
     let sequence = 4;
     let x = Tensor::random([1, sequence, 3], Distribution::Normal(0.0, 1.0), &device);
-    let (y_fwd, _) = net.forward(x.clone(), None, (), None);
+    let (y_fwd, _) = net.forward(x.clone(), None, (), None, None);
     assert_eq!(
         y_fwd.dims(),
         [1, sequence + 1, 2],
@@ -474,7 +474,7 @@ fn class_latents_receive_gradients() {
     .init(&device);
 
     let x = Tensor::random([2, 4, D_MODEL], Distribution::Normal(0.0, 1.0), &device);
-    let (y, _) = layers.forward(x, None, (), None);
+    let (y, _) = layers.forward(x, None, (), None, None);
     let grads = y.sum().backward();
 
     let emb = layers.class_latents_emb.as_ref().expect("latent table");
@@ -542,8 +542,8 @@ fn an_untied_stack_is_the_unshared_stack_of_its_application_views() {
     };
     let x = randn3(2, 4, &device);
 
-    let (y, _) = layers.forward(x.clone(), None, (), None);
-    let (want, _) = unshared.forward(x.clone(), None, (), None);
+    let (y, _) = layers.forward(x.clone(), None, (), None, None);
+    let (want, _) = unshared.forward(x.clone(), None, (), None, None);
     assert!(max_abs_diff(y.clone(), want) < TOL);
 
     let mut caches = None;
@@ -557,7 +557,7 @@ fn an_untied_stack_is_the_unshared_stack_of_its_application_views() {
     assert!(max_abs_diff(y.clone(), Tensor::cat(ys, 1)) < TOL);
 
     // Both comparisons prove nothing unless the copies really differ.
-    let (y_tied, _) = tied_view(&layers).forward(x, None, (), None);
+    let (y_tied, _) = tied_view(&layers).forward(x, None, (), None, None);
     assert!(max_abs_diff(y, y_tied) > TOL);
 }
 
@@ -585,8 +585,8 @@ fn untied_copies_start_tied_and_split_the_tied_gradient() {
     let tied = tied_view(&layers);
     let x = randn3(2, 4, &device);
 
-    let (y, _) = layers.forward(x.clone(), None, (), None);
-    let (y_tied, _) = tied.forward(x, None, (), None);
+    let (y, _) = layers.forward(x.clone(), None, (), None, None);
+    let (y_tied, _) = tied.forward(x, None, (), None, None);
     assert!(max_abs_diff(y.clone(), y_tied.clone()) < TOL);
 
     // A view reads the stored parameters, so both gradients land on them.
@@ -622,7 +622,7 @@ fn grad_horizon_refuses_to_cut_an_untied_layer() {
         ..untied_builder()
     }
     .init(&device);
-    let _ = layers.forward(randn3(1, 3, &device), None, (), None);
+    let _ = layers.forward(randn3(1, 3, &device), None, (), None, None);
 }
 
 /// A post-build `InitPolicy` redraws every 2-D `weight` element by element; the
@@ -666,7 +666,7 @@ fn bidi_untied_copies_each_train() {
     let counts: Vec<_> = layers.real_layers.iter().map(|l| l.n_applications).collect();
     assert_eq!(counts, vec![4, 2]);
 
-    let (y, _) = layers.forward(randn3(2, 4, &device), None, (), None);
+    let (y, _) = layers.forward(randn3(2, 4, &device), None, (), None, None);
     let grads = y.sum().backward();
     for layer in &layers.real_layers {
         for param in [&layer.norm.gamma, &layer.block.decay_raw] {

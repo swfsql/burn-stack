@@ -24,6 +24,9 @@ pub mod detach;
 /// API, used by custom-backward gradient math.
 pub mod fprim;
 pub mod init;
+/// Right-padded batches: which rows are padding, and each row's place in its
+/// own slot's sequence once class markers are spliced.
+pub mod padding;
 /// Virtual-layer → real-weight index scheduling shared by all block families.
 pub mod schedule;
 /// Learning-rate schedulers (cosine-annealing + warmup, constant).
@@ -37,6 +40,7 @@ pub mod untied;
 pub use class::{ClassCursor, ClassCursors, ClassLatent, ClassToken};
 pub use detach::detach_params;
 pub use init::InitPolicy;
+pub use padding::Padding;
 pub use schedule::{Applications, BidiSchedule, GradHorizon, Schedule};
 pub use untied::UntiedParam;
 pub use scheduler::{ConstantLr, CosineAnnealingLr, Lr};

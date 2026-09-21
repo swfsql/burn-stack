@@ -3,9 +3,9 @@ use crate::modules::{RmsNorm, RmsNormConfig};
 use crate::prelude::*;
 use crate::utils::class::{
     assert_full_len_known, class_chunk_plan, class_emb_width, class_marker_output_indices,
-    class_prime_plan, class_row, init_class_emb, insert_class_markers,
+    class_prime_plan, class_row, init_class_emb, insert_class_markers_padded,
 };
-use crate::utils::{ClassCursor, ClassCursors};
+use crate::utils::{ClassCursor, ClassCursors, Padding};
 use burn::module::Param;
 use burn::nn::{Embedding, EmbeddingConfig, Linear, LinearConfig};
 use burn::prelude::*;
@@ -56,17 +56,23 @@ where
 
     /// Splice this network's class tokens into the chunk `x` (no-op when there
     /// are none), advancing the network-level cursor.
-    fn insert_tokens(&self, x: Tensor<3>, class: &mut ClassCursors) -> Tensor<3> {
+    fn insert_tokens(
+        &self,
+        x: Tensor<3>,
+        padding: Option<Padding>,
+        class: &mut ClassCursors,
+    ) -> (Tensor<3>, Option<Padding>) {
         let mut cursor = ClassCursor::at(class.network, class.full_len);
-        let x = insert_class_markers(
+        let out = insert_class_markers_padded(
             x,
+            padding,
             &self.class_tokens,
             self.class_tokens_emb.as_ref(),
             &mut cursor,
             "LatentNetwork",
         );
         class.network = cursor.offset;
-        x
+        out
     }
 
     /// `in_proj → layers → out_proj` over a full sequence
@@ -77,21 +83,28 @@ where
     /// latents; `None` takes `x` for the whole sequence. Handing the same
     /// [`ClassCursors`] to consecutive chunks places every marker exactly where
     /// a single call over the concatenated sequence would.
+    ///
+    /// `pad` marks a right-padded batch (`None` ⇒ none), as in
+    /// [`Layers::forward`]; the class tokens are placed against each slot's own
+    /// length too.
     pub fn forward(
         &self,
         x: Tensor<3>,
         caches: Option<M::Caches>,
         options: M::Options,
         class: Option<&mut ClassCursors>,
+        pad: Option<Tensor<2, Bool>>,
     ) -> (Tensor<3>, M::Caches) {
         // No cursors ⇒ this one call covers the whole sequence.
         let mut whole = ClassCursors::new(x.dims()[1]);
         let class = class.unwrap_or(&mut whole);
-        let x = self.insert_tokens(x, class);
+        let (x, padding) = self.insert_tokens(x, pad.map(Padding::new), class);
         let x = self.in_proj.forward(x);
         // The stack's sequence is this one, lengthened by the class tokens.
-        let saved = class.enter(self.class_tokens.len());
-        let (x, caches) = self.layers.forward(x, caches, options, Some(&mut *class));
+        let saved = class.enter(&self.class_tokens);
+        let (x, caches) = self
+            .layers
+            .forward_padded(x, caches, options, Some(&mut *class), padding);
         class.leave(saved);
         let x = self.head(x);
         (x, caches)
@@ -192,7 +205,7 @@ where
         }
         // The stack's own levels may still hold latents waiting for the next
         // token to reach them — the class tokens above just went past.
-        let saved = class.enter(self.class_tokens.len());
+        let saved = class.enter(&self.class_tokens);
         let (y, caches) = self.layers.prime(batch, caches, Some(&mut *class));
         class.leave(saved);
         if let Some(y) = y {
@@ -213,7 +226,7 @@ where
         let (x, caches) = match class {
             // The stack's sequence is this one, lengthened by the class tokens.
             Some(class) => {
-                let saved = class.enter(self.class_tokens.len());
+                let saved = class.enter(&self.class_tokens);
                 let out = self.layers.step(x, caches, Some(&mut *class));
                 class.leave(saved);
                 out
@@ -303,16 +316,18 @@ where
 {
     /// Full-sequence pass: token IDs `[batch, sequence]` → logits
     /// `[batch, sequence, padded_vocab]`. `class` places the inner stack's class
-    /// latents (`None` ⇒ `x` is the whole sequence) — see [`Layers::forward`].
+    /// latents (`None` ⇒ `x` is the whole sequence) and `pad` marks a
+    /// right-padded batch — see [`Layers::forward`].
     pub fn forward(
         &self,
         x: Tensor<2, Int>,
         caches: Option<M::Caches>,
         options: M::Options,
         class: Option<&mut ClassCursors>,
+        pad: Option<Tensor<2, Bool>>,
     ) -> (Tensor<3>, M::Caches) {
         let x = self.embedding.forward(x);
-        let (x, caches) = self.layers.forward(x, caches, options, class);
+        let (x, caches) = self.layers.forward(x, caches, options, class, pad);
         let x = self.norm_f.forward(x);
         (self.apply_lm_head(x), caches)
     }
