@@ -404,7 +404,7 @@ pub fn epoch_train<W: LmModel>(
     valid_device: Device,
 ) -> W {
     let mut loss_metric = burn::train::metric::LossMetric::new();
-    let mut acc_metric = burn::train::metric::AccuracyMetric::new();
+    let mut acc_metric = burn::train::metric::AccuracyMetric::new().with_pad_token(PAD_TARGET);
     let mut iteration_speed_metric = burn::train::metric::IterationSpeedMetric::new();
     let batches = dataloader_train.num_items().div_ceil(config.training.batch_size);
     frontier.reset_stats();
@@ -553,8 +553,8 @@ pub fn epoch_valid<W: LmModel>(
         lr: Some(config.training.lr.get_lr(0).into()),
     };
 
-    let mut loss_metric = burn::train::metric::LossMetric::new();
-    let mut acc_metric = burn::train::metric::AccuracyMetric::new();
+    let mut loss_metric = PerCharLoss::default();
+    let mut acc_metric = burn::train::metric::AccuracyMetric::new().with_pad_token(PAD_TARGET);
 
     // validation loop
     let mut batches = 0;
@@ -574,14 +574,14 @@ pub fn epoch_valid<W: LmModel>(
 
             let (output, final_caches) =
                 W::valid_window(valid_model, run.window(w), caches.take(), &mut class);
-            loss_metric.update(&output.adapt(), &metric_meta);
+            loss_metric.update(&output);
             acc_metric.update(&output.adapt(), &metric_meta);
             caches = Some(final_caches);
         }
     }
 
     // Display the averaged validation metrics.
-    let loss = metric_current(loss_metric.running_value());
+    let loss = loss_metric.value();
     let bits = loss / std::f64::consts::LN_2;
     let acc = metric_current(acc_metric.running_value());
     session.log_valid(
@@ -614,8 +614,15 @@ pub fn epoch_valid<W: LmModel>(
 ///   that way, the exact position an unprompted sample starts from.
 /// - **Padding never reaches the loss.** Stories differ in length, so `scored`
 ///   says how many leading positions of each batch slot are real; the rest are
-///   gathered away before the cross-entropy, which also keeps the accuracy
-///   metric per real character.
+///   masked out of the cross-entropy, whose mean is normalized by the real count,
+///   and carry [`PAD_TARGET`] so the accuracy stays per real character too.
+///
+/// Every shape here is the window's, whatever its stories' lengths: a gather of
+/// the real positions would give each window its own row count, and every
+/// distinct shape a launch sees costs a cached metadata buffer on cubecl
+/// backends, slowing every later allocation (tracel-ai/burn#5751). For the same
+/// reason the real count is summed on the device rather than passed as a host
+/// scalar — kernel scalars are part of that cache's key too.
 pub fn lm_output(
     logits: Tensor<3>,
     inputs: Tensor<2, Int>,
@@ -639,25 +646,69 @@ pub fn lm_output(
         ),
     };
     let positions = logits.dims()[1];
+    let rows = batch_size * positions;
+    let device = logits.device();
+    assert!(
+        scored.iter().any(|&n| n > 0),
+        "a scored window holds at least one token"
+    );
 
-    // Real positions, as flat indices into the `[batch · positions]` axis: a
-    // slot's own are its first `scored` ones, the padding being appended.
-    let keep: Vec<i32> = scored
-        .iter()
-        .enumerate()
-        .flat_map(|(b, &n)| (0..n).map(move |j| (b * positions + j) as i32))
-        .collect();
-    assert!(!keep.is_empty(), "a scored window holds at least one token");
-    let keep = Tensor::<1, Int>::from_ints(keep.as_slice(), &logits.device());
+    // Padding, as a flat mask over the `[batch · positions]` axis: a slot's real
+    // positions are its first `scored` ones, the padding being appended.
+    let scored: Vec<i32> = scored.iter().map(|&n| n as i32).collect();
+    let scored_bp = Tensor::<1, Int>::from_ints(scored.as_slice(), &device)
+        .reshape([batch_size, 1])
+        .expand([batch_size, positions]);
+    let pad = Tensor::<1, Int>::arange(0..positions as i64, &device)
+        .reshape([1, positions])
+        .expand([batch_size, positions])
+        .greater_equal(scored_bp)
+        .reshape([rows]);
 
-    let logits = logits
-        .reshape([batch_size * positions, VOCAB_SIZE])
-        .select(0, keep.clone());
-    let targets = targets.reshape([batch_size * positions]).select(0, keep);
-
-    let loss = burn::nn::loss::CrossEntropyLossConfig::new()
-        .init(&logits.device())
-        .forward(logits.clone(), targets.clone());
+    let logits = logits.reshape([rows, VOCAB_SIZE]);
+    let targets = targets.reshape([rows]);
+    let nll = burn::tensor::activation::log_softmax(logits.clone(), 1)
+        .gather(1, targets.clone().reshape([rows, 1]))
+        .reshape([rows])
+        .neg()
+        .mask_fill(pad.clone(), 0);
+    let real = pad.clone().bool_not().float();
+    let loss = nll.sum() / real.sum();
+    let targets = targets.mask_fill(pad, PAD_TARGET as i64);
 
     ClassificationOutput::new(loss, logits, targets)
+}
+
+/// The target a padded position carries in [`lm_output`]'s
+/// [`ClassificationOutput`]: one past the vocabulary, so no prediction matches
+/// it and `AccuracyMetric::with_pad_token(PAD_TARGET)` leaves it out.
+pub const PAD_TARGET: usize = VOCAB_SIZE;
+
+/// Validation's mean loss per **character**: each window's (already per-real-
+/// character) mean weighted by its real positions, so a late window holding a
+/// few characters of one long story weighs by those characters rather than as a
+/// whole window — Burn's `LossMetric` weights by the loss tensor's length, which
+/// [`lm_output`]'s fixed shapes no longer tie to the real count.
+#[derive(Default)]
+struct PerCharLoss {
+    sum: f64,
+    count: f64,
+}
+
+impl PerCharLoss {
+    fn update(&mut self, output: &ClassificationOutput) {
+        let count = output
+            .targets
+            .clone()
+            .not_equal_elem(PAD_TARGET as i64)
+            .int()
+            .sum()
+            .into_scalar::<i64>() as f64;
+        self.sum += output.loss.clone().into_scalar::<f64>() * count;
+        self.count += count;
+    }
+
+    fn value(&self) -> f64 {
+        self.sum / self.count
+    }
 }
