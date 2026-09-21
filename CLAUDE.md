@@ -100,8 +100,10 @@ src/
 │                    (TinyStoriesConfig + CLI overrides, the FrontierGate, the
 │                    epoch loops + the cache-carrying LmModel seam; lm_output
 │                    scores any extra output positions the model spliced in
-│                    against the story's first character, and gathers the padding
-│                    away — class markers are offered, never assumed), sample.rs
+│                    against the story's first character, and masks the padding
+│                    out at the window's fixed shape — PAD_TARGET rows, the mean
+│                    normalised on device, PerCharLoss for validation; class
+│                    markers are offered, never assumed), sample.rs
 │                    (one prime/prefill/decode sampler over VocabNetwork<M>)
 ├─ optim/            Muon parameter groups (feature `optim`); allowlist, not denylist
 │  ├─ mod.rs         MuonPlan: specs → ModuleOptimizer (AdamW fallback + Muon groups)
@@ -115,6 +117,10 @@ src/
    ├─ class/         ClassToken / ClassLatent placement (CLS-style registers) +
    │                 ClassCursor(s): offsets + full-length hint, shared by
    │                 forward/step/prime
+   ├─ padding.rs     Padding: a right-padded batch's mask + each row's place in
+   │                 its slot's own sequence; splice (class markers), in_slot_order
+   │                 (a block's rows into slot order and back), reversed (bidi);
+   │                 tests.rs: every container vs each slot run alone
    ├─ schedule/      Schedule + BidiSchedule (virtual→real index mapping) +
    │                 Applications (which application of its real layer each
    │                 virtual layer is) + GradHorizon (which virtual layers
@@ -165,6 +171,18 @@ tokens/latents waiting for the next one, returning the last, `None` if none).
 outputs, final cache, **and** gradients. The containers assume it; a family owes
 it. `reference/tests.rs` pins it for `RefBlock`.
 
+### Padded batches
+
+`forward()` (every container, and `Block::block_forward`) takes
+`pad: Option<Tensor<2, Bool>>`, `true` at padding, **right**-padded per slot. A
+padded row is absent: each slot's real outputs and final cache are that slot run
+alone. A block only ever sees a right-padded mask — the containers keep it one
+(`utils/padding.rs`): `Start`/`Custom` take the padding of the token they precede,
+`Middle`/`End` land at each slot's own length (the block then runs on its rows
+gathered into slot order), and bidi's reversed pass reads each slot's real rows
+backwards. `Middle` + mask needs the whole sequence in one call; `End` works
+chunked. `RefBlock` skips padded rows and asserts the contract.
+
 ### Virtual layers, bidirectional, class tokens
 
 - **Virtual layers** (`utils/schedule/`): `Layers<M>` runs `n_virtual_layers`
@@ -202,7 +220,9 @@ it. `reference/tests.rs` pins it for `RefBlock`.
   `&mut ClassCursors` (one `full_len` hint + one cursor per level:
   `network`/`stack`/`per_layer`), so a sequence splits into any number of
   `forward` chunks and/or `step`s without moving a marker. A cursor past a marker
-  skips it (`Start` fires once); `Middle`/`End` panic without the hint. `step`
+  skips it (`Start` fires once); `Middle`/`End` panic without the hint, which a
+  level hands the one above grown by its **landing** markers only
+  (`landing_count`). `step`
   returns the **last** token it emitted; `prime` takes no user token (`End` is
   never primed). `None` keeps the defaults: `forward` = this call is the whole
   sequence, `step`/`prime` = no injection. Read markers back via
