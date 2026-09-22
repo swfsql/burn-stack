@@ -106,6 +106,9 @@ pub struct RefBlock {
     /// The parameters held once per application.
     #[module(skip)]
     pub untied: Vec<RefUntied>,
+    /// See [`RefBlockConfig::check_padding`].
+    #[module(skip)]
+    pub check_padding: bool,
 }
 
 impl RefBlock {
@@ -148,7 +151,7 @@ impl Block for RefBlock {
     ) -> (Tensor<3>, RefCache) {
         let [batch, sequence, _d_model] = x_bsd.dims();
         let device = x_bsd.device();
-        if let Some(pad_bs) = &pad {
+        if let Some(pad_bs) = pad.as_ref().filter(|_| self.check_padding) {
             assert_right_padded(pad_bs.clone());
         }
         let mut state_bd = match cache {
@@ -208,7 +211,8 @@ impl Block for RefBlock {
 /// that the containers keep that promise, whatever they splice.
 fn assert_right_padded(pad_bs: Tensor<2, Bool>) {
     let [_batch, sequence] = pad_bs.dims();
-    let pad = pad_bs.into_data().try_to_vec::<bool>().expect("a bool mask");
+    // Read as ints: a backend may store a bool as a byte.
+    let pad: Vec<bool> = pad_bs.int().into_data().iter::<i64>().map(|v| v != 0).collect();
     for (b, row) in pad.chunks(sequence).enumerate() {
         assert!(
             row.windows(2).all(|w| !w[0] || w[1]),
@@ -225,6 +229,10 @@ pub struct RefBlockConfig {
     /// The parameters held once per application instead of tied.
     #[config(default = "Vec::new()")]
     pub untied: Vec<RefUntied>,
+    /// Whether `forward` checks its `pad` mask is right-padded — a read to the
+    /// host, which a captured forward cannot make.
+    #[config(default = true)]
+    pub check_padding: bool,
 }
 
 impl RefBlockConfig {
@@ -251,6 +259,7 @@ impl RefBlockConfig {
             out_proj: lin(),
             decay_raw,
             untied: self.untied.clone(),
+            check_padding: self.check_padding,
         }
     }
 }

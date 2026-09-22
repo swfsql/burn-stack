@@ -34,7 +34,9 @@
 //! Shapes and the launch sequence are frozen at capture: one batch size, and a
 //! step whose host-side control flow does not change between calls (e.g. no
 //! class marker left to land). Kernels should be compiled and autotuned before
-//! it — see [`WARMUP_STEPS`](crate::utils::graph::WARMUP_STEPS).
+//! it — see [`WARMUP_STEPS`](crate::utils::graph::WARMUP_STEPS). Nor may a step
+//! read back to the host: on CUDA the read fails inside the recording and
+//! leaves the stream capturing, so every later read in the process fails too.
 //!
 //! A stateless call — a fixed-shape `forward` — is the step with caches `()`:
 //! `|x, ()| (f(x), ())`.

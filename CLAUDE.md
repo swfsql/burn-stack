@@ -111,7 +111,9 @@ src/
 │                    markers are offered, never assumed), sample.rs
 │                    (one prime/prefill/decode sampler over VocabNetwork<M>;
 │                    `decode`, the shared loop, draws on the device — the token
-│                    is step state — and replays a CapturedStep)
+│                    is step state — and replays a CapturedStep; a `Prefill`,
+│                    held across prompts, feeds right-padded fixed-shape chunks
+│                    after a kept opening, one captured chunk for all)
 ├─ optim/            Muon parameter groups (feature `optim`); allowlist, not denylist
 │  ├─ mod.rs         MuonPlan: specs → ModuleOptimizer (AdamW fallback + Muon groups)
 │  ├─ spec.rs        ProjSpec/ProjSegment: fused-weight column seams → ParamGroup
