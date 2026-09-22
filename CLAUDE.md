@@ -87,16 +87,21 @@ src/
 │  └─ misc/          gqa, segsum, split, sanity
 ├─ examples/         example scaffolding shared by the consumer crates
 │  │                 (feature `examples-common`, off by default; dev-only)
-│  ├─ cli.rs         AppArgs: parsing (training-config overrides, --resume,
-│  │                 cadence), artifact dir, model/optim/config I/O; the optim
-│  │                 is saved with its TrainingProgress (progress.json)
+│  ├─ cli.rs         AppArgs: every flag examples share (training-config
+│  │                 overrides incl. the optimizer — a flag replaces a loaded one
+│  │                 unless saved optim state would be ignored, then panics —,
+│  │                 --no-graph, --resume, budget, cadence), artifact dir,
+│  │                 model/optim/config I/O (the optim saved with its
+│  │                 TrainingProgress, progress.json); an example's own flags,
+│  │                 after `--`, via `extra` + `finish_extra`
 │  ├─ session.rs     Session, what every epoch loop threads: TrainingProgress
 │  │                 (step, epoch, batch; a resumed epoch finishes from a fresh
-│  │                 shuffle), BatchBudget, Cadence, MetricsLog (metrics.jsonl)
+│  │                 shuffle), Budget, Cadence, MetricsLog (metrics.jsonl)
 │  ├─ device.rs      Device dtype configuration (`dev-f16`) + FloatElement
-│  ├─ training.rs    TrainingConfig + OptimizerConfig (AdamW, optional Muon;
-│  │                 or `sgd`, replacing both); BatchBudget: the
-│  │                 `--max-batches` run cap (not config state)
+│  ├─ training.rs    TrainingConfig + OptimizerConfig {fallback: AdamW | SGD,
+│  │                 optional Muon}, OptimizerKind (the four, `of` = their
+│  │                 defaults); Budget: the --max-batches / --max-seconds run
+│  │                 caps (not config state; the clock starts at the first step)
 │  ├─ mnist/         dataset.rs (download + batching), classify.rs (the epoch
 │  │                 loops + the MnistModel seam; `train_step` is the whole
 │  │                 step, overridable to fuse/capture it), render.rs (a digit beside
@@ -104,8 +109,9 @@ src/
 │  └─ tiny_stories/  dataset.rs (character corpus: alphabet, whole-parquet
 │                    download + text cache, one story per item, batches padded
 │                    to whole windows with a per-slot `scored` count), lm.rs
-│                    (TinyStoriesConfig + CLI overrides, the FrontierGate, the
-│                    epoch loops + the cache-carrying LmModel seam; lm_output
+│                    (TinyStoriesConfig + its corpus-flag Overrides, the
+│                    FrontierGate, the epoch loops + the cache-carrying LmModel
+│                    seam; lm_output
 │                    scores any extra output positions the model spliced in
 │                    against the story's first character, and masks the padding
 │                    out at the window's fixed shape — PAD_TARGET rows, the mean
@@ -118,14 +124,17 @@ src/
 │                    after a kept opening, one captured chunk for all)
 ├─ optim/            Muon parameter groups (feature `optim`); allowlist, not
 │                    denylist; + the capturable SGD
-│  ├─ mod.rs         MuonPlan: specs → ModuleOptimizer (AdamW fallback + Muon groups)
+│  ├─ mod.rs         MuonPlan: specs → ModuleOptimizer (FallbackConfig: AdamW |
+│  │                 SGD, + Muon groups)
 │  ├─ spec.rs        ProjSpec/ProjSegment: fused-weight column seams → ParamGroup
 │  │                 (`tiled`: one copy per application); BLOCK_CONTAINERS = the
 │  │                 field names a block is stored under
-│  ├─ segmented.rs   Segmented: one optimizer per column block of a fused weight
+│  ├─ segmented.rs   Segmented: one optimizer per column block of a fused weight;
+│  │                 an SGD block is stateless and holds no state entry
 │  ├─ sgd.rs         SgdConfig: plain SGD (decay, clipping, no momentum); `init`
-│  │                 = Burn's Sgd, `step` = the same op for op with a `[1]`
-│  │                 device LR — the one optimizer a captured step can replay
+│  │                 = Burn's Sgd (`build` its bare one), `step` = the same op for
+│  │                 op with a `[1]` device LR — the one optimizer a captured step
+│  │                 can replay
 │  └─ report.rs      MuonPlan::describe(&module): per-param optimizer assignment
 └─ utils/            lower-level plumbing
    ├─ mod.rs         div_eps (per-dtype epsilon)
@@ -311,7 +320,8 @@ chunked. `RefBlock` skips padded rows and asserts the contract.
   its own optimizer — so each sub-matrix is orthogonalised and shape-LR-adjusted
   alone, while the forward keeps its single fused GEMM. Per-head *scalar*
   channels, every 1-D/3-D tensor, and the boundary weights (embedding, LM head,
-  network in/out projections, class-token tables) stay on AdamW. A spec matches
+  network in/out projections, class-token tables) stay on the fallback (AdamW or
+  plain SGD). A spec matches
   its container (`"block."`, the suffix of every `BLOCK_CONTAINERS` entry) and
   its weight as **separate** path substrings, both required — so one plan covers
   plain, virtual-layer and bidirectional stacks, hand-written models, and a

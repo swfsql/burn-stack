@@ -706,7 +706,7 @@ fn muon_plan_matches_only_existing_rank_2_weights() {
     assert_eq!(on_muon, 6, "3 listed weights x 2 real layers");
     for line in report.lines().filter(|l| l.contains("decay_raw")) {
         assert!(
-            line.ends_with("adamw"),
+            line.ends_with("fallback"),
             "the rank-1 decay stays on the fallback optimizer: {line}",
         );
     }

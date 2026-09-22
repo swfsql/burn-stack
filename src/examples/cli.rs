@@ -4,19 +4,28 @@
 //! [`TrainingProgress`]), plus the [`Session`] a training run threads through its
 //! epoch loops.  See [`HELP`] for the full command-line behaviour.
 //!
+//! [`AppArgs`] carries every flag an example may share; the arguments after
+//! `--` are the example's own, which it parses from [`AppArgs::extra`] and
+//! closes with [`finish_extra`].
+//!
 //! The one thing this module cannot know is *whose* example is running, so
 //! [`AppArgs::parse`] takes the prefix of the auto-created artifacts directory
 //! (conventionally `concat!(env!("CARGO_PKG_NAME"), "-", env!("CARGO_BIN_NAME"),
 //! "-")`, evaluated in the example crate).
 
+#[cfg(test)]
+mod tests;
+
 use crate::examples::session::{Cadence, MetricsLog, Session, TrainingProgress};
-use crate::examples::training::{BatchBudget, Lr, TrainingConfig};
+use crate::examples::training::{Budget, Lr, OptimizerConfig, OptimizerKind, TrainingConfig};
 use crate::modules::ModelConfigExt;
 use burn::optim::ModuleOptimizer;
 use burn::prelude::*;
 use burn::store::ModuleRecord;
+use burn::tensor::DType;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// The `--help` text describing every flag and the train/infer/config flow.
 pub const HELP: &str = "\
@@ -37,13 +46,15 @@ BEHAVIOR OVERVIEW
 - The artifacts directory (--artifacts-path) is used to read/write model weights, optimizer state, and configurations. If not specified, a new temporary directory is created and its path is printed.
 - With --remove-artifacts, any existing model and optimizer files (and the saved progress) in the artifacts directory are deleted before training (if --training is active).
 - Model and optimizer weights are loaded from the artifacts directory if present; otherwise new ones are created and saved.
-- With --seed, --epochs or --max-lr, the given value replaces the training config's (loaded or created) before the config is saved, so later runs from the same artifacts directory inherit it. --epochs also rescales a cosine LR schedule's length by the same factor, so the schedule still spans the run.
+- With --seed, --epochs, --batch-size or --max-lr, the given value replaces the training config's (loaded or created) before the config is saved, so later runs from the same artifacts directory inherit it. --epochs also rescales a cosine LR schedule's length by the same factor, so the schedule still spans the run; --batch-size rescales its length and warmup by the inverse one (an epoch has that many fewer steps).
+- --adamw, --sgd and --muon choose the optimizer. --muon puts the model's hidden weight matrices on Muon and the other flag (default --adamw) optimizes every other parameter; --adamw and --sgd are exclusive. Without any of them a new training config gets the example's own default. A loaded config's optimizer is replaced by the flags' choice (its LR schedule is kept: see --max-lr), unless optimizer state saved under the old optimizer would then be ignored, which panics instead (the state is removed by --remove-artifacts with --training). Only plain SGD (--sgd alone) has a training step that replays from a captured graph.
+- An example that supports it replays its fixed-shape passes (training steps under plain SGD, validation, decoding) from captured CUDA graphs; --no-graph runs every pass eagerly.
 - The optimizer state is saved together with the run's progress: the LR-schedule step, the epoch, and the batch within it. A run that loads it starts over at step 0 of epoch 1, unless --resume is given, which continues from the saved progress. The interrupted epoch then trains only the batches it has left, drawn from a fresh shuffle (the dataloader workers' batch order cannot be replayed).
 - Training checkpoints at every epoch end and when it stops. --checkpoint-every adds a checkpoint every that many optimizer steps, --valid-every a periodic validation, and --valid-batches caps the batches that validation reads; each example has its own defaults for these three.
 - Every training step and validation is appended as one JSON line to metrics.jsonl in the artifacts directory; each run opens with a \"start\" line.
 - If both --training and --inference are specified, training executes first, followed by inference using the trained model.
-- With --max-batches, training stops after that many mini-batches in total (counted across epochs), checkpointing as usual before it returns. One mini-batch is one optimizer step, which for the character LM is one window of a run rather than one dataloader item.
-- Any arguments following -- are captured as-is and forwarded to downstream processing.
+- With --max-batches, training stops after that many mini-batches in total (counted across epochs), checkpointing as usual before it returns. One mini-batch is one optimizer step, which for the character LM is one window of a run rather than one dataloader item. --max-seconds stops it the same way once that much wall-clock time has passed since its first step.
+- Any arguments following -- are captured as-is and forwarded to the example's own flags (-- --help lists them).
 
 FLAGS:
     -h, --help                  Show this help message and exit
@@ -58,9 +69,15 @@ OPTIONS:
     -m, --model-config <PATH>   Load model configuration from this file (overrides any config in artifacts directory)
     -b, --max-batches <N>       Stop training after N mini-batches in total (across epochs), regardless of the
                                 configured number of epochs. Unlimited when absent.
+        --max-seconds <S>       Stop training once S seconds have passed since its first step. Unlimited when absent.
     -s, --seed <N>              Replace the training config's RNG seed (model init, data shuffling, sampling)
         --epochs <N>            Replace the training config's number of epochs (rescaling a cosine LR schedule)
+        --batch-size <N>        Replace the training config's mini-batch size (rescaling a cosine LR schedule)
         --max-lr <LR>           Replace the LR schedule's peak rate (a constant schedule's only one)
+        --adamw                 Optimize with AdamW (with --muon: every parameter Muon does not own)
+        --sgd                   Optimize with plain SGD (with --muon: every parameter Muon does not own)
+        --muon                  Put the hidden weight matrices on Muon
+        --no-graph              Run every pass eagerly instead of replaying captured CUDA graphs
         --resume                Continue from the progress saved with the optimizer state (schedule step, epoch,
                                 batch) instead of from step 0 (has no effect on a new optimizer)
         --checkpoint-every <N>  Also checkpoint every N optimizer steps (0: only at epoch ends)
@@ -72,8 +89,8 @@ OPTIONS:
                                 Defaults to a newly created temporary directory (path will be printed).
 
 ARGS:
-    -- <EXTRA_ARGS>             All arguments after -- are forwarded verbatim to further processing stages.
-                                If further processing is available, passing -h or --help will display its help information.
+    -- <EXTRA_ARGS>             All arguments after -- are forwarded verbatim to the example's own flags.
+                                Passing -h or --help there displays its help information.
 ";
 
 /// Parsed command-line arguments. For field descriptions, see [`HELP`].
@@ -92,17 +109,29 @@ pub struct AppArgs {
     /// Directory for configs, model weights, and optimizer state.
     pub artifacts_path: PathBuf,
     /// Optional cap on the total number of training mini-batches; see
-    /// [`BatchBudget`].
+    /// [`Budget`].
     pub max_batches: Option<usize>,
+    /// Optional cap on the training wall-clock time, in seconds; see
+    /// [`Budget`].
+    pub max_seconds: Option<f64>,
     /// Optional replacement for the training config's seed; see
     /// [`AppArgs::override_training_config`].
     pub seed: Option<u64>,
     /// Optional replacement for the training config's number of epochs; see
     /// [`AppArgs::override_training_config`].
     pub epochs: Option<usize>,
+    /// Optional replacement for the training config's mini-batch size; see
+    /// [`AppArgs::override_training_config`].
+    pub batch_size: Option<usize>,
     /// Optional replacement for the LR schedule's peak rate; see
     /// [`AppArgs::override_training_config`].
     pub max_lr: Option<f64>,
+    /// The optimizer `--adamw` / `--sgd` / `--muon` chose, if any: a fresh
+    /// config's (see [`AppArgs::optimizer_or`]), and a loaded one's replacement
+    /// (see [`AppArgs::override_training_config`]).
+    pub optimizer: Option<OptimizerKind>,
+    /// Whether captured graphs are off (`--no-graph`); see [`AppArgs::graphs`].
+    pub no_graph: bool,
     /// Whether a loaded optimizer continues from its saved [`TrainingProgress`]
     /// (see [`AppArgs::load_or_save_optim`]) rather than from step `0`.
     pub resume: bool,
@@ -124,7 +153,14 @@ impl AppArgs {
     pub fn parse(artifact_prefix: &str) -> Result<Self, pico_args::Error> {
         let mut args: Vec<_> = std::env::args_os().collect();
         args.remove(0); // remove the executable path.
+        Self::parse_from(args, artifact_prefix)
+    }
 
+    /// [`parse`](Self::parse) over `args`, the executable path excluded.
+    pub fn parse_from(
+        mut args: Vec<OsString>,
+        artifact_prefix: &str,
+    ) -> Result<Self, pico_args::Error> {
         // Find and process `--`.
         let extra_args = if let Some(dash_dash) = args.iter().position(|arg| arg == "--") {
             // Store all arguments following ...
@@ -149,8 +185,10 @@ impl AppArgs {
                 .opt_value_from_os_str(["-c", "--training-config"], parse_path)?,
             model_config: pargs.opt_value_from_os_str(["-m", "--model-config"], parse_path)?,
             max_batches: pargs.opt_value_from_str(["-b", "--max-batches"])?,
+            max_seconds: pargs.opt_value_from_str("--max-seconds")?,
             seed: pargs.opt_value_from_str(["-s", "--seed"])?,
             epochs: pargs.opt_value_from_str("--epochs")?,
+            batch_size: pargs.opt_value_from_str("--batch-size")?,
             max_lr: pargs.opt_value_from_str("--max-lr")?,
             checkpoint_every: pargs.opt_value_from_str("--checkpoint-every")?,
             valid_every: pargs.opt_value_from_str("--valid-every")?,
@@ -158,6 +196,11 @@ impl AppArgs {
             artifacts_path: pargs
                 .opt_value_from_os_str(["-a", "--artifacts-path"], parse_path)?
                 .unwrap_or_else(|| {
+                    // The example's `extra` prints its help and exits: nothing
+                    // to create a directory for.
+                    if extra_args.iter().any(|arg| arg == "-h" || arg == "--help") {
+                        return PathBuf::new();
+                    }
                     // e.g. /tmp/burn-mamba-reset-majority-abcd-0
                     let tmp = temp_dir::TempDir::with_prefix(artifact_prefix)
                         .expect("Failed to create the temporary directory")
@@ -171,6 +214,8 @@ impl AppArgs {
             inference: pargs.contains(["-i", "--inference"]),
             remove_artifacts: pargs.contains(["-r", "--remove-artifacts"]),
             resume: pargs.contains("--resume"),
+            optimizer: parse_optimizer(&mut pargs),
+            no_graph: pargs.contains("--no-graph"),
             extra_args,
         };
 
@@ -180,6 +225,29 @@ impl AppArgs {
         }
 
         Ok(args)
+    }
+
+    /// The arguments after `--`, for the example's own parser; with `-h` /
+    /// `--help` among them, prints `help` and exits. Close it with
+    /// [`finish_extra`].
+    pub fn extra(&self, help: &str) -> pico_args::Arguments {
+        let mut pargs = pico_args::Arguments::from_vec(self.extra_args.clone());
+        if pargs.contains(["-h", "--help"]) {
+            println!("{help}");
+            std::process::exit(0);
+        }
+        pargs
+    }
+
+    /// The optimizer a fresh training config gets: the flags' choice, else the
+    /// example's `default`.
+    pub fn optimizer_or(&self, default: OptimizerKind) -> OptimizerKind {
+        self.optimizer.unwrap_or(default)
+    }
+
+    /// Whether to replay passes from captured graphs (unless `--no-graph`).
+    pub fn graphs(&self) -> bool {
+        !self.no_graph
     }
 
     /// The example's `defaults` under the `--checkpoint-every` /
@@ -201,8 +269,8 @@ impl AppArgs {
     /// [`load_or_save_optim`](Self::load_or_save_optim) returned), following
     /// `training`'s LR schedule over a training split of `items_total` items,
     /// at the example's `cadence` defaults (see [`cadence`](Self::cadence)).
-    /// Its budget is `--max-batches`; its log, the artifacts directory's
-    /// metrics log.
+    /// Its budget is `--max-batches` and `--max-seconds`; its log, the
+    /// artifacts directory's metrics log.
     pub fn session(
         &self,
         progress: TrainingProgress,
@@ -212,7 +280,7 @@ impl AppArgs {
     ) -> Session {
         Session::new(
             progress,
-            BatchBudget::new(self.max_batches),
+            Budget::new(self.max_batches, self.max_seconds.map(Duration::from_secs_f64)),
             self.cadence(cadence),
             training.lr.clone(),
             items_total,
@@ -251,15 +319,33 @@ impl AppArgs {
             })
     }
 
-    /// Apply the invocation's overrides (`--seed`, `--epochs`, `--max-lr`) onto
-    /// `training`, the loaded or freshly created config, before it is saved.
+    /// Apply the invocation's overrides (`--seed`, `--batch-size`, `--epochs`,
+    /// `--max-lr`, the optimizer flags) onto `training`, the loaded or freshly
+    /// created config, before it is saved.
     ///
     /// `--epochs` rescales a cosine schedule's `total_steps` by the same factor,
     /// so a schedule sized to the run still spans it (a resumed run then lands
     /// where the longer or shorter cosine has it); the warmup is left alone.
-    pub fn override_training_config(&self, training: &mut TrainingConfig) {
+    /// `--batch-size` rescales both by the inverse factor, since an epoch then
+    /// takes that many fewer steps.
+    ///
+    /// An optimizer flag that disagrees with `training`'s replaces it with
+    /// [`OptimizerConfig::of`] (`dtype` sizes AdamW's epsilon), keeping the LR
+    /// schedule. It panics instead when optimizer state is saved in the
+    /// artifacts directory — i.e. when this is not a fresh run, nor one whose
+    /// `--remove-artifacts --training` already removed it — and the old
+    /// optimizer has any (plain SGD has none), since that state would then be
+    /// loaded into an optimizer that ignores it.
+    pub fn override_training_config(&self, training: &mut TrainingConfig, dtype: DType) {
         if let Some(seed) = self.seed {
             training.seed = seed;
+        }
+        if let Some(batch_size) = self.batch_size {
+            if let Lr::CosineAnnealing(cosine) = &mut training.lr {
+                cosine.total_steps = cosine.total_steps * training.batch_size / batch_size;
+                cosine.warmup_steps = cosine.warmup_steps * training.batch_size / batch_size;
+            }
+            training.batch_size = batch_size;
         }
         if let Some(epochs) = self.epochs {
             if let Lr::CosineAnnealing(cosine) = &mut training.lr {
@@ -272,6 +358,20 @@ impl AppArgs {
                 Lr::CosineAnnealing(cosine) => cosine.max_lr = max_lr,
                 Lr::Constant(constant) => constant.lr = max_lr,
             }
+        }
+        let saved = training.optimizer.kind();
+        if let Some(kind) = self.optimizer.filter(|&kind| kind != saved) {
+            let optim = self.artifacts_path.join(OPTIM_NAME).with_extension(RECORD_EXT);
+            let has_state = saved != OptimizerKind::Sgd
+                && std::fs::exists(&optim).expect("failed to check {optim:?}");
+            assert!(
+                !has_state,
+                "the training config's optimizer is {saved:?}, and its state {optim:?} would be \
+                 ignored under {kind:?}: drop the optimizer flags to keep it, or remove it \
+                 (--remove-artifacts --training)"
+            );
+            println!("Replacing the training config's optimizer ({saved:?}) with {kind:?}");
+            training.optimizer = OptimizerConfig::of(kind, dtype);
         }
     }
 
@@ -388,6 +488,30 @@ impl AppArgs {
 /// `pico-args` value parser turning an `OsStr` into a `PathBuf`.
 pub fn parse_path(s: &std::ffi::OsStr) -> Result<std::path::PathBuf, &'static str> {
     Ok(s.into())
+}
+
+/// Close an example's parser over [`AppArgs::extra`]: panics on any argument it
+/// left over.
+pub fn finish_extra(pargs: pico_args::Arguments) {
+    let remaining = pargs.finish();
+    assert!(remaining.is_empty(), "unused extra arguments: {remaining:?}");
+}
+
+/// `--adamw` / `--sgd` / `--muon` (see [`HELP`]); `None` when none is given.
+fn parse_optimizer(pargs: &mut pico_args::Arguments) -> Option<OptimizerKind> {
+    let (adamw, sgd, muon) = (
+        pargs.contains("--adamw"),
+        pargs.contains("--sgd"),
+        pargs.contains("--muon"),
+    );
+    match (adamw, sgd, muon) {
+        (true, true, _) => panic!("--adamw and --sgd are exclusive"),
+        (false, false, false) => None,
+        (_, false, false) => Some(OptimizerKind::AdamW),
+        (_, true, false) => Some(OptimizerKind::Sgd),
+        (_, false, true) => Some(OptimizerKind::MuonAdamW),
+        (_, true, true) => Some(OptimizerKind::MuonSgd),
+    }
 }
 
 /// Create the artifacts directory; when `delete` is set, remove any existing

@@ -11,17 +11,18 @@
 //!
 //! Nothing about the *model* changes: the forward pass keeps one fused GEMM.
 //!
-//! Slicing along columns is exact for every optimizer used here: AdamW is
-//! elementwise, and Muon's Newton–Schulz is per-matrix. A [`Segmented`] whose
-//! blocks are all AdamW is therefore bit-comparable to plain AdamW on the whole
-//! tensor (asserted in `tests.rs`).
+//! Slicing along columns is exact for every optimizer used here: AdamW and SGD
+//! are elementwise, and Muon's Newton–Schulz is per-matrix. A [`Segmented`]
+//! whose blocks are all AdamW is therefore bit-comparable to plain AdamW on the
+//! whole tensor (asserted in `tests.rs`).
 
 use burn::optim::{
-    AdamW, AdamWState, LearningRate, Muon, MuonState, Optimizer, RecordState, StateSink,
+    AdamW, AdamWState, LearningRate, Muon, MuonState, Optimizer, RecordState, Sgd, StateSink,
     StateSource, join_index,
 };
 use burn::prelude::*;
 
+use super::Fallback;
 use super::spec::ProjSpec;
 
 /// The optimizer owning one column block.
@@ -29,8 +30,17 @@ use super::spec::ProjSpec;
 enum BlockOptim {
     /// Muon — orthogonalised momentum-SGD, for genuine feature maps.
     Muon(Muon),
-    /// AdamW — the fallback for scalar-producing (or otherwise unsuitable) blocks.
+    /// The fallback for scalar-producing (or otherwise unsuitable) blocks: AdamW …
     AdamW(AdamW),
+    /// … or plain SGD, which has no state and so no entry in a
+    /// [`SegmentedState`].
+    Sgd(Sgd),
+}
+
+impl BlockOptim {
+    fn is_stateful(&self) -> bool {
+        !matches!(self, Self::Sgd(_))
+    }
 }
 
 /// One column block's optimizer state.
@@ -45,7 +55,8 @@ pub enum BlockState<const D: usize> {
     AdamW(AdamWState<D>),
 }
 
-/// State of a [`Segmented`] optimizer: one entry per column block, in order.
+/// State of a [`Segmented`] optimizer: one entry per stateful column block
+/// (every block but an SGD one), in order.
 #[derive(Clone)]
 pub struct SegmentedState<const D: usize> {
     /// Per-block states, in the same order as the [`ProjSpec`] segments.
@@ -65,9 +76,14 @@ pub struct Segmented {
 }
 
 impl Segmented {
-    /// Build the per-block optimizers for `spec`, splitting along `dim`
-    /// (`1` for a Burn `Linear` weight, whose layout is `[d_input, d_output]`).
-    pub fn new(spec: &ProjSpec, muon: Muon, adamw: AdamW, dim: usize) -> Self {
+    /// Build the per-block optimizers for `spec` — `muon` on its Muon segments,
+    /// `fallback` on the rest — splitting along `dim` (`1` for a Burn `Linear`
+    /// weight, whose layout is `[d_input, d_output]`).
+    pub fn new(spec: &ProjSpec, muon: Muon, fallback: impl Into<Fallback>, dim: usize) -> Self {
+        let fallback = match fallback.into() {
+            Fallback::AdamW(adamw) => BlockOptim::AdamW(adamw),
+            Fallback::Sgd(sgd) => BlockOptim::Sgd(sgd),
+        };
         let optims = spec
             .segments
             .iter()
@@ -75,7 +91,7 @@ impl Segmented {
                 if s.muon {
                     BlockOptim::Muon(muon.clone())
                 } else {
-                    BlockOptim::AdamW(adamw.clone())
+                    fallback.clone()
                 }
             })
             .collect();
@@ -115,6 +131,7 @@ impl Optimizer for Segmented {
             self.dim
         );
         let n_blocks = self.optims.len() * copies;
+        let n_states = self.optims.iter().filter(|o| o.is_stateful()).count() * copies;
         let widths: Vec<usize> = self.widths.iter().copied().cycle().take(n_blocks).collect();
 
         let tensors = tensor.split_with_sizes(widths.clone(), self.dim);
@@ -122,19 +139,20 @@ impl Optimizer for Segmented {
 
         // A missing (first-step) state, or one whose length drifted from the
         // spec, restarts every block from scratch rather than mis-pairing them.
-        let mut prev: Vec<Option<BlockState<D>>> = match state {
-            Some(s) if s.blocks.len() == n_blocks => s.blocks.into_iter().map(Some).collect(),
-            _ => (0..n_blocks).map(|_| None).collect(),
-        };
+        let mut prev = match state {
+            Some(s) if s.blocks.len() == n_states => s.blocks,
+            _ => Vec::new(),
+        }
+        .into_iter();
 
         let mut out = Vec::with_capacity(n_blocks);
-        let mut blocks = Vec::with_capacity(n_blocks);
+        let mut blocks = Vec::with_capacity(n_states);
 
         for (i, optim) in self.optims.iter().cycle().take(n_blocks).enumerate() {
             let (t, g) = (tensors[i].clone(), grads[i].clone());
             match optim {
                 BlockOptim::Muon(muon) => {
-                    let prev = match prev[i].take() {
+                    let prev = match prev.next() {
                         Some(BlockState::Muon(s)) => Some(s),
                         _ => None,
                     };
@@ -143,7 +161,7 @@ impl Optimizer for Segmented {
                     blocks.extend(s.map(BlockState::Muon));
                 }
                 BlockOptim::AdamW(adamw) => {
-                    let prev = match prev[i].take() {
+                    let prev = match prev.next() {
                         Some(BlockState::AdamW(s)) => Some(s),
                         _ => None,
                     };
@@ -151,11 +169,12 @@ impl Optimizer for Segmented {
                     out.push(t);
                     blocks.extend(s.map(BlockState::AdamW));
                 }
+                BlockOptim::Sgd(sgd) => out.push(sgd.step(lr, t, g, None).0),
             }
         }
 
-        // Both inner optimizers always return a state, so `blocks` is complete.
-        assert_eq!(blocks.len(), n_blocks);
+        // Muon and AdamW always return a state, so `blocks` is complete.
+        assert_eq!(blocks.len(), n_states);
         (Tensor::cat(out, self.dim), Some(SegmentedState { blocks }))
     }
 

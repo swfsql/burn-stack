@@ -87,8 +87,8 @@ pub const CADENCE: Cadence = Cadence {
 /// checkpointing and validating at the `session`'s cadence; returns the updated
 /// model.
 ///
-/// The epoch ends early once the session's budget (the `--max-batches` cap) runs
-/// out; the caller's epoch loop should then stop, seeing
+/// The epoch ends early once the session's budget (the `--max-batches` /
+/// `--max-seconds` caps) runs out; the caller's epoch loop should then stop, seeing
 /// [`Session::is_exhausted`].
 #[allow(clippy::too_many_arguments)]
 pub fn epoch_train<W: MnistModel>(
@@ -165,6 +165,10 @@ pub fn epoch_train<W: MnistModel>(
             let probs = W::predict(&valid_model, sample_imgs.clone());
             render::save_predictions(probs, sample_imgs.clone(), &sample_labels, &sample_dir);
             println!("saved prediction samples to {sample_dir:?}");
+        }
+
+        if session.is_exhausted() {
+            break;
         }
     }
 

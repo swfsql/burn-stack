@@ -43,7 +43,7 @@ pub struct ProjSegment {
     /// Number of columns this segment spans.
     pub width: usize,
     /// Whether Muon owns this segment (`false` ⇒ it stays on the fallback
-    /// optimizer, i.e. AdamW).
+    /// optimizer, [`FallbackConfig`](super::FallbackConfig)).
     pub muon: bool,
 }
 

@@ -39,7 +39,8 @@ impl ModuleVisitor for Collect {
 impl MuonPlan {
     /// A per-parameter report of this plan applied to `module`: path, shape, and
     /// the owning optimizer (with the column segments for a fused weight, `*`
-    /// marking the ones left on AdamW), plus the share of parameters on Muon.
+    /// marking the ones left on the fallback), plus the share of parameters on
+    /// Muon.
     ///
     /// Purely diagnostic — print it once to confirm the plan matches the model
     /// you actually built.
@@ -61,7 +62,7 @@ impl MuonPlan {
                 .find(|spec| spec.param_group().matches(&row.id, Some(row.path.as_str())));
 
             let owner = match spec {
-                None => "adamw".to_string(),
+                None => "fallback".to_string(),
                 Some(spec) => {
                     let muon_width: usize =
                         spec.segments.iter().filter(|s| s.muon).map(|s| s.width).sum();
@@ -98,7 +99,7 @@ impl MuonPlan {
         };
         let _ = writeln!(
             out,
-            "total params: {total}; on muon: {on_muon} ({share:.1}%)  (* = segment left on adamw)"
+            "total params: {total}; on muon: {on_muon} ({share:.1}%)  (* = segment left on the fallback)"
         );
         out
     }

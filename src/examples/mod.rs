@@ -2,8 +2,8 @@
 //!
 //! None of this is part of the composition layer: it is the plumbing every
 //! `examples/` directory otherwise rewrites — CLI + artifact handling ([`cli`]),
-//! runtime dtype selection ([`device`]), the [`training`] config (AdamW,
-//! optionally Muon), the per-invocation [`session`] every epoch loop threads
+//! runtime dtype selection ([`device`]), the [`training`] config (AdamW or SGD,
+//! optionally with Muon), the per-invocation [`session`] every epoch loop threads
 //! (resume position, budget, cadence, metrics log), and the two datasets with
 //! their epoch loops — the
 //! sequential-[`mnist`] classifier and the character-level [`tiny_stories`]

@@ -57,7 +57,6 @@ use burn::{
     train::metric::{Adaptor, Metric, MetricMetadata, Numeric},
     train::{ClassificationOutput, TrainOutput},
 };
-use std::ffi::OsString;
 
 /// A batched next-character-window dataloader.
 pub type Dataloader = std::sync::Arc<dyn DataLoader<TinyStoriesBatch> + 'static>;
@@ -185,7 +184,8 @@ impl Frontier {
 }
 
 /// Corpus knobs forwarded after `--`; each applies on top of the loaded/created
-/// [`TinyStoriesConfig`] (and is then persisted with it).
+/// [`TinyStoriesConfig`] (and is then persisted with it). The batch size and
+/// the optimizer are [`AppArgs`]'.
 pub struct Overrides {
     /// `--seq-len <usize>`: characters per training window.
     pub seq_len: Option<usize>,
@@ -200,31 +200,30 @@ pub struct Overrides {
     pub train_stories: Option<usize>,
     /// `--valid-stories <usize>`: stories pulled from the validation split.
     pub valid_stories: Option<usize>,
-    /// `--batch-size <usize>`: windows per optimizer step.
-    pub batch_size: Option<usize>,
-    /// `--no-muon`: keep the block's hidden weight matrices on AdamW instead of
-    /// moving them to Muon (which is the default of both examples).
-    pub no_muon: bool,
 }
 
 impl Overrides {
-    /// Parse the flags out of the arguments forwarded after `--`; anything left
-    /// over is a caller error and panics.
-    pub fn parse(extra_args: &[OsString]) -> Self {
-        let mut pargs = pico_args::Arguments::from_vec(extra_args.to_vec());
-        let overrides = Overrides {
+    /// The `--help` lines of these flags, for the example's own help text.
+    pub const HELP: &str = concat!(
+        "    --seq-len <N>          Characters per training window\n",
+        "    --run-len <N>          Cap on the windows one story may spend (1: stateless)\n",
+        "    --frontier-bits <B>    Carry a window's state on while it scored at most B bits/char\n",
+        "    --no-frontier          Carry the state through the whole story, ungated\n",
+        "    --train-stories <N>    Stories pulled from the train split\n",
+        "    --valid-stories <N>    Stories pulled from the validation split",
+    );
+
+    /// Take the flags out of the example's parser over the arguments forwarded
+    /// after `--` (see [`AppArgs::extra`]), leaving the rest to it.
+    pub fn parse(pargs: &mut pico_args::Arguments) -> Self {
+        Overrides {
             seq_len: pargs.opt_value_from_str("--seq-len").unwrap(),
             run_len: pargs.opt_value_from_str("--run-len").unwrap(),
             frontier_bits: pargs.opt_value_from_str("--frontier-bits").unwrap(),
             no_frontier: pargs.contains("--no-frontier"),
             train_stories: pargs.opt_value_from_str("--train-stories").unwrap(),
             valid_stories: pargs.opt_value_from_str("--valid-stories").unwrap(),
-            batch_size: pargs.opt_value_from_str("--batch-size").unwrap(),
-            no_muon: pargs.contains("--no-muon"),
-        };
-        let remaining = pargs.finish();
-        assert!(remaining.is_empty(), "unused extra arguments: {remaining:?}");
-        overrides
+        }
     }
 
     /// Apply the parsed flags onto `config`.
@@ -246,15 +245,6 @@ impl Overrides {
         }
         if let Some(valid_stories) = self.valid_stories {
             config.valid_stories = valid_stories;
-        }
-        if let Some(batch_size) = self.batch_size {
-            config.training.batch_size = batch_size;
-        }
-        if self.no_muon {
-            // Muon reuses AdamW's LR and weight decay (`MatchRmsAdamW` sizes its
-            // update to AdamW's RMS), so only the optimizer of the planned
-            // matrices changes between the two arms.
-            config.training.optimizer = config.training.optimizer.clone().with_muon(None);
         }
     }
 }
@@ -385,8 +375,8 @@ pub const CADENCE: Cadence = Cadence {
 /// as long as `frontier` admits it; validate, sample and checkpoint at the
 /// `session`'s cadence. Returns the updated model.
 ///
-/// The epoch ends early once the session's budget (the `--max-batches` cap) runs
-/// out; the caller's epoch loop should then stop, seeing
+/// The epoch ends early once the session's budget (the `--max-batches` /
+/// `--max-seconds` caps) runs out; the caller's epoch loop should then stop, seeing
 /// [`Session::is_exhausted`]. The budget is spent per **window** — i.e. per
 /// optimizer step, which is what it meant before runs existed — while the
 /// session's position within the epoch counts stories.

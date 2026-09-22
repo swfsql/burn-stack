@@ -33,10 +33,20 @@ impl SgdConfig {
     /// Burn's `Sgd` with these settings: the eager optimizer, and the one a
     /// checkpoint saves (it holds no state).
     pub fn init(&self) -> ModuleOptimizer {
+        self.burn().init()
+    }
+
+    /// The bare optimizer [`init`](Self::init) wraps, for one parameter group
+    /// (or one [`Segmented`](super::Segmented) block): no gradient clipping, no
+    /// state.
+    pub fn build(&self) -> burn::optim::Sgd {
+        self.burn().build()
+    }
+
+    fn burn(&self) -> burn::optim::SgdConfig {
         burn::optim::SgdConfig::new()
             .with_weight_decay(self.weight_decay.map(WeightDecayConfig::new))
             .with_gradient_clipping(self.grad_clipping.clone())
-            .init()
     }
 
     /// One step on `module` at learning rate `lr` (`[1]`, on the gradients'

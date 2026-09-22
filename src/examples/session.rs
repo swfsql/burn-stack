@@ -4,7 +4,8 @@
 //! - **where the run stands** — [`TrainingProgress`] (schedule step, epoch, and
 //!   batch within it), saved next to every optimizer checkpoint and restored by
 //!   `--resume`;
-//! - **how far this invocation may go** — the `--max-batches` [`BatchBudget`];
+//! - **how far this invocation may go** — the `--max-batches` /
+//!   `--max-seconds` [`Budget`];
 //! - **how often it checkpoints and validates** — [`Cadence`], each example's
 //!   defaults under the `--checkpoint-every` / `--valid-every` /
 //!   `--valid-batches` overrides;
@@ -20,7 +21,7 @@
 //! ([`TrainingProgress::shuffle_seed`]): statistically the rest of the epoch,
 //! never a replay of its start.
 
-use crate::examples::training::{BatchBudget, Lr};
+use crate::examples::training::{Budget, Lr};
 use burn::data::dataloader::Progress;
 use burn::prelude::*;
 use burn::train::metric::MetricMetadata;
@@ -78,7 +79,7 @@ pub struct Cadence {
 /// for the character LM, whose item is a run of windows).
 pub struct Session {
     progress: TrainingProgress,
-    budget: BatchBudget,
+    budget: Budget,
     cadence: Cadence,
     schedule: Lr,
     /// The LR of the last step taken.
@@ -95,7 +96,7 @@ impl Session {
     /// training split of `items_total` items.
     pub fn new(
         progress: TrainingProgress,
-        budget: BatchBudget,
+        budget: Budget,
         cadence: Cadence,
         schedule: Lr,
         items_total: usize,

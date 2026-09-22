@@ -11,7 +11,8 @@
 //!    a block's per-head scalars, a depthwise conv weight, and every 3-D
 //!    tensor must stay on the fallback optimizer. Passing one to Muon
 //!    panics — which is why the plan built here is an **allowlist**: only the
-//!    weights named by a [`ProjSpec`] are moved off AdamW.
+//!    weights named by a [`ProjSpec`] are moved off the fallback (AdamW or
+//!    plain SGD, [`FallbackConfig`]).
 //! 2. **Embedding-like matrices.** The token embedding, the LM head, the
 //!    `LatentNetwork` input/output projections and the class-token/latent tables
 //!    are rank-2 but are lookup/readout tables at the model boundary; the usual
@@ -49,13 +50,13 @@
 //!
 //! ```ignore
 //! let plan = model_config.muon_plan();
-//! let mut optim = plan.build(&adamw_config, &muon_config);
+//! let mut optim = plan.build(&FallbackConfig::AdamW(adamw_config), &muon_config);
 //! // ... then the usual `optim.step(lr, model, grads)`.
 //! ```
 //!
 //! ## Learning rate
 //!
-//! Muon and AdamW share the one learning rate `optim.step` is called with.
+//! Muon and its fallback share the one learning rate `optim.step` is called with.
 //! [`AdjustLrFn::MatchRmsAdamW`] rescales
 //! Muon's update so its per-element RMS is `0.2·lr` — AdamW's own ballpark — so
 //! an LR schedule tuned for AdamW can be reused as-is. That is what
@@ -79,7 +80,8 @@ pub use sgd::SgdConfig;
 pub use spec::{BLOCK_CONTAINERS, ProjScope, ProjSegment, ProjSpec};
 
 use burn::grad_clipping::GradientClipping;
-use burn::optim::{AdamWConfig, AdjustLrFn, ModuleOptimizer, MuonConfig};
+use burn::optim::{AdamW, AdamWConfig, AdjustLrFn, ModuleOptimizer, MuonConfig, Sgd};
+use burn::prelude::*;
 
 /// The Muon defaults this crate recommends: `MatchRmsAdamW` LR adjustment, so
 /// Muon and AdamW can share one learning rate and one weight decay.
@@ -90,6 +92,67 @@ pub fn muon_config(weight_decay: f32) -> MuonConfig {
     MuonConfig::new()
         .with_adjust_lr_fn(AdjustLrFn::MatchRmsAdamW)
         .with_weight_decay(Some(burn::optim::decay::WeightDecayConfig::new(weight_decay)))
+}
+
+/// The optimizer of every parameter Muon does not own — or of every parameter,
+/// when there is no Muon.
+#[derive(Config, Debug)]
+pub enum FallbackConfig {
+    /// AdamW.
+    AdamW(AdamWConfig),
+    /// Plain SGD, the one optimizer a captured training step replays.
+    Sgd(SgdConfig),
+}
+
+impl FallbackConfig {
+    /// The whole-module optimizer, gradient clipping included.
+    pub fn init(&self) -> ModuleOptimizer {
+        match self {
+            Self::AdamW(adamw) => adamw.init(),
+            Self::Sgd(sgd) => sgd.init(),
+        }
+    }
+
+    /// The bare optimizer, for a [`Segmented`] block.
+    pub fn build(&self) -> Fallback {
+        match self {
+            Self::AdamW(adamw) => Fallback::AdamW(adamw.build()),
+            Self::Sgd(sgd) => Fallback::Sgd(sgd.build()),
+        }
+    }
+}
+
+impl From<AdamWConfig> for FallbackConfig {
+    fn from(adamw: AdamWConfig) -> Self {
+        Self::AdamW(adamw)
+    }
+}
+
+impl From<SgdConfig> for FallbackConfig {
+    fn from(sgd: SgdConfig) -> Self {
+        Self::Sgd(sgd)
+    }
+}
+
+/// A built [`FallbackConfig`].
+#[derive(Clone)]
+pub enum Fallback {
+    /// AdamW.
+    AdamW(AdamW),
+    /// Plain SGD: stateless (no momentum).
+    Sgd(Sgd),
+}
+
+impl From<AdamW> for Fallback {
+    fn from(adamw: AdamW) -> Self {
+        Self::AdamW(adamw)
+    }
+}
+
+impl From<Sgd> for Fallback {
+    fn from(sgd: Sgd) -> Self {
+        Self::Sgd(sgd)
+    }
 }
 
 /// Which weights Muon owns in a model, and where their fused columns split.
@@ -158,14 +221,15 @@ impl MuonPlan {
         self
     }
 
-    /// Assemble the [`ModuleOptimizer`]: AdamW everywhere, Muon on the planned
-    /// weights.
+    /// Assemble the [`ModuleOptimizer`]: the fallback everywhere, Muon on the
+    /// planned weights.
     ///
-    /// The AdamW group is the fallback (it must match everything), so any
-    /// parameter the plan does not name — every 1-D and 3-D tensor included —
-    /// keeps AdamW. `adamw`'s gradient clipping is applied to every group.
-    pub fn build(&self, adamw: &AdamWConfig, muon: &MuonConfig) -> ModuleOptimizer {
-        let mut optim = adamw.init();
+    /// The fallback's group must match everything, so any parameter the plan
+    /// does not name — every 1-D and 3-D tensor included — keeps it, as does
+    /// every non-Muon segment of a fused weight. The fallback's gradient
+    /// clipping is applied to every group.
+    pub fn build(&self, fallback: &FallbackConfig, muon: &MuonConfig) -> ModuleOptimizer {
+        let mut optim = fallback.init();
         let clipping: Option<GradientClipping> = optim.grad_clipping().cloned();
 
         for spec in &self.specs {
@@ -179,7 +243,7 @@ impl MuonPlan {
             } else {
                 optim.with_group(
                     group,
-                    Segmented::new(spec, muon.build(), adamw.build(), 1),
+                    Segmented::new(spec, muon.build(), fallback.build(), 1),
                     clipping.clone(),
                 )
             };
