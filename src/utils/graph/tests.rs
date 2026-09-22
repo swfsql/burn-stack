@@ -165,6 +165,78 @@ fn captured_forward_is_the_eager_forward() {
     }
 }
 
+/// A captured SGD training step is Burn's eager `Sgd`, bit for bit — the loss
+/// at every step and the final weights — under a learning rate that moves every
+/// step, with weight decay and gradient clipping on.
+#[cfg(feature = "optim")]
+#[test]
+fn captured_sgd_training_is_the_eager_training() {
+    use super::Weights;
+    use crate::modules::{CacheTensors, TensorZip};
+    use crate::optim::SgdConfig;
+    use crate::utils::{CosineAnnealingLr, Lr};
+    use burn::grad_clipping::GradientClippingConfig;
+    use burn::optim::GradientsParams;
+
+    const LEN: usize = 5;
+    let device = Device::default();
+    let autodiff = device.clone().autodiff();
+    let sgd = SgdConfig::new()
+        .with_weight_decay(Some(1e-2))
+        .with_grad_clipping(Some(GradientClippingConfig::Value(0.05)));
+    let schedule = Lr::CosineAnnealing(
+        CosineAnnealingLr::new(STEPS).with_max_lr(0.5).with_min_lr(0.01).with_warmup_steps(3),
+    );
+    let lr = |k: usize| schedule.get_lr(k + 1);
+    let batch = |_| Tensor::<3>::random([BATCH, LEN, D_MODEL], Distribution::Normal(0.0, 1.0), &device);
+    let data: Vec<(Tensor<3>, Tensor<3>)> = (0..STEPS).map(|k| (batch(k), batch(k))).collect();
+    let loss = |layers: &Layers<RefBlock>, x: Tensor<3>, y: Tensor<3>| {
+        let out = layers.forward(x.autodiff(), None, (), None, None).0;
+        (out - y.autodiff()).square().mean()
+    };
+    let layers: Layers<RefBlock> = LayersBuilder::new(2, RefBlockConfig::new(D_MODEL)).init(&autodiff);
+
+    // Eager: Burn's own `Sgd`, the rate a host scalar.
+    let mut optim = sgd.init();
+    let mut eager = Weights(layers.clone()).into_owned_buffers().0;
+    let mut eager_losses = Vec::new();
+    for (k, (x, y)) in data.iter().enumerate() {
+        let l = loss(&eager, x.clone(), y.clone());
+        let grads = GradientsParams::from_grads(l.backward(), &eager);
+        eager = optim.step(lr(k), eager, grads);
+        eager_losses.push(l.inner());
+    }
+
+    // Captured: the whole step, the weights its state, the rate an input.
+    let rate = |k: usize| Tensor::<1>::from_floats([lr(k)], &device);
+    let step = |(x, y, lr): (Tensor<3>, Tensor<3>, Tensor<1>), w: Weights<Layers<RefBlock>>| {
+        let layers = w.0;
+        let l = loss(&layers, x, y);
+        let grads = GradientsParams::from_grads(l.backward(), &layers);
+        (l.inner(), Weights(sgd.step(layers, grads, lr)))
+    };
+    let (x, y) = data[0].clone();
+    // Safety: the step reads nothing but its arguments and `sgd`, borrowed.
+    let mut captured = unsafe { CapturedStep::capture(&device, (x, y, rate(0)), Weights(layers), step) };
+    assert_eq!(captured.is_captured(), expects_graph(&device));
+    for (k, (x, y)) in data.iter().enumerate() {
+        let l = captured.step((x.clone(), y.clone(), rate(k))).clone();
+        let d = max_abs_diff(l, eager_losses[k].clone());
+        assert_eq!(d, 0.0, "loss {k} differs by {d}");
+    }
+
+    struct MaxDiff(f32);
+    impl TensorZip for MaxDiff {
+        fn zip<const D: usize>(&mut self, a: Tensor<D>, b: Tensor<D>) -> Tensor<D> {
+            self.0 = self.0.max(max_abs_diff(a.clone(), b));
+            a
+        }
+    }
+    let mut diff = MaxDiff(0.0);
+    let _ = captured.into_caches().zip_tensors(Weights(eager), &mut diff);
+    assert_eq!(diff.0, 0.0, "the final weights differ by {}", diff.0);
+}
+
 #[test]
 fn only_start_latents_sees_both_levels() {
     let device = Device::default();

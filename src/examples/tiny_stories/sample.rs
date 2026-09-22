@@ -271,7 +271,7 @@ pub struct Prefill<'a, C: CacheTensors> {
     opened: Rc<RefCell<ClassCursors>>,
     /// The chunk, until it is captured.
     run: Option<Box<ChunkFn<'a, C>>>,
-    captured: Option<CapturedStep<'a, 2, Int, Tensor<2>, C>>,
+    captured: Option<CapturedStep<'a, Tensor<2, Int>, Tensor<2>, C>>,
     /// Chunks run eagerly so far, [`WARMUP_STEPS`] of which precede a capture.
     eager_chunks: usize,
 }

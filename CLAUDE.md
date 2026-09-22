@@ -94,10 +94,12 @@ src/
 │  │                 (step, epoch, batch; a resumed epoch finishes from a fresh
 │  │                 shuffle), BatchBudget, Cadence, MetricsLog (metrics.jsonl)
 │  ├─ device.rs      Device dtype configuration (`dev-f16`) + FloatElement
-│  ├─ training.rs    TrainingConfig + OptimizerConfig (AdamW, optional Muon);
-│  │                 BatchBudget: the `--max-batches` run cap (not config state)
+│  ├─ training.rs    TrainingConfig + OptimizerConfig (AdamW, optional Muon;
+│  │                 or `sgd`, replacing both); BatchBudget: the
+│  │                 `--max-batches` run cap (not config state)
 │  ├─ mnist/         dataset.rs (download + batching), classify.rs (the epoch
-│  │                 loops + the MnistModel seam), render.rs (a digit beside
+│  │                 loops + the MnistModel seam; `train_step` is the whole
+│  │                 step, overridable to fuse/capture it), render.rs (a digit beside
 │  │                 its class distribution, as text or PNG)
 │  └─ tiny_stories/  dataset.rs (character corpus: alphabet, whole-parquet
 │                    download + text cache, one story per item, batches padded
@@ -114,12 +116,16 @@ src/
 │                    is step state — and replays a CapturedStep; a `Prefill`,
 │                    held across prompts, feeds right-padded fixed-shape chunks
 │                    after a kept opening, one captured chunk for all)
-├─ optim/            Muon parameter groups (feature `optim`); allowlist, not denylist
+├─ optim/            Muon parameter groups (feature `optim`); allowlist, not
+│                    denylist; + the capturable SGD
 │  ├─ mod.rs         MuonPlan: specs → ModuleOptimizer (AdamW fallback + Muon groups)
 │  ├─ spec.rs        ProjSpec/ProjSegment: fused-weight column seams → ParamGroup
 │  │                 (`tiled`: one copy per application); BLOCK_CONTAINERS = the
 │  │                 field names a block is stored under
 │  ├─ segmented.rs   Segmented: one optimizer per column block of a fused weight
+│  ├─ sgd.rs         SgdConfig: plain SGD (decay, clipping, no momentum); `init`
+│  │                 = Burn's Sgd, `step` = the same op for op with a `[1]`
+│  │                 device LR — the one optimizer a captured step can replay
 │  └─ report.rs      MuonPlan::describe(&module): per-param optimizer assignment
 └─ utils/            lower-level plumbing
    ├─ mod.rs         div_eps (per-dtype epsilon)
@@ -144,11 +150,13 @@ src/
    │                     rescale; leaves a block's bespoke params alone
    ├─ fprim.rs           F<B,D>: rank-tagged FloatTensor-primitive wrapper
    ├─ graph.rs           CapturedStep: a step captured once (burn's `capture`)
-   │                     and replayed; stable input/cache buffers refreshed in
-   │                     place, one eager run before `capture` (a cold capture
-   │                     fails without it), caches restored around it, graph
-   │                     kept only if every buffer id survived (else eager);
-   │                     stateless = caches `()`; WARMUP_STEPS
+   │                     and replayed; stable input (a StepInput: one tensor or
+   │                     a tuple) and cache buffers refreshed in place, one
+   │                     eager run before `capture` (a cold capture fails
+   │                     without it), caches restored around it, graph kept only
+   │                     if every buffer id survived (else eager); stateless =
+   │                     caches `()`; WARMUP_STEPS. graph/weights.rs: Weights<M>,
+   │                     a module's params as the caches of a training step
    ├─ test_helpers.rs    max_abs_diff + grad-comparison macros
    └─ untied.rs          UntiedParam + tile/view/retie: a parameter held once per
                          application, copies side by side along an existing axis
@@ -195,6 +203,12 @@ A fixed-shape `forward` is the step with caches `()`. `capture` runs the closure
 once eagerly first: burn's warm-ups never run in place (cubecl's priming holds a
 second handle on every buffer), so the recorded run would otherwise compile — and
 load a module mid-capture, invalidating it — the in-place kernel variants.
+
+A training step is the step whose caches are the model's weights (`Weights`):
+forward, backward and `optim::SgdConfig::step`, the learning rate an input. Only
+plain SGD replays: Burn's optimizers bake host scalars (the rate, Adam's bias
+correction) into a graph and move their state between buffers
+(tracel-ai/burn#5779).
 
 ### Padded batches
 

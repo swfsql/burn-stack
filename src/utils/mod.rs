@@ -41,7 +41,9 @@ pub mod untied;
 
 pub use class::{ClassCursor, ClassCursors, ClassLatent, ClassToken};
 pub use detach::detach_params;
-pub use graph::CapturedStep;
+pub use graph::{CapturedStep, StepInput};
+#[cfg(feature = "autodiff")]
+pub use graph::Weights;
 pub use init::InitPolicy;
 pub use padding::Padding;
 pub use schedule::{Applications, BidiSchedule, GradHorizon, Schedule};

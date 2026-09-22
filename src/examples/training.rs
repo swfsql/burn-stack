@@ -4,7 +4,8 @@
 //! schedule, seed) plus the [`OptimizerConfig`].  [`optimizer_config`] builds the
 //! AdamW defaults shared by the examples (epsilon, grad clipping, cautious
 //! weight decay); [`OptimizerConfig::muon`] optionally moves the hidden weight
-//! matrices to Muon (see [`crate::optim`]).
+//! matrices to Muon (see [`crate::optim`]), and [`OptimizerConfig::sgd`] swaps
+//! everything for plain SGD, the optimizer a captured training step replays.
 //!
 //! [`BatchBudget`] is the run-length knob that is *not* part of the config: the
 //! `--max-batches` cap, which belongs to the invocation rather than to the
@@ -16,7 +17,7 @@ use burn::{
     prelude::*,
     train::metric::NumericEntry,
 };
-use crate::optim::MuonPlan;
+use crate::optim::{MuonPlan, SgdConfig};
 pub use crate::utils::scheduler::{ConstantLr, CosineAnnealingLr, Lr};
 
 /// Current value of a metric reading, or `NaN` when the metric has none yet
@@ -27,11 +28,15 @@ pub fn metric_current(entry: Option<NumericEntry>) -> f64 {
 }
 
 /// How the examples optimize: AdamW everywhere, optionally with Muon on the
-/// hidden weight matrices.
+/// hidden weight matrices — or plain SGD everywhere.
 ///
 /// `muon = None` is the plain-AdamW baseline. When set, the model config's
 /// [`MuonPlan`] decides which weights move over (and where the fused projections
 /// split) — everything else, 1-D and 3-D tensors included, keeps AdamW.
+///
+/// `sgd` replaces both: the one optimizer a captured training step can replay
+/// (see [`crate::optim::sgd`]), so an example captures its training step only
+/// under it.
 #[derive(Config, Debug)]
 pub struct OptimizerConfig {
     /// AdamW: the fallback optimizer, and the one used for every parameter when
@@ -39,12 +44,23 @@ pub struct OptimizerConfig {
     pub adamw: AdamWConfig,
     /// Muon for the planned hidden matrices. `None` ⇒ AdamW-only.
     pub muon: Option<MuonConfig>,
+    /// Plain SGD for every parameter instead (AdamW unused, Muon unset).
+    pub sgd: Option<SgdConfig>,
 }
 
 impl OptimizerConfig {
     /// AdamW-only (the baseline).
     pub fn adamw_only(dtype: burn::tensor::DType) -> Self {
         Self::new(optimizer_config(dtype))
+    }
+
+    /// Plain SGD everywhere, with the AdamW defaults' gradient clipping (at
+    /// 1.0) and no weight decay.
+    pub fn sgd_only(dtype: burn::tensor::DType) -> Self {
+        let sgd = SgdConfig::new().with_grad_clipping(Some(
+            burn::grad_clipping::GradientClippingConfig::Value(1.0),
+        ));
+        Self::adamw_only(dtype).with_sgd(Some(sgd))
     }
 
     /// AdamW + Muon on `plan`'s weights, sharing AdamW's weight decay and LR
@@ -55,9 +71,11 @@ impl OptimizerConfig {
 
     /// Build the module optimizer for a model whose Muon plan is `plan`.
     pub fn init(&self, plan: &MuonPlan) -> ModuleOptimizer {
-        match &self.muon {
-            None => self.adamw.init(),
-            Some(muon) => plan.build(&self.adamw, muon),
+        match (&self.sgd, &self.muon) {
+            (Some(sgd), None) => sgd.init(),
+            (Some(_), Some(_)) => panic!("SGD replaces every other optimizer: unset Muon"),
+            (None, None) => self.adamw.init(),
+            (None, Some(muon)) => plan.build(&self.adamw, muon),
         }
     }
 }

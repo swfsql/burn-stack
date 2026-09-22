@@ -1,5 +1,6 @@
 //! Muon support: which weights the optimizer may touch, and how the fused
-//! projections are split before it sees them.
+//! projections are split before it sees them. (Also [`sgd`]: the plain SGD a
+//! captured training step can replay.)
 //!
 //! [Muon](burn::optim::Muon) replaces a 2-D weight's momentum update with the
 //! nearest orthogonal matrix (Newton–Schulz). That only makes sense for a
@@ -67,11 +68,14 @@
 pub mod report;
 /// [`Segmented`]: a different optimizer per column block of a fused weight.
 pub mod segmented;
+/// [`SgdConfig`]: plain SGD, the optimizer a captured training step can replay.
+pub mod sgd;
 /// The column layout of the fused projection weights.
 pub mod spec;
 
 
 pub use segmented::{BlockState, Segmented, SegmentedState};
+pub use sgd::SgdConfig;
 pub use spec::{BLOCK_CONTAINERS, ProjScope, ProjSegment, ProjSpec};
 
 use burn::grad_clipping::GradientClipping;

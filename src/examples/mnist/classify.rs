@@ -41,6 +41,20 @@ pub trait MnistModel: TrainStep<Input = MnistBatch, Output = ClassificationOutpu
     /// Apply one optimizer step, returning the updated model.
     fn optim_step(self, optim: &mut ModuleOptimizer, lr: f64, grads: GradientsParams) -> Self;
 
+    /// One whole training step — forward, backward, optimizer — returning the
+    /// updated model and the batch's outputs (for the metrics). The default is
+    /// [`TrainStep::step`] then [`optim_step`](Self::optim_step); a model
+    /// overrides it to fuse the three, e.g. into one captured graph.
+    fn train_step(
+        self,
+        batch: MnistBatch,
+        optim: &mut ModuleOptimizer,
+        lr: f64,
+    ) -> (Self, ClassificationOutput) {
+        let output = TrainStep::step(&self, batch);
+        (self.optim_step(optim, lr, output.grads), output.item)
+    }
+
     /// Checkpoint the wrapped network into the artifacts directory.
     fn save(&self, app_args: &AppArgs);
 
@@ -107,14 +121,12 @@ pub fn epoch_train<W: MnistModel>(
         let [batch_size, _, _, _] = batch.images.dims();
         let (_step, lr) = session.begin_step(batch_size);
 
-        let train_output = TrainStep::step(&training_model, batch);
-        let pre_metrics = &train_output.item;
+        let (model, pre_metrics) = training_model.train_step(batch, optim, lr);
+        training_model = model;
 
         loss_metric.update(&pre_metrics.adapt(), session.meta());
         acc_metric.update(&pre_metrics.adapt(), session.meta());
         iteration_speed_metric.update(&pre_metrics.adapt(), session.meta());
-
-        training_model = training_model.optim_step(optim, lr, train_output.grads);
 
         let (loss, acc) = (
             metric_current(loss_metric.value()),
