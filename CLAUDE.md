@@ -50,9 +50,10 @@ cargo doc --no-deps         # build docs
 ```text
 src/
 ├─ lib.rs            crate root: module decls, prelude, DENY_NAN/DENY_INF guards
-├─ reference.rs      RefBlock: a minimal worked `Block` (gated EMA mixer) —
-│                    the crate's own test fixture; `reference/tests.rs` holds
-│                    the container contract suite (feature `test-helpers`)
+├─ reference.rs      RefBlock: a minimal worked `Block` (gated EMA mixer, + its
+│                    CacheTensors) — the crate's own test fixture;
+│                    `reference/tests.rs` holds the container contract suite
+│                    (feature `test-helpers`)
 ├─ modules/          composition + shared NN modules
 │  ├─ mod.rs         Block / BlockConfig traits (the whole plug-in surface)
 │  ├─ layer.rs       Layer<M>: Pre-LN block M(RMSNorm(·)) + optional norm2/mlp;
@@ -60,7 +61,8 @@ src/
 │  │                 application(k): the view application k runs (LayerUntied)
 │  ├─ layers.rs      Layers<M>: virtual-layer stack over real weight sets;
 │  │                 grad_horizon truncates BPTT to a tracked-layer mask
-│  │                 (forward/step/prime cut alike)
+│  │                 (forward/step/prime cut alike); only_start_latents (the
+│  │                 capture gate)
 │  ├─ mlp.rs         GatedMlp: SwiGLU feed-forward interleaved with the mixer;
 │  │                 from_hidden_ratio = the Llama ⅔·ratio·d_model sizing rule
 │  ├─ model_config.rs ModelConfigExt: config → module + its Muon plan; the seam
@@ -74,7 +76,9 @@ src/
 │  │                 init/muon_plan over any BlockConfig
 │  ├─ bidi.rs        BidiLayers<M> + BidiLayerPair<M> + OutputMerge
 │  ├─ cache.rs       CacheStack trait (+ per-slot inner/from_inner, whole-stack
-│  │                 detach() for carrying state across a gradient boundary)
+│  │                 detach() for carrying state across a gradient boundary);
+│  │                 CacheTensors: a pairwise TensorZip traversal per cache type
+│  │                 (into_owned_buffers, assign_in_place)
 │  ├─ activation/    silu, softplus, log_sigmoid (dtype-aware)
 │  ├─ norm/          rms_norm (also usable as QK-Norm), rms_norm_gated, rms_score
 │  ├─ loss/          bce, cross_entropy, mse, l2warp (max-logit penalty, added
@@ -104,7 +108,8 @@ src/
 │                    out at the window's fixed shape — PAD_TARGET rows, the mean
 │                    normalised on device, PerCharLoss for validation; class
 │                    markers are offered, never assumed), sample.rs
-│                    (one prime/prefill/decode sampler over VocabNetwork<M>)
+│                    (one prime/prefill/decode sampler over VocabNetwork<M>;
+│                    `decode`, the shared loop, replays a CapturedStep)
 ├─ optim/            Muon parameter groups (feature `optim`); allowlist, not denylist
 │  ├─ mod.rs         MuonPlan: specs → ModuleOptimizer (AdamW fallback + Muon groups)
 │  ├─ spec.rs        ProjSpec/ProjSegment: fused-weight column seams → ParamGroup
@@ -134,6 +139,11 @@ src/
    │                     N(0,std) on 2-D weights, zero biases, optional residual
    │                     rescale; leaves a block's bespoke params alone
    ├─ fprim.rs           F<B,D>: rank-tagged FloatTensor-primitive wrapper
+   ├─ graph.rs           CapturedStep: a step captured once (burn's `capture`)
+   │                     and replayed; stable input/cache buffers refreshed in
+   │                     place, caches restored around the capture, graph kept
+   │                     only if every buffer id survived (else eager);
+   │                     WARMUP_STEPS
    ├─ test_helpers.rs    max_abs_diff + grad-comparison macros
    └─ untied.rs          UntiedParam + tile/view/retie: a parameter held once per
                          application, copies side by side along an existing axis
@@ -170,6 +180,12 @@ tokens/latents waiting for the next one, returning the last, `None` if none).
 `forward()` from any cache equals `step()` unrolled from that same cache — on
 outputs, final cache, **and** gradients. The containers assume it; a family owes
 it. `reference/tests.rs` pins it for `RefBlock`.
+
+A `step()` can also be replayed from a captured graph (`utils/graph.rs`,
+`CapturedStep`): a replay reads the buffers the capture saw, so the closure
+writes its new cache back in place (`CacheTensors`, one per family), and the
+graph is kept only where that is verified (cubecl without fusion). `capture` is
+`unsafe`: what the step reads beyond its arguments must stay the same buffers.
 
 ### Padded batches
 

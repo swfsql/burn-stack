@@ -21,14 +21,18 @@
 //! training.
 //!
 //! A consumer whose network is an *enum* over families (rather than the generic
-//! container) cannot call [`generate`]; it writes the same loop over its own
-//! dispatch and reuses [`sample_token`].
+//! container) cannot call [`generate`]; it writes the opening over its own
+//! dispatch and hands the rest to [`decode`], which is where the decode steps
+//! are captured into one replayed graph (see
+//! [`CapturedStep`]).
 
 use crate::examples::device::FloatElement;
 use crate::examples::tiny_stories::dataset::{VOCAB, VOCAB_SIZE};
-use crate::modules::{Block, VocabNetwork};
+use crate::modules::{Block, CacheTensors, VocabNetwork};
 use crate::utils::ClassCursors;
+use crate::utils::graph::{CapturedStep, WARMUP_STEPS};
 use burn::prelude::*;
+use burn::tensor::TensorData;
 use burn::tensor::ElementConversion;
 use burn::tensor::activation::softmax;
 use rand::{Rng, SeedableRng};
@@ -47,8 +51,11 @@ use rand_chacha::ChaCha8Rng;
 /// A prompt is case-folded and filtered through the alphabet (see [`VOCAB`]) and
 /// must not come out empty; anything the model opens with is spliced in front of
 /// it by the same cursors, exactly as in training. `temperature` scales the
-/// logits before the softmax; `<= 0` samples greedily (argmax). Returns only the
+/// logits before the softmax; `<= 0` samples greedily (argmax). `capture`
+/// replays the decode steps from a captured graph where the model allows it
+/// (see [`decode`]); it changes the speed, never the text. Returns only the
 /// generated characters, not the prompt.
+#[allow(clippy::too_many_arguments)]
 pub fn generate<M: Block>(
     model: &VocabNetwork<M>,
     device: &Device,
@@ -57,16 +64,18 @@ pub fn generate<M: Block>(
     n_chars: usize,
     temperature: f64,
     seed: u64,
+    capture: bool,
 ) -> String
 where
     M::Options: Clone,
+    M::Caches: CacheTensors,
 {
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
     // One story: the cursors open the sequence here and are threaded through
     // every call below, so the opening is emitted once.
     let mut class = ClassCursors::stream();
 
-    let (mut logits, mut caches) = match prompt {
+    let (logits, caches) = match prompt {
         // Prefill: one chunkwise pass over the opening and the whole prompt,
         // keeping its cache and the logits of its last character (what the next
         // character is drawn from).
@@ -96,14 +105,80 @@ where
     };
 
     // Decode: one `step` per character, against that same cache.
+    let caches = caches.expect("the opening leaves a cache");
+    let capture = capture && model.layers.only_start_latents();
+    // Safety: the step reads nothing but its arguments and `model`, which it
+    // borrows for the whole call.
+    unsafe {
+        decode(
+            device,
+            logits,
+            caches,
+            class,
+            n_chars,
+            temperature,
+            &mut rng,
+            capture,
+            |x, caches, class| model.step(x, Some(caches), class),
+        )
+    }
+}
+
+/// Decode `n_chars` characters of one story from its opening — the opening's
+/// `logits`, `caches` and `class` cursors — one `step` per character: the loop
+/// [`generate`] and a consumer's own sampler share.
+///
+/// With `capture`, the first [`WARMUP_STEPS`] steps run eagerly (real steps:
+/// what they return is sampled from like any other) and the rest replay one
+/// [`CapturedStep`], without cursors. `step` must then run the same launches at
+/// every call — no class marker left to land
+/// ([`Layers::only_start_latents`](crate::modules::Layers::only_start_latents)).
+/// Where no hardware graph is available the captured step runs eagerly, so
+/// `capture` changes the speed, never the text.
+///
+/// # Safety
+///
+/// With `capture`, that of [`CapturedStep::capture`]: every tensor `step`
+/// reads other than through its arguments stays the same device buffer until
+/// this returns — true of a model it borrows.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn decode<C: CacheTensors>(
+    device: &Device,
+    logits: Tensor<2>,
+    caches: C,
+    mut class: ClassCursors,
+    n_chars: usize,
+    temperature: f64,
+    rng: &mut ChaCha8Rng,
+    capture: bool,
+    step: impl FnMut(Tensor<1, Int>, C, Option<&mut ClassCursors>) -> (Tensor<2>, C),
+) -> String {
+    let token = |id: i32| Tensor::<1, Int>::from_ints([id], device);
     let mut out = String::with_capacity(n_chars);
-    for _ in 0..n_chars {
-        let token = sample_token(logits, temperature, &mut rng);
-        out.push(VOCAB.character(token));
-        let next = Tensor::<1, Int>::from_ints([token as i32], device);
-        let (next_logits, next_caches) = model.step(next, caches.take(), Some(&mut class));
-        logits = next_logits;
-        caches = Some(next_caches);
+    let (mut logits, mut caches, mut step) = (logits, Some(caches), Some(step));
+    let mut captured = None;
+    for i in 0..n_chars {
+        let id = sample_token(logits, temperature, rng);
+        out.push(VOCAB.character(id));
+        let id = id as i32;
+        if capture && i == WARMUP_STEPS {
+            let mut step = step.take().expect("captured once");
+            let caches = caches.take().expect("stepped eagerly until captured");
+            // Safety: forwarded from this function's own contract.
+            captured = Some(unsafe {
+                CapturedStep::capture(device, token(id), caches, move |x, c| step(x, c, None))
+            });
+        }
+        logits = match captured.as_mut() {
+            Some(captured) => captured.step_data(TensorData::from([id])).clone(),
+            None => {
+                let step = step.as_mut().expect("stepped eagerly until captured");
+                let current = caches.take().expect("stepped eagerly until captured");
+                let (logits, next) = step(token(id), current, Some(&mut class));
+                caches = Some(next);
+                logits
+            }
+        };
     }
     out
 }

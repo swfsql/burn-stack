@@ -67,7 +67,8 @@ pub mod utils;
 /// types and the two block traits into scope.
 pub mod prelude {
     pub use crate::modules::{
-        BidiLayerPair, BidiLayers, Block, BlockConfig, CacheStack, GatedMlp, GatedMlpConfig,
+        BidiLayerPair, BidiLayers, Block, BlockConfig, CacheStack, CacheTensors, GatedMlp,
+        GatedMlpConfig,
         LatentNetwork, Layer, LayerUntied, Layers, LayersBuilder, MultiGateResidualConfig, OutputMerge,
         OutputMergeConfig, Residuals, ResidualsConfig, RmsNorm, RmsNormConfig, VocabNetwork,
     };

@@ -55,7 +55,7 @@ pub use norm::rms_norm_gated::{RmsNormGated, RmsNormGatedConfig};
 pub use norm::rms_score::{normed_score, rms_denom, score_scale};
 
 pub use bidi::{BidiLayerPair, BidiLayers, BidiLayersBuilder, OutputMerge, OutputMergeConfig};
-pub use cache::CacheStack;
+pub use cache::{CacheStack, CacheTensors, TensorZip};
 pub use layer::{Layer, LayerUntied};
 pub use layers::{Layers, LayersBuilder};
 pub use multi_gate::{

@@ -126,6 +126,17 @@ where
         class_marker_output_indices(&self.class_latents, orig_len)
     }
 
+    /// Whether every class latent the stack splices — its own and each layer's
+    /// — is a `Start`: once a sequence's opening has run, no later
+    /// [`step`](Self::step) emits one, so every step runs the same launches (what
+    /// a [`CapturedStep`](crate::utils::graph::CapturedStep) needs), and a step
+    /// with no cursors is the step with them.
+    pub fn only_start_latents(&self) -> bool {
+        let start = |m: &ClassLatent| matches!(m, ClassLatent::Start);
+        self.class_latents.iter().all(start)
+            && self.real_layers.iter().all(|l| l.class_latents.iter().all(start))
+    }
+
     /// Splice this stack's own class latents into the chunk `x` (no-op when
     /// there are none), advancing the stack-level cursor; `padding` follows.
     fn insert_latents(

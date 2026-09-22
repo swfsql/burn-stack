@@ -3,7 +3,8 @@
 //! It exists for two reasons: it is what this crate's own test suite composes
 //! (so the containers are exercised without depending on any real mixer
 //! family), and it is a worked example of the four things a family has to
-//! supply — a cache, a [`CacheStack`], [`Block`], and [`BlockConfig`]. It
+//! supply — a cache, a [`CacheStack`], [`Block`], and [`BlockConfig`] (plus
+//! [`CacheTensors`], which only a captured step needs). It
 //! unties its decay and its gate map on request ([`RefUntied`]), so the
 //! containers' untied path is exercised the same way.
 //!
@@ -23,7 +24,7 @@
 //!
 //! Enabled by the `test-helpers` feature (or inside this crate's own tests).
 
-use crate::modules::{Block, BlockConfig, CacheStack, Silu};
+use crate::modules::{Block, BlockConfig, CacheStack, CacheTensors, Silu, TensorZip};
 use crate::utils::untied::{self, UntiedParam};
 use burn::config::Config;
 use burn::module::Param;
@@ -65,6 +66,18 @@ impl CacheStack for RefCaches {
 
     fn cache_from_inner(c: RefCache) -> RefCache {
         RefCache { state_bd: Tensor::from_inner(c.state_bd) }
+    }
+}
+
+impl CacheTensors for RefCache {
+    fn zip_tensors(self, other: Self, z: &mut impl TensorZip) -> Self {
+        RefCache { state_bd: z.zip(self.state_bd, other.state_bd) }
+    }
+}
+
+impl CacheTensors for RefCaches {
+    fn zip_tensors(self, other: Self, z: &mut impl TensorZip) -> Self {
+        RefCaches { caches: self.caches.zip_tensors(other.caches, z) }
     }
 }
 

@@ -3,8 +3,8 @@
 //! The lower-level plumbing the composition modules sit on: virtual-layer
 //! scheduling, class tokens, the custom-backward helpers a block family needs
 //! to register its own memory-efficient kernels (`backend_macros` /
-//! `combined_grad` / `fprim`), LR `scheduler`s, and the per-dtype numerical
-//! constants below.
+//! `combined_grad` / `fprim`), graph capture of a recurrent step (`graph`), LR
+//! `scheduler`s, and the per-dtype numerical constants below.
 
 use burn::prelude::ToElement;
 use burn::tensor::DType;
@@ -23,6 +23,8 @@ pub mod detach;
 /// Rank-tagged `FloatTensor` primitive wrapper mirroring the `Tensor` method
 /// API, used by custom-backward gradient math.
 pub mod fprim;
+/// Graph capture/replay of a recurrent step, its caches written back in place.
+pub mod graph;
 pub mod init;
 /// Right-padded batches: which rows are padding, and each row's place in its
 /// own slot's sequence once class markers are spliced.
@@ -39,6 +41,7 @@ pub mod untied;
 
 pub use class::{ClassCursor, ClassCursors, ClassLatent, ClassToken};
 pub use detach::detach_params;
+pub use graph::CapturedStep;
 pub use init::InitPolicy;
 pub use padding::Padding;
 pub use schedule::{Applications, BidiSchedule, GradHorizon, Schedule};
