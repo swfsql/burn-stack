@@ -13,10 +13,16 @@
 //!   itself, which ends with
 //!   [`CacheTensors::assign_in_place`](crate::modules::CacheTensors::assign_in_place) so that every
 //!   replay advances the state;
-//! - [`capture`](burn::tensor::capture) *runs* the closure before recording it
-//!   (its warm-ups, and on a backend without graphs the recorded run too), so
-//!   the caches are snapshotted first and restored after: the first
-//!   [`step`](CapturedStep::step) continues from the caches it was given;
+//! - the closure *runs* before it is recorded — once eagerly, then
+//!   [`capture`](burn::tensor::capture)'s warm-ups (and on a backend without
+//!   graphs the recorded run too) — so the caches are snapshotted first and
+//!   restored after: the first [`step`](CapturedStep::step) continues from the
+//!   caches it was given;
+//! - the eager run is what lets a *cold* capture succeed: `capture`'s warm-ups
+//!   hold a second handle on every buffer they allocate, so none of their ops
+//!   runs in place, while the recorded run does — and a kernel variant first
+//!   compiled inside the window loads a module mid-capture, which invalidates
+//!   it. The eager run compiles the recorded run's variants first;
 //! - a replay is correct only if every write landed in place, which is checked
 //!   once, by comparing buffer ids across the capture. Where that cannot be
 //!   confirmed — no hardware graph (flex, ndarray, …), or a primitive the check
@@ -28,6 +34,9 @@
 //! step whose host-side control flow does not change between calls (e.g. no
 //! class marker left to land). Kernels should be compiled and autotuned before
 //! it — see [`WARMUP_STEPS`](crate::utils::graph::WARMUP_STEPS).
+//!
+//! A stateless call — a fixed-shape `forward` — is the step with caches `()`:
+//! `|x, ()| (f(x), ())`.
 
 #[cfg(test)]
 mod tests;
@@ -38,9 +47,10 @@ use burn::tensor::{Graph, TensorData, kind::Basic};
 use std::cell::RefCell;
 use std::rc::Rc;
 
-/// Eager steps to run before [`CapturedStep::capture`], on top of the 3
-/// warm-ups [`capture`](burn::tensor::capture) runs itself (and the driver rolls
-/// back) — real steps, whose outputs are used like any other.
+/// Eager steps to run before [`CapturedStep::capture`], on top of the runs it
+/// makes itself (one eager, then the 3 warm-ups of
+/// [`capture`](burn::tensor::capture), all rolled back) — real steps, whose
+/// outputs are used like any other.
 ///
 /// None are needed by default. Fusion and autotune get one more warm-up: their
 /// first runs build and tune the fused/tuned variants — a different launch
@@ -168,7 +178,7 @@ impl<'a, const D: usize, K: InputKind + 'a, Y: 'a, C: CacheTensors + 'a> Capture
         let step: Rc<RefCell<Box<StepFn<'a, D, K, Y, C>>>> = Rc::new(RefCell::new(Box::new(step)));
         let input = Rc::new(RefCell::new(Some(input)));
         let caches = Rc::new(RefCell::new(Some(caches)));
-        let run: Box<dyn FnMut() -> Y + 'a> = {
+        let mut run: Box<dyn FnMut() -> Y + 'a> = {
             let (step, input, caches) = (step.clone(), input.clone(), caches.clone());
             Box::new(move || {
                 let stable = caches.borrow_mut().take().expect("caches are always put back");
@@ -178,9 +188,11 @@ impl<'a, const D: usize, K: InputKind + 'a, Y: 'a, C: CacheTensors + 'a> Capture
                 y
             })
         };
+        // Eager, before `capture`'s warm-ups (see the module docs).
+        drop(run());
         let graph = burn::tensor::capture(device, run);
 
-        // The capture ran the closure: put the caches it was given back.
+        // The closure ran: put the caches it was given back.
         {
             let mut slot = caches.borrow_mut();
             let stable = slot.take().expect("caches are always put back");
@@ -206,6 +218,11 @@ impl<'a, const D: usize, K: InputKind + 'a, Y: 'a, C: CacheTensors + 'a> Capture
     /// the [module docs](self)).
     pub fn is_captured(&self) -> bool {
         self.graph.is_some()
+    }
+
+    /// The captured input's shape, which every call keeps.
+    pub fn input_dims(&self) -> [usize; D] {
+        self.input.borrow().as_ref().expect("the input is always present").dims()
     }
 
     /// Step on the device tensor `x`, which must have the captured input's

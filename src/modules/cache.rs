@@ -127,6 +127,12 @@ pub trait CacheTensors: Clone {
     }
 }
 
+/// No cache: a stateless call (e.g. a fixed-shape `forward`), whose captured
+/// replays only refresh the input.
+impl CacheTensors for () {
+    fn zip_tensors(self, _other: Self, _z: &mut impl TensorZip) -> Self {}
+}
+
 impl<C: CacheTensors> CacheTensors for Vec<C> {
     fn zip_tensors(self, other: Self, z: &mut impl TensorZip) -> Self {
         assert_eq!(self.len(), other.len(), "the two caches differ in slot count");

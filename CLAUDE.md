@@ -78,7 +78,7 @@ src/
 │  ├─ cache.rs       CacheStack trait (+ per-slot inner/from_inner, whole-stack
 │  │                 detach() for carrying state across a gradient boundary);
 │  │                 CacheTensors: a pairwise TensorZip traversal per cache type
-│  │                 (into_owned_buffers, assign_in_place)
+│  │                 (into_owned_buffers, assign_in_place; `()` = no cache)
 │  ├─ activation/    silu, softplus, log_sigmoid (dtype-aware)
 │  ├─ norm/          rms_norm (also usable as QK-Norm), rms_norm_gated, rms_score
 │  ├─ loss/          bce, cross_entropy, mse, l2warp (max-logit penalty, added
@@ -141,9 +141,10 @@ src/
    ├─ fprim.rs           F<B,D>: rank-tagged FloatTensor-primitive wrapper
    ├─ graph.rs           CapturedStep: a step captured once (burn's `capture`)
    │                     and replayed; stable input/cache buffers refreshed in
-   │                     place, caches restored around the capture, graph kept
-   │                     only if every buffer id survived (else eager);
-   │                     WARMUP_STEPS
+   │                     place, one eager run before `capture` (a cold capture
+   │                     fails without it), caches restored around it, graph
+   │                     kept only if every buffer id survived (else eager);
+   │                     stateless = caches `()`; WARMUP_STEPS
    ├─ test_helpers.rs    max_abs_diff + grad-comparison macros
    └─ untied.rs          UntiedParam + tile/view/retie: a parameter held once per
                          application, copies side by side along an existing axis
@@ -186,6 +187,10 @@ A `step()` can also be replayed from a captured graph (`utils/graph.rs`,
 writes its new cache back in place (`CacheTensors`, one per family), and the
 graph is kept only where that is verified (cubecl without fusion). `capture` is
 `unsafe`: what the step reads beyond its arguments must stay the same buffers.
+A fixed-shape `forward` is the step with caches `()`. `capture` runs the closure
+once eagerly first: burn's warm-ups never run in place (cubecl's priming holds a
+second handle on every buffer), so the recorded run would otherwise compile — and
+load a module mid-capture, invalidating it — the in-place kernel variants.
 
 ### Padded batches
 

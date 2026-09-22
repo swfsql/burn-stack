@@ -1,6 +1,6 @@
 //! A captured step is the eager step: same outputs, same final caches, for a
 //! host-fed (token ids) and a device-fed (latent) input, and a state set in
-//! place is continued from.
+//! place is continued from; a stateless forward (caches `()`) is the eager one.
 //!
 //! Off a hardware-graph build (flex, the default) the captured step falls back
 //! to stepping eagerly, which still runs `capture`'s closure and so pins the
@@ -141,6 +141,28 @@ fn captured_latent_steps_are_the_eager_steps() {
         assert_eq!(d, 0.0, "step {k} differs by {d}");
     }
     assert_caches("final caches", &captured.into_caches(), &eager_caches);
+}
+
+#[test]
+fn captured_forward_is_the_eager_forward() {
+    const LEN: usize = 5;
+    let device = Device::default();
+    let layers: Layers<RefBlock> = LayersBuilder::new(2, RefBlockConfig::new(D_MODEL)).init(&device);
+    let forward = |x| layers.forward(x, None, (), None, None).0;
+    let xs: Vec<Tensor<3>> = (0..STEPS)
+        .map(|_| Tensor::random([BATCH, LEN, D_MODEL], Distribution::Normal(0.0, 1.0), &device))
+        .collect();
+
+    // Captured cold, before any eager call has compiled the forward's kernels.
+    // Safety: the forward reads nothing but its argument and `layers`, borrowed.
+    let mut captured =
+        unsafe { CapturedStep::capture(&device, xs[0].clone(), (), |x, ()| (forward(x), ())) };
+    assert_eq!(captured.is_captured(), expects_graph(&device));
+    for (k, x) in xs.iter().enumerate() {
+        let y = captured.step(x.clone()).clone();
+        let d = max_abs_diff(y, forward(x.clone()));
+        assert_eq!(d, 0.0, "call {k} differs by {d}");
+    }
 }
 
 #[test]
