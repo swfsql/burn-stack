@@ -76,7 +76,7 @@ pub const VOCAB_SIZE: usize = ALPHABET.len();
 const NO_TOKEN: u8 = u8::MAX;
 
 /// Record separator of the **text cache**: ASCII `RS` (0x1E), which is outside
-/// [`ALPHABET`] and therefore removed from every story by [`normalize`] — so a
+/// [`ALPHABET`] and therefore removed from every story by `normalize` — so a
 /// story *cannot* contain one, and splitting the file on it is exact.
 ///
 /// A blank line would be the obvious choice and is the wrong one: the dataset

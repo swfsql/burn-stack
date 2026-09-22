@@ -25,15 +25,19 @@
 //! dispatch and hands the rest to [`decode`], which is where the decode steps
 //! are captured into one replayed graph (see
 //! [`CapturedStep`]).
+//!
+//! Characters are drawn on the device ([`sample_token`]), so decoding waits for
+//! it only to read the story back, a chunk at a time ([`READBACK`]).
 
-use crate::examples::device::FloatElement;
+#[cfg(test)]
+mod tests;
+
 use crate::examples::tiny_stories::dataset::{VOCAB, VOCAB_SIZE};
 use crate::modules::{Block, CacheTensors, VocabNetwork};
 use crate::utils::ClassCursors;
 use crate::utils::graph::{CapturedStep, WARMUP_STEPS};
 use burn::prelude::*;
 use burn::tensor::TensorData;
-use burn::tensor::ElementConversion;
 use burn::tensor::activation::softmax;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
@@ -125,13 +129,18 @@ where
 }
 
 /// Decode `n_chars` characters of one story from its opening — the opening's
-/// `logits`, `caches` and `class` cursors — one `step` per character: the loop
-/// [`generate`] and a consumer's own sampler share.
+/// `logits`, `caches` and `class` cursors — the loop [`generate`] and a
+/// consumer's own sampler share.
 ///
-/// With `capture`, the first [`WARMUP_STEPS`] steps run eagerly (real steps:
-/// what they return is sampled from like any other) and the rest replay one
-/// [`CapturedStep`], without cursors. `step` must then run the same launches at
-/// every call — no class marker left to land
+/// The opening's logits give the first character, and every later one costs a
+/// `step` on the one before, drawn from its logits on the device
+/// ([`sample_token`]): the token is state, like the cache, and the only thing a
+/// step takes from the host is its uniform, all of which `rng` draws up front.
+/// The characters are read back [`READBACK`] at a time.
+///
+/// With `capture`, the first [`WARMUP_STEPS`] steps run eagerly and the rest
+/// replay one [`CapturedStep`] of the step and its draw, without cursors. `step`
+/// must then run the same launches at every call — no class marker left to land
 /// ([`Layers::only_start_latents`](crate::modules::Layers::only_start_latents)).
 /// Where no hardware graph is available the captured step runs eagerly, so
 /// `capture` changes the speed, never the text.
@@ -151,66 +160,93 @@ pub unsafe fn decode<C: CacheTensors>(
     temperature: f64,
     rng: &mut ChaCha8Rng,
     capture: bool,
-    step: impl FnMut(Tensor<1, Int>, C, Option<&mut ClassCursors>) -> (Tensor<2>, C),
+    mut step: impl FnMut(Tensor<1, Int>, C, Option<&mut ClassCursors>) -> (Tensor<2>, C),
 ) -> String {
-    let token = |id: i32| Tensor::<1, Int>::from_ints([id], device);
-    let mut out = String::with_capacity(n_chars);
-    let (mut logits, mut caches, mut step) = (logits, Some(caches), Some(step));
+    if n_chars == 0 {
+        return String::new();
+    }
+    // One uniform per character (none are used when greedy).
+    let draws: Vec<f32> = (0..n_chars)
+        .map(|_| if temperature > 0.0 { rng.random_range(0.0..1.0) } else { 0.0 })
+        .collect();
+    let draw = |i: usize| Tensor::<1>::from_floats([draws[i]], device);
+
+    // One decode step, from the last token to the next. The token rides as a
+    // float id (exact), the kind a captured state holds.
+    let advance = move |u: Tensor<1>,
+                        (caches, token): (C, Tensor<1>),
+                        class: Option<&mut ClassCursors>| {
+        let (logits, caches) = step(token.int(), caches, class);
+        let token = sample_token(logits, temperature, u);
+        (token.clone(), (caches, token.float()))
+    };
+
+    let first = sample_token(logits, temperature, draw(0));
+    let mut tokens = Vec::with_capacity(READBACK);
+    tokens.push(first.clone());
+    let (mut state, mut advance) = (Some((caches, first.float())), Some(advance));
     let mut captured = None;
-    for i in 0..n_chars {
-        let id = sample_token(logits, temperature, rng);
-        out.push(VOCAB.character(id));
-        let id = id as i32;
-        if capture && i == WARMUP_STEPS {
-            let mut step = step.take().expect("captured once");
-            let caches = caches.take().expect("stepped eagerly until captured");
+    let mut ids = Vec::with_capacity(n_chars);
+    for i in 1..n_chars {
+        if capture && i == 1 + WARMUP_STEPS {
+            let mut advance = advance.take().expect("captured once");
+            let state = state.take().expect("stepped eagerly until captured");
             // Safety: forwarded from this function's own contract.
             captured = Some(unsafe {
-                CapturedStep::capture(device, token(id), caches, move |x, c| step(x, c, None))
+                CapturedStep::capture(device, draw(i), state, move |u, s| advance(u, s, None))
             });
         }
-        logits = match captured.as_mut() {
-            Some(captured) => captured.step_data(TensorData::from([id])).clone(),
+        let token = match captured.as_mut() {
+            Some(captured) => {
+                // Copied out of the graph's output buffer, which the next
+                // replay overwrites.
+                let token = captured.step_data(TensorData::from([draws[i]]));
+                token.empty_like().slice_assign([0..1], token.clone())
+            }
             None => {
-                let step = step.as_mut().expect("stepped eagerly until captured");
-                let current = caches.take().expect("stepped eagerly until captured");
-                let (logits, next) = step(token(id), current, Some(&mut class));
-                caches = Some(next);
-                logits
+                let advance = advance.as_mut().expect("stepped eagerly until captured");
+                let current = state.take().expect("stepped eagerly until captured");
+                let (token, next) = advance(draw(i), current, Some(&mut class));
+                state = Some(next);
+                token
             }
         };
-    }
-    out
-}
-
-/// Draw one token from `logits` (`[1, VOCAB_SIZE]`): temperature-scaled
-/// multinomial sampling, or argmax when `temperature <= 0`.
-pub fn sample_token(logits: Tensor<2>, temperature: f64, rng: &mut ChaCha8Rng) -> u8 {
-    assert_eq!([1, VOCAB_SIZE], logits.dims());
-    if temperature <= 0.0 {
-        let best = logits.argmax(1).into_data().try_to_vec::<i32>().unwrap();
-        return best[0] as u8;
-    }
-    let probs = to_host(softmax(logits / temperature, 1));
-    let threshold: f32 = rng.random_range(0.0..1.0);
-    let mut cumulative = 0.0;
-    for (token, p) in probs.iter().enumerate() {
-        cumulative += p;
-        if cumulative >= threshold {
-            return token as u8;
+        tokens.push(token);
+        if tokens.len() == READBACK {
+            read_back(&mut tokens, &mut ids);
         }
     }
-    // Only reachable when the probabilities sum to slightly under 1 (rounding).
-    (VOCAB_SIZE - 1) as u8
+    read_back(&mut tokens, &mut ids);
+    ids.into_iter().map(|id| VOCAB.character(id as u8)).collect()
 }
 
-/// Read a float tensor back to a host `Vec<f32>` (dtype-agnostic).
-pub fn to_host<const D: usize>(tensor: Tensor<D>) -> Vec<f32> {
-    tensor
-        .into_data()
-        .try_to_vec::<FloatElement>()
-        .unwrap()
-        .into_iter()
-        .map(|x| x.elem::<f32>())
-        .collect()
+/// Characters [`decode`] reads back per sync. Until then the tokens stay on the
+/// device, and every live one slows cubecl's allocator, which an eager step
+/// calls hundreds of times; a replay, bound by the device, barely feels a sync
+/// per chunk.
+pub const READBACK: usize = 32;
+
+/// Move `tokens` to the host, onto `ids`.
+fn read_back(tokens: &mut Vec<Tensor<1, Int>>, ids: &mut Vec<i64>) {
+    if !tokens.is_empty() {
+        ids.extend(Tensor::cat(std::mem::take(tokens), 0).into_data().iter::<i64>());
+    }
+}
+
+/// Draw one token from `logits` (`[1, VOCAB_SIZE]`) on the device: the first
+/// whose cumulative temperature-scaled probability reaches the uniform `draw`
+/// (`[1]`, in `[0, 1)`), or the argmax when `temperature <= 0` (`draw` unused).
+///
+/// The running total never decreases, so that first token is the count of
+/// totals below `draw` — clamped, since rounding can leave the last total short
+/// of 1, and the last token then takes the remainder. Nothing is read back.
+pub fn sample_token(logits: Tensor<2>, temperature: f64, draw: Tensor<1>) -> Tensor<1, Int> {
+    assert_eq!([1, VOCAB_SIZE], logits.dims());
+    if temperature <= 0.0 {
+        return logits.argmax(1).reshape([1]);
+    }
+    let cumulative = softmax(logits / temperature, 1).cumsum(1);
+    let draw = draw.reshape([1, 1]).expand([1, VOCAB_SIZE]);
+    let below = cumulative.lower(draw).int().sum_dim(1);
+    below.clamp_max(VOCAB_SIZE as i64 - 1).reshape([1])
 }

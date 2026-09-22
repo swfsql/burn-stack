@@ -22,7 +22,8 @@
 //!   hold a second handle on every buffer they allocate, so none of their ops
 //!   runs in place, while the recorded run does — and a kernel variant first
 //!   compiled inside the window loads a module mid-capture, which invalidates
-//!   it. The eager run compiles the recorded run's variants first;
+//!   it. The eager run compiles the recorded run's variants first (a workaround:
+//!   <https://github.com/tracel-ai/burn/issues/5772>);
 //! - a replay is correct only if every write landed in place, which is checked
 //!   once, by comparing buffer ids across the capture. Where that cannot be
 //!   confirmed — no hardware graph (flex, ndarray, …), or a primitive the check

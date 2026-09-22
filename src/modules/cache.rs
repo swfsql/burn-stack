@@ -142,3 +142,17 @@ impl<C: CacheTensors> CacheTensors for Vec<C> {
             .collect()
     }
 }
+
+/// A lone tensor of state, e.g. what a step carries beside a model's cache.
+impl<const D: usize> CacheTensors for Tensor<D> {
+    fn zip_tensors(self, other: Self, z: &mut impl TensorZip) -> Self {
+        z.zip(self, other)
+    }
+}
+
+/// Two states stepped together (e.g. a model's cache and a decoded token).
+impl<A: CacheTensors, B: CacheTensors> CacheTensors for (A, B) {
+    fn zip_tensors(self, other: Self, z: &mut impl TensorZip) -> Self {
+        (self.0.zip_tensors(other.0, z), self.1.zip_tensors(other.1, z))
+    }
+}

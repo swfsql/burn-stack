@@ -78,7 +78,8 @@ src/
 │  ├─ cache.rs       CacheStack trait (+ per-slot inner/from_inner, whole-stack
 │  │                 detach() for carrying state across a gradient boundary);
 │  │                 CacheTensors: a pairwise TensorZip traversal per cache type
-│  │                 (into_owned_buffers, assign_in_place; `()` = no cache)
+│  │                 (into_owned_buffers, assign_in_place; `()` = no cache,
+│  │                 a `Tensor<D>` or a pair = state beside a cache)
 │  ├─ activation/    silu, softplus, log_sigmoid (dtype-aware)
 │  ├─ norm/          rms_norm (also usable as QK-Norm), rms_norm_gated, rms_score
 │  ├─ loss/          bce, cross_entropy, mse, l2warp (max-logit penalty, added
@@ -109,7 +110,8 @@ src/
 │                    normalised on device, PerCharLoss for validation; class
 │                    markers are offered, never assumed), sample.rs
 │                    (one prime/prefill/decode sampler over VocabNetwork<M>;
-│                    `decode`, the shared loop, replays a CapturedStep)
+│                    `decode`, the shared loop, draws on the device — the token
+│                    is step state — and replays a CapturedStep)
 ├─ optim/            Muon parameter groups (feature `optim`); allowlist, not denylist
 │  ├─ mod.rs         MuonPlan: specs → ModuleOptimizer (AdamW fallback + Muon groups)
 │  ├─ spec.rs        ProjSpec/ProjSegment: fused-weight column seams → ParamGroup
