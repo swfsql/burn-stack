@@ -44,6 +44,9 @@ cargo doc --no-deps         # build docs
 - A consumer crate must **forward** every one of these features (see
   `burn-mamba/Cargo.toml`), because the `backend-*` cfgs are evaluated where the
   `impl_backend_ext_for_burn_backends!` macro expands — in the *calling* crate.
+- `Cargo.toml` `[patch]`es every burn and cubecl crate to the swfsql forks
+  carrying the tracel-ai/burn#5772 memory fix (a captured graph holds one pass's
+  memory, not ~3); a crate missing from the list links a second copy.
 
 ## File Map
 
@@ -97,14 +100,20 @@ src/
 │  ├─ session.rs     Session, what every epoch loop threads: TrainingProgress
 │  │                 (step, epoch, batch; a resumed epoch finishes from a fresh
 │  │                 shuffle), Budget, Cadence, MetricsLog (metrics.jsonl)
-│  ├─ device.rs      Device dtype configuration (`dev-f16`) + FloatElement
+│  ├─ device.rs      Device dtype configuration (`dev-f16`) + FloatElement;
+│  │                 loader_device (dataloader workers build on the host) +
+│  │                 batch_float/batch_int (the loop's move to the device)
+│  ├─ trainer.rs     Trainer: one LossFn, stepped eagerly through the module
+│  │                 optimizer or — plain SGD + graphs — captured whole
+│  │                 (Weights + SgdConfig::step, lr an input); other shapes step
+│  │                 eagerly into the same weights
 │  ├─ training.rs    TrainingConfig + OptimizerConfig {fallback: AdamW | SGD,
 │  │                 optional Muon}, OptimizerKind (the four, `of` = their
 │  │                 defaults); Budget: the --max-batches / --max-seconds run
 │  │                 caps (not config state; the clock starts at the first step)
 │  ├─ mnist/         dataset.rs (download + batching), classify.rs (the epoch
 │  │                 loops + the MnistModel seam; `train_step` is the whole
-│  │                 step, overridable to fuse/capture it), render.rs (a digit beside
+│  │                 step, a Trainer's), render.rs (a digit beside
 │  │                 its class distribution, as text or PNG)
 │  └─ tiny_stories/  dataset.rs (character corpus: alphabet, whole-parquet
 │                    download + text cache, one story per item, batches padded
@@ -217,7 +226,14 @@ A training step is the step whose caches are the model's weights (`Weights`):
 forward, backward and `optim::SgdConfig::step`, the learning rate an input. Only
 plain SGD replays: Burn's optimizers bake host scalars (the rate, Adam's bias
 correction) into a graph and move their state between buffers
-(tracel-ai/burn#5779).
+(tracel-ai/burn#5779). `examples::trainer::Trainer` packages it; its loss must
+keep the batch's shapes (a mask, not a gather).
+
+No other thread may do device work while a capture records: cubecl gives each
+thread its own stream over one pool, and a worker's upload invalidates the
+recording — silently, the step then runs eagerly. Dataloader workers therefore
+build on the host (`examples::device::loader_device`), and the loops move each
+batch to the device themselves.
 
 ### Padded batches
 

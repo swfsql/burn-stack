@@ -44,6 +44,7 @@
 //! untouched.
 
 use crate::examples::cli::AppArgs;
+use crate::examples::device::loader_device;
 use crate::examples::tiny_stories::dataset::{
     Split, TinyStoriesBatch, TinyStoriesBatcher, TinyStoriesDataset, VOCAB_SIZE,
 };
@@ -321,9 +322,9 @@ pub trait LmModel: Sized {
 }
 
 /// Load (downloading once) the train and validation splits and window them into
-/// dataloaders. Training batches must live on `training_device` (to match the
-/// model weights) and are shuffled from where `progress` resumes (see
-/// [`TrainingProgress::shuffle_seed`]); validation runs on its inner backend.
+/// dataloaders. Both build their batches on [`loader_device`]`(training_device)`
+/// (the loops move them to the model's device); the training one is shuffled
+/// from where `progress` resumes (see [`TrainingProgress::shuffle_seed`]).
 pub fn dataloaders(
     config: &TinyStoriesConfig,
     training_device: &Device,
@@ -345,17 +346,20 @@ pub fn dataloaders(
         train_set.num_windows(),
         valid_set.num_windows(),
     );
+    // The workers build batches on the host, and the loops move them to the
+    // device: a worker uploading to the GPU from its own thread can invalidate
+    // a graph being captured (see `loader_device`).
     let dataloader_train = DataLoaderBuilder::new(batcher.clone())
         .batch_size(config.training.batch_size)
         .shuffle(progress.shuffle_seed(config.training.seed))
         .num_workers(config.training.num_workers)
-        .set_device(training_device.clone())
+        .set_device(loader_device(training_device))
         .build(train_set);
     let dataloader_valid = DataLoaderBuilder::new(batcher)
         .batch_size(config.training.batch_size)
         .shuffle(config.training.seed)
         .num_workers(config.training.num_workers)
-        .set_device(training_device.clone().inner())
+        .set_device(loader_device(training_device))
         .build(valid_set);
     (dataloader_train, dataloader_valid)
 }
@@ -408,6 +412,8 @@ pub fn epoch_train<W: LmModel>(
         .take(session.batch_limit(batches))
     {
         let b = session.begin_batch();
+        // Built on the host by a worker, moved here (see `loader_device`).
+        let run = run.to_device(&valid_device);
         let [batch_size, _windows_seq_len] = run.inputs.dims();
         let windows = run.num_windows();
         let mut caches: Option<W::Caches> = None;
@@ -478,6 +484,7 @@ pub fn epoch_train<W: LmModel>(
             epoch_valid::<W>(
                 std::sync::Arc::clone(&dataloader_valid),
                 &valid_model,
+                &valid_device,
                 config,
                 epoch,
                 valid_batches,
@@ -526,10 +533,12 @@ pub fn epoch_train<W: LmModel>(
 /// threaded through each whole story, *ungated* — the one regime that exists,
 /// since a story is scored the way it is generated: opened once and never
 /// restarted part-way through. The averages also go to the `session`'s metrics
-/// log.
+/// log. Each batch is moved to `device`, the model's, here.
+#[allow(clippy::too_many_arguments)]
 pub fn epoch_valid<W: LmModel>(
     dataloader_valid: Dataloader,
     valid_model: &W::Valid,
+    device: &Device,
     config: &TinyStoriesConfig,
     epoch: usize,
     valid_loop_limit: Option<usize>,
@@ -554,6 +563,7 @@ pub fn epoch_valid<W: LmModel>(
         .take(valid_loop_limit)
     {
         batches += 1;
+        let run = run.to_device(device);
         let [batch_size, _windows_seq_len] = run.inputs.dims();
         let mut caches: Option<W::Caches> = None;
         let mut class = ClassCursors::stream();

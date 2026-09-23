@@ -288,6 +288,17 @@ impl Batcher<MnistFlatItem, MnistBatch> for MnistBatcher {
 }
 
 impl MnistBatch {
+    /// The batch, built by a dataloader worker on the host, moved to `device`
+    /// by the thread that steps the model (see
+    /// [`loader_device`](crate::examples::device::loader_device)).
+    pub fn to_device(self, device: &Device) -> Self {
+        use crate::examples::device::{batch_float, batch_int};
+        Self {
+            images: batch_float(self.images, device),
+            targets: batch_int(self.targets, device),
+        }
+    }
+
     // values mean=0.1307,std=0.3081 are from the PyTorch MNIST example
     // https://github.com/pytorch/examples/blob/54f4572509891883a947411fd7239237dd2a39c3/mnist/main.py#L122
     /// Per-pixel mean of the normalised dataset.

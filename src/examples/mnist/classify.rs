@@ -2,9 +2,9 @@
 //! `mnist-class` examples.
 //!
 //! Everything model-specific is behind [`MnistModel`]: an example supplies a
-//! wrapper that knows how to take a training step, hop to the inner backend,
-//! apply the optimizer, checkpoint itself, and turn images into class
-//! probabilities. The epoch loops, the metric printing, the checkpoint cadence
+//! wrapper that knows how to take a whole training step (a
+//! [`Trainer`](crate::examples::trainer::Trainer)'s, typically), hop to the
+//! inner backend, checkpoint itself, and turn images into class probabilities. The epoch loops, the metric printing, the checkpoint cadence
 //! and the periodic prediction PNGs are the same either way, and live here.
 //!
 //! The outer `train()` — which reads the configs and builds the dataloaders —
@@ -15,13 +15,13 @@ use crate::examples::mnist::dataset::{MnistBatch, MnistBatcher, MnistDataset};
 use crate::examples::mnist::render;
 use crate::examples::session::{Cadence, Session};
 use crate::examples::training::{TrainingConfig, metric_current};
-use burn::optim::{GradientsParams, ModuleOptimizer};
+use burn::optim::ModuleOptimizer;
 use burn::prelude::*;
 use burn::{
     data::dataloader::{DataLoader, Progress, batcher::Batcher},
     data::dataset::Dataset,
     train::metric::{Adaptor, Metric, MetricMetadata, Numeric},
-    train::{ClassificationOutput, InferenceStep, TrainStep},
+    train::{ClassificationOutput, InferenceStep},
 };
 
 /// A batched sequential-MNIST dataloader.
@@ -29,31 +29,20 @@ pub type Dataloader = std::sync::Arc<dyn DataLoader<MnistBatch> + 'static>;
 
 /// The seam the shared loops need from an example's classifier.
 ///
-/// Implemented on the example's own `TrainStep` wrapper, which is what holds the
-/// network and knows its forward path and readout position.
-pub trait MnistModel: TrainStep<Input = MnistBatch, Output = ClassificationOutput> + Sized {
+/// Implemented on the example's own wrapper, which is what holds the network
+/// and knows its forward path and readout position.
+pub trait MnistModel {
     /// The inner-backend counterpart used for validation and sampling.
     type Valid: InferenceStep<Input = MnistBatch, Output = ClassificationOutput>;
 
     /// Move to the inner (non-autodiff) backend.
     fn valid(&self) -> Self::Valid;
 
-    /// Apply one optimizer step, returning the updated model.
-    fn optim_step(self, optim: &mut ModuleOptimizer, lr: f64, grads: GradientsParams) -> Self;
-
     /// One whole training step — forward, backward, optimizer — returning the
-    /// updated model and the batch's outputs (for the metrics). The default is
-    /// [`TrainStep::step`] then [`optim_step`](Self::optim_step); a model
-    /// overrides it to fuse the three, e.g. into one captured graph.
-    fn train_step(
-        self,
-        batch: MnistBatch,
-        optim: &mut ModuleOptimizer,
-        lr: f64,
-    ) -> (Self, ClassificationOutput) {
-        let output = TrainStep::step(&self, batch);
-        (self.optim_step(optim, lr, output.grads), output.item)
-    }
+    /// batch's outputs (for the metrics): a
+    /// [`Trainer`](crate::examples::trainer::Trainer)'s, which replays it from
+    /// a captured graph under plain SGD.
+    fn train_step(&mut self, batch: MnistBatch, optim: &mut ModuleOptimizer, lr: f64) -> ClassificationOutput;
 
     /// Checkpoint the wrapped network into the artifacts directory.
     fn save(&self, app_args: &AppArgs);
@@ -121,8 +110,8 @@ pub fn epoch_train<W: MnistModel>(
         let [batch_size, _, _, _] = batch.images.dims();
         let (_step, lr) = session.begin_step(batch_size);
 
-        let (model, pre_metrics) = training_model.train_step(batch, optim, lr);
-        training_model = model;
+        // Built on the host by a worker, moved here (see `loader_device`).
+        let pre_metrics = training_model.train_step(batch.to_device(&valid_device), optim, lr);
 
         loss_metric.update(&pre_metrics.adapt(), session.meta());
         acc_metric.update(&pre_metrics.adapt(), session.meta());
@@ -152,6 +141,7 @@ pub fn epoch_train<W: MnistModel>(
             epoch_valid(
                 std::sync::Arc::clone(&dataloader_valid),
                 &valid_model,
+                &valid_device,
                 training_config,
                 epoch,
                 valid_batches,
@@ -186,10 +176,13 @@ pub fn epoch_train<W: MnistModel>(
 }
 
 /// Run validation over (up to `valid_loop_limit`) batches, report the average
-/// loss and accuracy, and log them into the `session`'s metrics log.
+/// loss and accuracy, and log them into the `session`'s metrics log. Each batch
+/// is moved to `device`, the model's, here.
+#[allow(clippy::too_many_arguments)]
 pub fn epoch_valid<V>(
     dataloader_valid: Dataloader,
     valid_model: &V,
+    device: &Device,
     training_config: &TrainingConfig,
     epoch: usize,
     valid_loop_limit: Option<usize>,
@@ -218,7 +211,7 @@ pub fn epoch_valid<V>(
         metric_meta.iteration = Some(metric_meta.iteration.unwrap() + 1);
         metric_meta.progress.items_processed += batch_size;
 
-        let pre_metrics = InferenceStep::step(valid_model, batch);
+        let pre_metrics = InferenceStep::step(valid_model, batch.to_device(device));
         loss_metric.update(&pre_metrics.adapt(), &metric_meta);
         acc_metric.update(&pre_metrics.adapt(), &metric_meta);
     }

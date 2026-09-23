@@ -26,6 +26,42 @@ pub type FloatElement = burn::tensor::f16;
 #[cfg(not(feature = "dev-f16"))]
 pub type FloatElement = f32;
 
+/// The device a dataloader's workers build batches on: the host (flex), so no
+/// worker ever touches the accelerator. The loop moves each batch to the
+/// model's device on its own thread ([`batch_float`], [`batch_int`]).
+///
+/// A worker building batches straight on a GPU (`set_device(gpu)`) issues
+/// device work from its own thread, concurrently with the loop's. On CUDA,
+/// cubecl gives every thread its own stream over one memory pool, and a worker
+/// upload landing while a step is being captured invalidates the recording:
+/// the [`CapturedStep`](crate::utils::CapturedStep) then silently steps
+/// eagerly. Whether it lands is a race against the loader's prefetch. PyTorch
+/// sidesteps it the same way: its workers only produce CPU tensors.
+///
+/// Without `backend-flex` there is no host device to name, and this is
+/// `device` itself (the race is back).
+pub fn loader_device(device: &Device) -> Device {
+    #[cfg(feature = "backend-flex")]
+    {
+        let _ = device;
+        Device::flex()
+    }
+    #[cfg(not(feature = "backend-flex"))]
+    device.clone().inner()
+}
+
+/// A batch tensor built on [`loader_device`], moved to `device` (on the
+/// calling thread) in its default float dtype.
+pub fn batch_float<const D: usize>(t: Tensor<D>, device: &Device) -> Tensor<D> {
+    t.to_device(device).cast(device.settings().float_dtype)
+}
+
+/// A batch tensor built on [`loader_device`], moved to `device` (on the
+/// calling thread) in its default int dtype.
+pub fn batch_int<const D: usize>(t: Tensor<D, Int>, device: &Device) -> Tensor<D, Int> {
+    t.to_device(device).cast(device.settings().int_dtype)
+}
+
 /// When `dev-f16` is enabled, install fp16 (and i32) as the device defaults.
 ///
 /// Must be called before any tensor is created on `device`. No-op when the

@@ -411,6 +411,18 @@ pub struct TinyStoriesBatch {
 }
 
 impl TinyStoriesBatch {
+    /// The batch, built by a dataloader worker on the host, moved to `device`
+    /// by the thread that steps the model (see
+    /// [`loader_device`](crate::examples::device::loader_device)).
+    pub fn to_device(self, device: &Device) -> Self {
+        use crate::examples::device::batch_int;
+        Self {
+            inputs: batch_int(self.inputs, device),
+            targets: batch_int(self.targets, device),
+            ..self
+        }
+    }
+
     /// Windows the batch spans — its longest story's, and the length of the run
     /// [`epoch_train`](super::lm::epoch_train) walks.
     pub fn num_windows(&self) -> usize {
