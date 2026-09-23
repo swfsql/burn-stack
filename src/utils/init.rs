@@ -1,14 +1,14 @@
 //! A whole-model initialisation policy: the reference LM init, applied to a
-//! module that has already been built.
+//! module after its build.
 //!
 //! Burn initialises each module from its own config (Kaiming-uniform for a
-//! `Linear`, ones for a norm gain, and so on), which is the right *local*
-//! choice and not the one the reference language models train under. Those use
-//! a single global rule instead — every projection and embedding drawn from
-//! `N(0, initializer_range²)`, biases zeroed — because at depth the residual
-//! stream's scale is a property of the whole stack, not of one layer. This
-//! walks a built module and applies that rule, keeping each parameter's id and
-//! `require_grad` flag.
+//! `Linear`, ones for a norm gain, and so on). This is the right *local*
+//! choice, but not the one that the reference language models train under.
+//! They use a single global rule instead: every projection and embedding
+//! drawn from `N(0, initializer_range²)`, and biases zeroed. The reason: at
+//! depth, the scale of the residual stream is a property of the whole stack,
+//! not of one layer. This module walks a built module and applies that rule.
+//! It keeps the id and the `require_grad` flag of each parameter.
 //!
 //! ```text
 //!   weight (2-D)   ← N(0, std²)         Linear + Embedding
@@ -16,19 +16,20 @@
 //!   everything else                     left as its own module built it
 //! ```
 //!
-//! **What it deliberately leaves alone.** Only a parameter whose own field is
-//! `weight` (and is a matrix) or `bias` is touched. A block's bespoke
-//! parameters — `A_log`, `dt_bias`, a norm's `γ`, a depthwise convolution's
-//! 3-D kernel, a class-token table — carry initialisations that *mean*
-//! something (a spread of timescales, a decay that cannot amplify), and a
-//! global rule would silently erase them.
+//! **What it leaves alone, on purpose.** It touches only a parameter whose own
+//! field is `weight` (and is a matrix) or `bias`. Consider the bespoke
+//! parameters of a block: a log-decay, a step-size bias, the `γ` of a norm,
+//! the 3-D kernel of a depthwise convolution, a class-token table. Their
+//! initialisations *mean* something (a spread of timescales, a decay that
+//! cannot amplify). A global rule would silently erase them.
 //!
 //! **The residual rescale** ([`InitPolicy::residual_paths`]) is the GPT-2
 //! scheme: a weight that writes into the residual stream is divided by
-//! `√(residual branches in the stack)`, so the stream's variance does not grow
-//! with depth. The reference exposes it as `prenorm_residual_strategy='rescale'`
-//! and ships it **off**; it is off here too (an empty path list), with
-//! [`InitPolicy::default_residual_paths`] naming the two weights it applies to.
+//! `√(residual branches in the stack)`, so the variance of the stream does
+//! not grow with depth. The reference exposes it as
+//! `prenorm_residual_strategy='rescale'` and ships it **off**. It is also off
+//! here (an empty path list), and [`InitPolicy::default_residual_paths`] names
+//! the two weights that it applies to.
 
 use burn::module::{Module, ModuleMapper, Param};
 use burn::prelude::*;
@@ -46,31 +47,31 @@ pub struct InitPolicy {
     #[config(default = true)]
     pub zero_bias: bool,
 
-    /// Path fragments identifying the weights that write into the residual
-    /// stream; each is drawn with `std / √residual_depth` instead of `std`.
+    /// Path fragments that identify the weights that write into the residual
+    /// stream. Each one is drawn with `std / √residual_depth`, not `std`.
     /// Empty (the default) ⇒ no rescale. See
     /// [`Self::default_residual_paths`].
     #[config(default = "Vec::new()")]
     pub residual_paths: Vec<String>,
 
-    /// How many residual branches the stack has in total — layers × branches
+    /// The total number of residual branches of the stack: layers × branches
     /// per layer (a mixer, plus a feed-forward when there is one). `None` with
     /// a non-empty [`Self::residual_paths`] is a caller error and panics: the
-    /// rescale is meaningless without a depth to count.
+    /// rescale has no meaning without a depth to count.
     #[config(default = "None")]
     pub residual_depth: Option<usize>,
 }
 
 impl InitPolicy {
-    /// The weights that write into the residual stream in this crate's
-    /// containers: a block's output projection and the feed-forward's
-    /// down-projection — the reference's `o_proj` and `down_proj`.
+    /// The weights that write into the residual stream in the containers of
+    /// this crate: the output projection of a block, and the down-projection
+    /// of the feed-forward (the `o_proj` and `down_proj` of the reference).
     pub fn default_residual_paths() -> Vec<String> {
         vec!["out_proj.weight".to_string(), "mlp.fc2.weight".to_string()]
     }
 
-    /// Fill in [`Self::residual_depth`] when the caller did not state one — how
-    /// a network config supplies the depth it alone knows.
+    /// Set [`Self::residual_depth`] when the caller did not state one. A
+    /// network config uses this to supply the depth that only it knows.
     pub fn with_default_residual_depth(mut self, depth: usize) -> Self {
         self.residual_depth = self.residual_depth.or(Some(depth));
         self
@@ -97,14 +98,14 @@ impl InitPolicy {
     }
 }
 
-/// Walks the module tree keeping the current parameter path.
+/// Walks the module tree, and keeps the current parameter path.
 struct Reinit<'a> {
     policy: &'a InitPolicy,
     path: Vec<String>,
 }
 
 impl Reinit<'_> {
-    /// The field the parameter being mapped is stored under.
+    /// The field that holds the parameter under the map.
     fn field(&self) -> &str {
         self.path.last().map(String::as_str).unwrap_or("")
     }
@@ -120,9 +121,9 @@ impl ModuleMapper for Reinit<'_> {
     }
 
     fn map_float<const D: usize>(&mut self, param: Param<Tensor<D>>) -> Param<Tensor<D>> {
-        // A matrix stored as `weight` is a `Linear` or an `Embedding`; a 1-D
-        // `bias` is theirs too. Anything else is a block's own parameter, whose
-        // initialisation carries meaning this rule does not know about.
+        // A matrix stored as `weight` is a `Linear` or an `Embedding`, and a
+        // 1-D `bias` is theirs too. Anything else is a parameter of a block,
+        // whose initialisation carries a meaning that this rule does not know.
         match self.field() {
             "weight" if D == 2 => {
                 let std = self.policy.std_for(&self.path.join("."));
@@ -138,14 +139,14 @@ impl ModuleMapper for Reinit<'_> {
     }
 }
 
-/// Replace a parameter's value, keeping its id and `require_grad` flag.
+/// Replace the value of a parameter, and keep its id and `require_grad` flag.
 fn redraw<const D: usize>(
     param: Param<Tensor<D>>,
     value: impl FnOnce(Shape, &Device) -> Tensor<D>,
 ) -> Param<Tensor<D>> {
     param.map(|tensor| {
-        // `Param::map` re-reads the flag off the tensor it is handed, so a
-        // freshly drawn one has to be told.
+        // `Param::map` reads the flag again from the tensor that it gets. So a
+        // new draw must get the flag explicitly.
         let require_grad = tensor.is_require_grad();
         let device = tensor.device();
         value(tensor.shape(), &device).set_require_grad(require_grad)

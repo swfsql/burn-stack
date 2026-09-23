@@ -1,49 +1,52 @@
-//! Graph capture/replay of a recurrent step ([`burn::tensor::capture`]): one
-//! `(input, caches) → (output, caches')` call recorded once, then replayed as a
-//! single dispatch per step.
+//! Graph capture/replay of a recurrent step ([`burn::tensor::capture`]). One
+//! `(input, caches) → (output, caches')` call is recorded once, then replayed
+//! as a single dispatch per step.
 //!
-//! A small model on CUDA is host-bound: a step spends its time enqueueing
-//! hundreds of tiny launches while the device idles, and a replay collapses them
-//! into one. A replay reads and writes the exact device buffers the capture
-//! touched, which is what shapes [`CapturedStep`]:
+//! A small model on CUDA is host-bound. A step spends its time on the enqueue
+//! of hundreds of tiny launches while the device idles, and a replay collapses
+//! them into one. A replay reads and writes the exact device buffers that the
+//! capture touched. This shapes [`CapturedStep`]:
 //!
-//! - the input — one tensor or a tuple of them, a [`StepInput`] — and the caches
-//!   live in **stable** buffers it owns, refreshed in place: the input by an
-//!   in-place `slice_assign` from device tensors (or, for one tensor, a host
-//!   write into the same pointer), the caches by the captured closure itself,
-//!   which ends with
-//!   [`CacheTensors::assign_in_place`](crate::modules::CacheTensors::assign_in_place) so that every
-//!   replay advances the state;
-//! - the closure *runs* before it is recorded — once eagerly, then
-//!   [`capture`](burn::tensor::capture)'s warm-ups (and on a backend without
-//!   graphs the recorded run too) — so the caches are snapshotted first and
-//!   restored after: the first [`step`](CapturedStep::step) continues from the
-//!   caches it was given;
-//! - the eager run is what lets a *cold* capture succeed: `capture`'s warm-ups
-//!   hold a second handle on every buffer they allocate, so none of their ops
-//!   runs in place, while the recorded run does — and a kernel variant first
-//!   compiled inside the window loads a module mid-capture, which invalidates
-//!   it. The eager run compiles the recorded run's variants first (a workaround:
-//!   <https://github.com/tracel-ai/burn/issues/5772>);
-//! - a replay is correct only if every write landed in place, which is checked
-//!   once, by comparing buffer ids across the capture. Where that cannot be
-//!   confirmed — no hardware graph (flex, ndarray, …), or a primitive the check
-//!   cannot see into (fusion) — the graph is dropped and the step runs eagerly:
-//!   the same results, without the speed-up.
+//! - The input (one tensor or a tuple of them, a [`StepInput`]) and the caches
+//!   live in **stable** buffers that it owns, refreshed in place. An in-place
+//!   `slice_assign` from device tensors refreshes the input (or, for one
+//!   tensor, a host write into the same pointer). The captured closure
+//!   refreshes the caches itself. It ends with
+//!   [`CacheTensors::assign_in_place`](crate::modules::CacheTensors::assign_in_place),
+//!   so that every replay advances the state.
+//! - The closure *runs* before it is recorded: once eagerly, then the warm-ups
+//!   of [`capture`](burn::tensor::capture) (and on a backend without graphs,
+//!   also the recorded run). So the caches are saved first and restored
+//!   after. The first [`step`](CapturedStep::step) continues from the caches
+//!   that it was given.
+//! - The eager run lets a *cold* capture succeed. The warm-ups of `capture`
+//!   hold a second handle on every buffer that they allocate, so none of their
+//!   ops runs in place, while the recorded run does. Also, a kernel variant
+//!   that first compiles inside the window loads a module mid-capture, which
+//!   invalidates the capture. The eager run compiles the variants of the
+//!   recorded run first (a workaround:
+//!   <https://github.com/tracel-ai/burn/issues/5772>).
+//! - A replay is correct only if every write landed in place. The capture
+//!   checks this once, with a comparison of buffer ids across the capture.
+//!   Where this cannot be confirmed (no hardware graph: flex, ndarray, …, or a
+//!   primitive that the check cannot see into: fusion), the graph is dropped
+//!   and the step runs eagerly: the same results, without the speed-up.
 //!   [`is_captured`](CapturedStep::is_captured) says which.
 //!
 //! Shapes and the launch sequence are frozen at capture: one batch size, and a
 //! step whose host-side control flow does not change between calls (e.g. no
-//! class marker left to land). Kernels should be compiled and autotuned before
-//! it — see [`WARMUP_STEPS`](crate::utils::graph::WARMUP_STEPS). Nor may a step
-//! read back to the host: on CUDA the read fails inside the recording and
-//! leaves the stream capturing, so every later read in the process fails too.
+//! class marker left to land). Compile and autotune the kernels before the
+//! capture (see [`WARMUP_STEPS`](crate::utils::graph::WARMUP_STEPS)). A step
+//! also must not read back to the host. On CUDA, the read fails inside the
+//! recording and leaves the stream in capture mode, so every later read in
+//! the process fails too.
 //!
-//! A stateless call — a fixed-shape `forward` — is the step with caches `()`:
-//! `|x, ()| (f(x), ())`. A training step is the step whose state is the model's
-//! own parameters, [`Weights`]: forward, backward and an optimizer whose update a
-//! replay can advance — [`SgdConfig::step`](crate::optim::SgdConfig::step), the
-//! learning rate an input.
+//! A stateless call (a fixed-shape `forward`) is the step with caches `()`:
+//! `|x, ()| (f(x), ())`. A training step is the step whose state is the
+//! parameters of the model, [`Weights`]: forward, backward, and an optimizer
+//! whose update a replay can advance
+//! ([`SgdConfig::step`](crate::optim::SgdConfig::step), with the learning rate
+//! as an input).
 
 #[cfg(test)]
 mod tests;
@@ -59,22 +62,24 @@ use burn::tensor::{Graph, TensorData, kind::Basic};
 use std::cell::RefCell;
 use std::rc::Rc;
 
-/// Eager steps to run before [`CapturedStep::capture`], on top of the runs it
-/// makes itself (one eager, then the 3 warm-ups of
-/// [`capture`](burn::tensor::capture), all rolled back) — real steps, whose
-/// outputs are used like any other.
+/// Eager steps to run before [`CapturedStep::capture`], in addition to the
+/// runs that it makes itself (one eager, then the 3 warm-ups of
+/// [`capture`](burn::tensor::capture), all rolled back). These are real steps,
+/// and their outputs are used like any other.
 ///
-/// None are needed by default. Fusion and autotune get one more warm-up: their
-/// first runs build and tune the fused/tuned variants — a different launch
-/// sequence from the one a replay should record — and autotune's benchmark
-/// buffers, allocated inside the capture's window, would be pinned to the graph.
+/// By default, none are necessary. Fusion and autotune get one more warm-up.
+/// Their first runs build and tune the fused/tuned variants, which is a
+/// different launch sequence from the one that a replay should record. Also,
+/// the benchmark buffers of autotune, allocated inside the capture window,
+/// would be pinned to the graph.
 pub const WARMUP_STEPS: usize = if cfg!(any(feature = "fusion", feature = "dev-autotune")) {
     1
 } else {
     0
 };
 
-/// The tensor kinds a [`CapturedStep`] input may be (`Float`, `Int`, `Bool`).
+/// The tensor kinds that a [`CapturedStep`] input can be (`Float`, `Int`,
+/// `Bool`).
 #[cfg(all(feature = "cubecl", not(feature = "fusion")))]
 pub trait InputKind:
     Basic
@@ -90,19 +95,20 @@ impl<K> InputKind for K where
         >
 {
 }
-/// The tensor kinds a [`CapturedStep`] input may be (`Float`, `Int`, `Bool`).
+/// The tensor kinds that a [`CapturedStep`] input can be (`Float`, `Int`,
+/// `Bool`).
 #[cfg(not(all(feature = "cubecl", not(feature = "fusion"))))]
 pub trait InputKind: Basic {}
 #[cfg(not(all(feature = "cubecl", not(feature = "fusion"))))]
 impl<K: Basic> InputKind for K {}
 
-/// `t`'s cubecl primitive, when it has one (never under fusion).
+/// The cubecl primitive of `t`, when it has one (never under fusion).
 #[cfg(all(feature = "cubecl", not(feature = "fusion")))]
 fn cube<const D: usize, K: InputKind>(t: &Tensor<D, K>) -> Option<burn_cubecl::tensor::CubeTensor> {
     t.clone().try_into_primitive::<burn_cubecl::Cube>().ok()
 }
 
-/// The id of `t`'s device buffer, where one can be read.
+/// The id of the device buffer of `t`, where it can be read.
 fn buffer_id<const D: usize, K: InputKind>(t: &Tensor<D, K>) -> Option<usize> {
     #[cfg(all(feature = "cubecl", not(feature = "fusion")))]
     return cube(t).map(|c| c.handle.memory.descriptor().id.value);
@@ -114,21 +120,21 @@ fn buffer_id<const D: usize, K: InputKind>(t: &Tensor<D, K>) -> Option<usize> {
 }
 
 /// What a [`CapturedStep`] takes as its input: one tensor, or a tuple of them
-/// (a batch, its targets and a learning rate, say), each held in a stable buffer
-/// and refreshed in place before every call.
+/// (for example a batch, its targets and a learning rate). Each tensor is held
+/// in a stable buffer and refreshed in place before every call.
 pub trait StepInput: Clone {
-    /// The same values, each tensor in a fresh buffer of its own.
+    /// The same values, each tensor in a new buffer of its own.
     fn into_owned(self) -> Self;
 
-    /// `values` written into `self`'s buffers — in place while those are
-    /// unshared; the result holds `self`'s buffers.
+    /// `values` written into the buffers of `self`, in place while those
+    /// buffers are unshared. The result holds the buffers of `self`.
     fn assign(self, values: Self) -> Self;
 
-    /// Whether `other` has `self`'s shapes.
+    /// Whether `other` has the shapes of `self`.
     fn same_shape(&self, other: &Self) -> bool;
 
-    /// Append every tensor's buffer id to `ids`, which turns `None` once one
-    /// cannot be read.
+    /// Append the buffer id of every tensor to `ids`. `ids` becomes `None`
+    /// when an id cannot be read.
     fn buffer_ids(&self, ids: &mut Option<Vec<usize>>);
 }
 
@@ -198,15 +204,15 @@ impl<A: StepInput, B: StepInput, C: StepInput> StepInput for (A, B, C) {
     }
 }
 
-/// The input's buffer ids — `None` if any cannot be read.
+/// The buffer ids of the input. `None` if any cannot be read.
 fn input_ids<I: StepInput>(input: &I) -> Option<Vec<usize>> {
     let mut ids = Some(Vec::new());
     input.buffer_ids(&mut ids);
     ids
 }
 
-/// The buffer ids of the input and every cache tensor — `None` if any cannot
-/// be read.
+/// The buffer ids of the input and of every cache tensor. `None` if any
+/// cannot be read.
 fn stable_ids<I: StepInput, C: CacheTensors>(input: &I, caches: &C) -> Option<Vec<usize>> {
     struct Ids(Option<Vec<usize>>);
     impl TensorZip for Ids {
@@ -233,38 +239,39 @@ fn whole<const D: usize, K: Basic>(t: &Tensor<D, K>) -> [core::ops::Range<usize>
 type StepFn<'a, I, Y, C> = dyn FnMut(I, C) -> (Y, C) + 'a;
 type Shared<T> = Rc<RefCell<Option<T>>>;
 
-/// A recurrent step, captured once and replayed per call — see the
-/// [module docs](self).
+/// A recurrent step, captured once and replayed per call (see the
+/// [module docs](self)).
 ///
 /// `I` is the input (e.g. token ids `Tensor<1, Int>`, or a tuple of tensors),
-/// `Y` the step's output, `C` its caches. Not `Send`: every refresh, replay and
-/// read has to be issued on the stream the graph was captured on, i.e. from
-/// this thread.
+/// `Y` the output of the step, `C` its caches. Not `Send`: every refresh,
+/// replay and read must be issued on the stream where the graph was captured,
+/// that is, from this thread.
 pub struct CapturedStep<'a, I: StepInput + 'a, Y: 'a, C: CacheTensors + 'a> {
-    // Declared first, so it drops first: destroying the graph waits for its
-    // replays before the buffers below can go.
+    // Declared first, so it drops first. The destruction of the graph waits
+    // for its replays, before the buffers below can go.
     graph: Option<Graph<Y, Box<dyn FnMut() -> Y + 'a>>>,
     step: Rc<RefCell<Box<StepFn<'a, I, Y, C>>>>,
     input: Shared<I>,
     caches: Shared<C>,
-    /// The last eager step's output (only without a graph).
+    /// The output of the last eager step (only without a graph).
     output: Option<Y>,
     device: Device,
 }
 
 impl<'a, I: StepInput + 'a, Y: 'a, C: CacheTensors + 'a> CapturedStep<'a, I, Y, C> {
-    /// Capture `step` at `input` and `caches` (the shapes every later call
-    /// keeps). Nothing is stepped: the first [`step`](Self::step) continues
+    /// Capture `step` at `input` and `caches` (every later call keeps these
+    /// shapes). Nothing is stepped: the first [`step`](Self::step) continues
     /// from `caches`.
     ///
     /// # Safety
     ///
-    /// Every tensor `step` reads other than through its two arguments — the
-    /// model's weights, typically — must stay the same device buffer while the
-    /// returned value lives: a replay reads the buffers the capture saw, with
-    /// nothing tracking them. A model `step` borrows for `'a` satisfies this (it
-    /// can be neither dropped nor mutated meanwhile); state behind interior
-    /// mutability that `step` replaces does not.
+    /// Every tensor that `step` reads other than through its two arguments
+    /// (typically the weights of the model) must stay the same device buffer
+    /// while the returned value lives. A replay reads the buffers that the
+    /// capture saw, and nothing tracks them. A model that `step` borrows for
+    /// `'a` satisfies this, because it can be neither dropped nor mutated in
+    /// that time. State behind interior mutability that `step` replaces does
+    /// not satisfy it.
     pub unsafe fn capture(
         device: &Device,
         input: I,
@@ -289,11 +296,11 @@ impl<'a, I: StepInput + 'a, Y: 'a, C: CacheTensors + 'a> CapturedStep<'a, I, Y, 
                 y
             })
         };
-        // Eager, before `capture`'s warm-ups (see the module docs).
+        // Eager, before the warm-ups of `capture` (see the module docs).
         drop(run());
         let graph = burn::tensor::capture(device, run);
 
-        // The closure ran: put the caches it was given back.
+        // The closure ran: put back the caches that it was given.
         {
             let mut slot = caches.borrow_mut();
             let stable = slot.take().expect("caches are always put back");
@@ -321,14 +328,15 @@ impl<'a, I: StepInput + 'a, Y: 'a, C: CacheTensors + 'a> CapturedStep<'a, I, Y, 
         self.graph.is_some()
     }
 
-    /// Whether `x` has the captured input's shapes, which every call keeps.
+    /// Whether `x` has the shapes of the captured input, which every call
+    /// keeps.
     pub fn accepts(&self, x: &I) -> bool {
         self.input.borrow().as_ref().expect("the input is always present").same_shape(x)
     }
 
-    /// Step on the device tensor(s) `x`, which must have the captured input's
-    /// shapes. The output is overwritten by the next call on a captured graph:
-    /// read or copy it first.
+    /// Step on the device tensor(s) `x`, which must have the shapes of the
+    /// captured input. On a captured graph, the next call overwrites the
+    /// output: read or copy it first.
     pub fn step(&mut self, x: I) -> &Y {
         if self.graph.is_none() {
             return self.eager(x);
@@ -345,8 +353,8 @@ impl<'a, I: StepInput + 'a, Y: 'a, C: CacheTensors + 'a> CapturedStep<'a, I, Y, 
         self.replay()
     }
 
-    /// A copy of the current caches, in buffers of its own (the stable ones stay
-    /// the graph's).
+    /// A copy of the current caches, in buffers of its own (the stable buffers
+    /// stay with the graph).
     pub fn caches(&self) -> C {
         self.caches
             .borrow()
@@ -356,7 +364,7 @@ impl<'a, I: StepInput + 'a, Y: 'a, C: CacheTensors + 'a> CapturedStep<'a, I, Y, 
             .into_owned_buffers()
     }
 
-    /// Overwrite the current caches with `caches` (e.g. a fresh opening), in
+    /// Overwrite the current caches with `caches` (e.g. a new opening), in
     /// place.
     pub fn set_caches(&mut self, caches: C) {
         let mut slot = self.caches.borrow_mut();
@@ -371,7 +379,7 @@ impl<'a, I: StepInput + 'a, Y: 'a, C: CacheTensors + 'a> CapturedStep<'a, I, Y, 
         *slot = Some(stable);
     }
 
-    /// Release the graph and hand the current caches back.
+    /// Release the graph and give back the current caches.
     pub fn into_caches(mut self) -> C {
         self.graph = None;
         self.caches.borrow_mut().take().expect("caches are always put back")
@@ -386,12 +394,15 @@ impl<'a, I: StepInput + 'a, Y: 'a, C: CacheTensors + 'a> CapturedStep<'a, I, Y, 
 
     fn replay(&mut self) -> &Y {
         let graph = self.graph.as_mut().expect("only called with a graph");
-        // Safety: the buffers the graph touches are the stable input and caches
-        // (held by `self` and by the closure the graph owns, and only ever
-        // written in place — checked at capture and at every refresh), those
-        // `step` borrows for `'a` (the contract of `capture`), and those the
-        // graph retains itself. `self` is not `Send`, so every refresh, replay
-        // and read is issued from this thread, on the capture's stream.
+        // Safety: the graph touches three sets of buffers:
+        // - the stable input and caches, held by `self` and by the closure
+        //   that the graph owns, and only written in place (checked at capture
+        //   and at every refresh),
+        // - the buffers that `step` borrows for `'a` (the contract of
+        //   `capture`),
+        // - the buffers that the graph retains itself.
+        // `self` is not `Send`, so every refresh, replay and read comes from
+        // this thread, on the stream of the capture.
         unsafe { graph.replay() }
     }
 }
@@ -400,13 +411,14 @@ impl<'a, I: StepInput + 'a, Y: 'a, C: CacheTensors + 'a> CapturedStep<'a, I, Y, 
 impl<'a, const D: usize, K: InputKind + 'a, Y: 'a, C: CacheTensors + 'a>
     CapturedStep<'a, Tensor<D, K>, Y, C>
 {
-    /// The captured input's shape, which every call keeps.
+    /// The shape of the captured input, which every call keeps.
     pub fn input_dims(&self) -> [usize; D] {
         self.input.borrow().as_ref().expect("the input is always present").dims()
     }
 
-    /// [`step`](Self::step) on host data (converted to the input's dtype): on a
-    /// captured graph a host write straight into the input's buffer.
+    /// [`step`](Self::step) on host data (converted to the dtype of the
+    /// input). On a captured graph, this is a host write straight into the
+    /// buffer of the input.
     pub fn step_data(&mut self, data: TensorData) -> &Y {
         let dtype = self.input.borrow().as_ref().expect("the input is always present").dtype();
         let data = data.convert_dtype(dtype);
@@ -420,7 +432,8 @@ impl<'a, const D: usize, K: InputKind + 'a, Y: 'a, C: CacheTensors + 'a>
                 let slot = self.input.borrow();
                 let stable = slot.as_ref().expect("the input is always present");
                 assert_eq!(stable.shape(), data.shape, "a captured step keeps its input shape");
-                // A graph is only kept once the input's id was read, so it has one.
+                // A graph is kept only after the id of the input was read, so
+                // the input has one.
                 let c = cube(stable).expect("a captured input is a cubecl tensor");
                 c.client.write(&c.handle, data.into_bytes());
             }

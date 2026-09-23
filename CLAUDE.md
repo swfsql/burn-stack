@@ -336,9 +336,10 @@ the containers keep it so (`utils/padding.rs`):
   per-layer latent inside an untracked segment gets a tracked zero-valued
   *ghost* row in the carry). They are learnable input rows, not part of the
   transform of a layer.
-- **Bidirectional** (`modules/bidi.rs`): `BidiLayerPair<M>` runs a straight
-  (→) and a reversed (← through `flip`) pass. `OutputMerge` (`Mean` |
-  `CatLinear`) merges them. `BidiLayers<M>` stacks pairs.
+- **Bidirectional** (`modules/bidi.rs`): a pair runs a straight (→) and a
+  reversed (← through `flip`) pass. `OutputMerge` (`Mean` | `CatLinear`)
+  merges them. `BidiLayers<M>` stacks pairs of its own `Layer`s.
+  `BidiLayerPair<M>` is one pair as a standalone module.
 - **Class tokens/latents** (`utils/class/`): learnable `[CLS]`-style
   embeddings spliced into the sequence. `ClassToken` is on a *network*,
   `ClassLatent` on a *layer container*.

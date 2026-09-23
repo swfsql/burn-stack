@@ -44,7 +44,7 @@ impl CrossEntropyLossConfig {
 /// floating-point targets (e.g. one-hot, soft label distributions, or un-normalized logits)
 /// rather than integer class indices, and omits padding, per-class weights, and label smoothing.
 ///
-/// Should be created using [CrossEntropyLossConfig].
+/// Create it with [`CrossEntropyLossConfig`].
 #[derive(Module, Debug)]
 pub struct CrossEntropyLoss {
     /// Treat the outputs as logits.
@@ -65,9 +65,10 @@ impl CrossEntropyLoss {
             // Numerically stable via log-softmax
             log_softmax(logits, 1)
         } else {
-            // outputs are probabilities; eps *inside* the log (dtype-aware via
-            // `div_eps`, so f16-safe) floors both the value and the `1/x`
-            // backward for a zero-probability class (mirrors BCE's log(0)).
+            // The outputs are probabilities. eps *inside* the log (dtype-aware
+            // through `div_eps`, so f16-safe) floors both the value and the
+            // `1/x` backward for a zero-probability class (as the log(0) of
+            // BCE does).
             let eps = div_eps(logits.dtype());
             (logits + eps).log()
         };

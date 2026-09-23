@@ -1,7 +1,12 @@
-//! The optimizer flags pick one of the four shapes; on a loaded config they
-//! replace its optimizer unless state saved under it would then be ignored.
-//! `--batch-size` rescales a cosine schedule with the epoch's step count, and
-//! the time budget's clock starts at the first step.
+//! These tests assert that:
+//!
+//! - the optimizer flags pick one of the four shapes,
+//! - on a loaded config, the flags replace its optimizer, unless the state
+//!   saved under that optimizer would then be ignored,
+//! - `--batch-size` rescales a cosine schedule with the step count of the
+//!   epoch,
+//! - the clock of the time budget starts at the first step,
+//! - an explicit config file does not read the saved config.
 
 use super::*;
 use crate::examples::training::{CosineAnnealingLr, OptimizerConfig};
@@ -103,6 +108,20 @@ fn the_batch_size_rescales_a_cosine_schedule() {
     assert_eq!(training.batch_size, 32);
     let Lr::CosineAnnealing(cosine) = &training.lr else { panic!() };
     assert_eq!((cosine.total_steps, cosine.warmup_steps), (500, 25));
+}
+
+/// With `--training-config`, the config in the artifacts directory is not
+/// read, so a stale one cannot make the load panic.
+#[test]
+fn an_explicit_config_does_not_read_the_saved_one() {
+    let dir = scratch();
+    let saved = dir.path().join(TRAINING_CONFIG_NAME).with_added_extension("json");
+    std::fs::write(saved, b"not a config").unwrap();
+    let explicit = dir.path().join("explicit.json");
+    config(OptimizerKind::Sgd).save(&explicit).unwrap();
+    let args = parse(dir.path(), &["-c", explicit.to_str().unwrap()]);
+    let loaded: TrainingConfig = args.load_training_config().expect("the explicit config");
+    assert_eq!(loaded.optimizer.kind(), OptimizerKind::Sgd);
 }
 
 #[test]

@@ -7,21 +7,25 @@ use burn::prelude::*;
 use std::collections::VecDeque;
 
 /// The float parameters of `M` as the caches of a
-/// [`CapturedStep`](super::CapturedStep) — what a captured *training* step
-/// advances. Int and bool parameters are carried along untouched.
+/// [`CapturedStep`](super::CapturedStep): what a captured *training* step
+/// advances. Int and bool parameters come along untouched.
 ///
-/// The step's closure receives the module, trains it one step, and hands the
-/// updated module back; `CapturedStep` then writes those values into the
-/// parameters it holds (in place, so a replay advances them) and rolls back the
-/// steps `capture` ran. The optimizer inside must be one a replay can advance:
-/// stateless, its learning rate an input tensor — [`SgdConfig::step`].
+/// The closure of the step receives the module, trains it one step, and gives
+/// back the updated module. `CapturedStep` then writes those values into the
+/// parameters that it holds (in place, so a replay advances them), and rolls
+/// back the steps that `capture` ran. The optimizer inside must be one that a
+/// replay can advance: stateless, with its learning rate as an input tensor
+/// ([`SgdConfig::step`]).
 ///
-/// Every tensor goes through the zip on the inner backend, flattened: a
-/// `slice_assign` on an autodiff parameter would be a tracked op, turning the
-/// parameter into a graph node, and flattening lets one rank-1 zip serve every
-/// rank (a contiguous parameter's reshape is a view of the same buffer). Each
-/// parameter's autodiff association, checkpointing strategy and `require_grad`
-/// are put back afterwards.
+/// Every tensor goes through the zip on the inner backend, flattened:
+///
+/// - A `slice_assign` on an autodiff parameter would be a tracked op, and
+///   would make the parameter a graph node.
+/// - The flattening lets one rank-1 zip serve every rank (the reshape of a
+///   contiguous parameter is a view of the same buffer).
+///
+/// After the zip, each parameter gets back its autodiff association, its
+/// checkpointing strategy and its `require_grad`.
 ///
 /// [`SgdConfig::step`]: crate::optim::SgdConfig::step
 #[derive(Clone, Debug)]
@@ -29,7 +33,7 @@ pub struct Weights<M>(pub M);
 
 impl<M: Module + Clone> CacheTensors for Weights<M> {
     fn zip_tensors(self, other: Self, z: &mut impl TensorZip) -> Self {
-        /// `other`'s float parameters, flattened, in visit order.
+        /// The float parameters of `other`, flattened, in visit order.
         struct Collect(VecDeque<Tensor<1>>);
         impl ModuleVisitor for Collect {
             fn visit_float<const D: usize>(&mut self, param: &Param<Tensor<D>>) {

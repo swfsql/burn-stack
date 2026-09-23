@@ -1,5 +1,5 @@
-//! [`MuonPlan::describe`]: which optimizer each of a model's parameters lands
-//! on — the quickest way to check a plan against a real model.
+//! [`MuonPlan::describe`]: the optimizer of each parameter of a model. This is
+//! the quickest way to check a plan against a real model.
 
 use burn::module::{Module, ModuleVisitor, Param, ParamId};
 use burn::prelude::*;
@@ -37,13 +37,13 @@ impl ModuleVisitor for Collect {
 }
 
 impl MuonPlan {
-    /// A per-parameter report of this plan applied to `module`: path, shape, and
-    /// the owning optimizer (with the column segments for a fused weight, `*`
-    /// marking the ones left on the fallback), plus the share of parameters on
-    /// Muon.
+    /// A per-parameter report of this plan applied to `module`: path, shape,
+    /// and the owning optimizer (with the column segments for a fused weight,
+    /// and `*` on the ones left on the fallback). It ends with the share of
+    /// parameters on Muon.
     ///
-    /// Purely diagnostic — print it once to confirm the plan matches the model
-    /// you actually built.
+    /// Purely diagnostic: print it once to confirm that the plan matches the
+    /// model that you built.
     pub fn describe(&self, module: &impl Module) -> String {
         let mut collect = Collect::default();
         module.visit(&mut collect);

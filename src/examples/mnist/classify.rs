@@ -1,14 +1,15 @@
-//! The sequential-MNIST classification loop, shared by the consumers'
-//! `mnist-class` examples.
+//! The sequential-MNIST classification loop, shared by the `mnist-class`
+//! examples of the consumer crates.
 //!
-//! Everything model-specific is behind [`MnistModel`]: an example supplies a
-//! wrapper that knows how to take a whole training step (a
-//! [`Trainer`](crate::examples::trainer::Trainer)'s, typically), hop to the
-//! inner backend, checkpoint itself, and turn images into class probabilities. The epoch loops, the metric printing, the checkpoint cadence
-//! and the periodic prediction PNGs are the same either way, and live here.
+//! [`MnistModel`] holds everything model-specific. An example supplies a
+//! wrapper that can take a whole training step (typically that of a
+//! [`Trainer`](crate::examples::trainer::Trainer)), hop to the inner backend,
+//! checkpoint itself, and turn images into class probabilities. The epoch
+//! loops, the metric printing, the checkpoint cadence and the periodic
+//! prediction PNGs are the same for every model, so they live here.
 //!
-//! The outer `train()` — which reads the configs and builds the dataloaders —
-//! stays in the example, since that is where the model config actually is.
+//! The outer `train()` reads the configs and builds the dataloaders. It stays
+//! in the example, because the model config is there.
 
 use crate::examples::cli::AppArgs;
 use crate::examples::mnist::dataset::{MnistBatch, MnistBatcher, MnistDataset};
@@ -27,9 +28,10 @@ use burn::{
 /// A batched sequential-MNIST dataloader.
 pub type Dataloader = std::sync::Arc<dyn DataLoader<MnistBatch> + 'static>;
 
-/// The seam the shared loops need from an example's classifier.
+/// The interface that the shared loops need from the classifier of an
+/// example.
 ///
-/// Implemented on the example's own wrapper, which is what holds the network
+/// The wrapper of the example implements it. The wrapper holds the network,
 /// and knows its forward path and readout position.
 pub trait MnistModel {
     /// The inner-backend counterpart used for validation and sampling.
@@ -38,10 +40,10 @@ pub trait MnistModel {
     /// Move to the inner (non-autodiff) backend.
     fn valid(&self) -> Self::Valid;
 
-    /// One whole training step — forward, backward, optimizer — returning the
-    /// batch's outputs (for the metrics): a
-    /// [`Trainer`](crate::examples::trainer::Trainer)'s, which replays it from
-    /// a captured graph under plain SGD.
+    /// One whole training step (forward, backward, optimizer). Returns the
+    /// outputs of the batch (for the metrics). Typically the step of a
+    /// [`Trainer`](crate::examples::trainer::Trainer), which replays it from a
+    /// captured graph under plain SGD.
     fn train_step(&mut self, batch: MnistBatch, optim: &mut ModuleOptimizer, lr: f64) -> ClassificationOutput;
 
     /// Checkpoint the wrapped network into the artifacts directory.
@@ -54,8 +56,9 @@ pub trait MnistModel {
 /// Number of fixed test digits sampled for the periodic prediction PNGs.
 pub const NUM_SAMPLES: usize = 8;
 
-/// Grab the first `n` test digits (normalized to `[0, 1]`) plus their labels on
-/// `device` — a fixed set, so the saved predictions are comparable over time.
+/// Take the first `n` test digits (normalized to `[0, 1]`) and their labels on
+/// `device`. It is a fixed set, so the saved predictions are comparable over
+/// time.
 pub fn sample_images(n: usize, device: &Device) -> (Tensor<4>, Vec<u8>) {
     let dataset = MnistDataset::test();
     let items: Vec<_> = (0..n).filter_map(|i| dataset.get(i).ok()).collect();
@@ -64,21 +67,21 @@ pub fn sample_images(n: usize, device: &Device) -> (Tensor<4>, Vec<u8>) {
     (images, labels)
 }
 
-/// The cadence the MNIST examples default to: checkpoint and run a 10-batch
-/// validation (plus the prediction PNGs) every 100 steps.
+/// The default cadence of the MNIST examples: every 100 steps, checkpoint and
+/// run a 10-batch validation (plus the prediction PNGs).
 pub const CADENCE: Cadence = Cadence {
     checkpoint_every: Some(100),
     valid_every: Some(100),
     valid_batches: Some(10),
 };
 
-/// Train for (the rest of) one epoch, stepping the optimizer per batch and
-/// checkpointing and validating at the `session`'s cadence; returns the updated
-/// model.
+/// Train for (the rest of) one epoch. Step the optimizer per batch, and
+/// checkpoint and validate at the cadence of the `session`. Returns the
+/// updated model.
 ///
-/// The epoch ends early once the session's budget (the `--max-batches` /
-/// `--max-seconds` caps) runs out; the caller's epoch loop should then stop, seeing
-/// [`Session::is_exhausted`].
+/// The epoch ends early when the budget of the session (the `--max-batches` /
+/// `--max-seconds` caps) runs out. The epoch loop of the caller should then
+/// stop, because [`Session::is_exhausted`] is true.
 #[allow(clippy::too_many_arguments)]
 pub fn epoch_train<W: MnistModel>(
     dataloader_train: Dataloader,
@@ -96,8 +99,8 @@ pub fn epoch_train<W: MnistModel>(
     let mut acc_metric = burn::train::metric::AccuracyMetric::new();
     let mut iteration_speed_metric = burn::train::metric::IterationSpeedMetric::new();
 
-    // A fixed set of test digits (on the validation backend) classified at every
-    // small val check, to watch the predictions sharpen.
+    // A fixed set of test digits (on the validation backend), classified at
+    // every small validation, to watch the predictions sharpen.
     let (sample_imgs, sample_labels) = sample_images(NUM_SAMPLES, &valid_device);
 
     // training loop
@@ -148,7 +151,7 @@ pub fn epoch_train<W: MnistModel>(
                 session,
             );
 
-            // Save digit + class-probability PNGs into a fresh per-step dir.
+            // Save digit + class-probability PNGs into a new per-step dir.
             let sample_dir = app_args
                 .artifacts_path
                 .join(format!("epoch-{epoch}-batch-{b}"));
@@ -175,9 +178,9 @@ pub fn epoch_train<W: MnistModel>(
     training_model
 }
 
-/// Run validation over (up to `valid_loop_limit`) batches, report the average
-/// loss and accuracy, and log them into the `session`'s metrics log. Each batch
-/// is moved to `device`, the model's, here.
+/// Run validation over up to `valid_loop_limit` batches. Report the average
+/// loss and accuracy, and log them into the metrics log of the `session`. This
+/// function moves each batch to `device`, the device of the model.
 #[allow(clippy::too_many_arguments)]
 pub fn epoch_valid<V>(
     dataloader_valid: Dataloader,
@@ -229,8 +232,8 @@ pub fn epoch_valid<V>(
     );
 }
 
-/// The cross-entropy classification output for a batch, given the last
-/// timestep's `[batch, 10]` logits.
+/// The cross-entropy classification output for a batch, from the
+/// `[batch, 10]` logits of the last timestep.
 pub fn classification_output(logits: Tensor<2>, targets: Tensor<1, Int>) -> ClassificationOutput {
     let loss = burn::nn::loss::CrossEntropyLossConfig::new()
         .init(&logits.device())

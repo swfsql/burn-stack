@@ -4,12 +4,13 @@ use burn::tensor::Distribution;
 
 type Device = burn::prelude::Device;
 
-/// RMSNorm's backward must stay finite when a normalised slice collapses to zero
-/// norm (`mean(x²) = 0`) — a dead token/channel, or a subnormal flushed to zero
-/// on CUDA. The forward guards the *division* (`rms + div_eps`), but the `sqrt`
-/// node's own backward is `1/(2·√(mean x²))`, singular at zero unless the
-/// epsilon sits *inside* the root. Regression guard for the combined-penalty
-/// grokking NaN, localised to this op (the SSD backward's incoming `d_y`).
+/// The backward of RMSNorm must stay finite when a normalised slice collapses
+/// to zero norm (`mean(x²) = 0`): a dead token/channel, or a subnormal flushed
+/// to zero on CUDA. The forward guards the *division* (`rms + div_eps`). But
+/// the backward of the `sqrt` node is `1/(2·√(mean x²))`, singular at zero
+/// unless the epsilon is *inside* the root. Regression guard for a
+/// training-run NaN, localised to this op (the incoming `d_y` of the mixer
+/// backward).
 #[test]
 fn rms_norm_gradient_finite_on_collapsed_slice() {
     let device: Device = Default::default();

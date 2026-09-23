@@ -4,8 +4,8 @@
 
 //! Learning rate schedulers for controlling the optimization process.
 //!
-//! This module provides various strategies to adjust the learning rate during training,
-//! such as cosine annealing with linear warmup, to improve model convergence and performance.
+//! This module provides strategies to adjust the learning rate during
+//! training: cosine annealing with linear warmup, and a constant rate.
 
 use burn::prelude::*;
 use std::f64::consts::PI;

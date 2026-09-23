@@ -1,20 +1,20 @@
 //! Grouped-Query Attention (GQA) dimension expansion.
 //!
-//! A block may project its key/value-like tensors per-group (size `ngroups`)
+//! A block can project its key/value-like tensors per group (size `ngroups`),
 //! while the kernel that consumes them wants one per head (size `nheads`).
-//! This helper bridges the two by replicating each group's vector across the
-//! `heads_per_group = nheads / ngroups` heads of that group.
+//! This helper connects the two: it replicates the vector of each group
+//! across the `heads_per_group = nheads / ngroups` heads of that group.
 
 use burn::prelude::*;
 
-/// Expand a tensor's `ngroups` dim at `group_dim` into an `nheads` dim, by
-/// replicating each group's slice across `heads_per_group = nheads / ngroups`
-/// heads of that group.
+/// Expand the `ngroups` dim of a tensor at `group_dim` into an `nheads` dim.
+/// It replicates the slice of each group across the
+/// `heads_per_group = nheads / ngroups` heads of that group.
 ///
-/// The const generic `DP1` must equal `D + 1` (the rank used during the
-/// intermediate `unsqueeze`+`expand`). Rust cannot yet express that constraint
-/// directly, so it is the caller's responsibility — supplying a wrong value
-/// produces a compile-time rank mismatch from `unsqueeze_dim::<DP1>` / `reshape`.
+/// The const generic `DP1` must equal `D + 1` (the rank of the intermediate
+/// `unsqueeze`+`expand`). Rust cannot yet express that constraint directly,
+/// so the caller must satisfy it. A wrong value gives a compile-time rank
+/// mismatch from `unsqueeze_dim::<DP1>` / `reshape`.
 ///
 /// # Panics
 /// Panics if `nheads % ngroups != 0` (i.e. `nheads` is not a multiple of the
@@ -22,10 +22,10 @@ use burn::prelude::*;
 ///
 /// # Example
 /// ```ignore
-/// // b_bnlgr: [batch, nchunks, chunk_len, ngroups, state_rank] (D=5)
-/// // group_dim = 3 (the ngroups axis)
-/// // result:  [batch, nchunks, chunk_len, nheads,  state_rank]
-/// let b_bnlhr = gqa_expand_to_heads::<_, 5, 6>(b_bnlgr, 3, nheads);
+/// // k: [batch, sequence, ngroups, dim] (D=4)
+/// // group_dim = 2 (the ngroups axis)
+/// // result: [batch, sequence, nheads, dim]
+/// let k = gqa_expand_to_heads::<4, 5>(k, 2, nheads);
 /// ```
 pub fn gqa_expand_to_heads<const D: usize, const DP1: usize>(
     t: Tensor<D>,

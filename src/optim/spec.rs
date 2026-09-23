@@ -1,30 +1,31 @@
-//! Column layout of the fused projection weights — the data the Muon parameter
-//! groups are built from.
+//! Column layout of the fused projection weights: the data that the Muon
+//! parameter groups are built from.
 //!
-//! Every family fuses several independent linear maps into one `Linear`, so a
-//! block's weight tensor is a *concatenation* of matrices along its output
-//! (column) axis. Muon orthogonalises a whole matrix at once, so it must be told
-//! where those seams are; a [`ProjSpec`] is that description, and each family's
+//! Every family fuses several independent linear maps into one `Linear`. So
+//! the weight tensor of a block is a *concatenation* of matrices along its
+//! output (column) axis. Muon orthogonalises a whole matrix at once, so it
+//! must know where those seams are. A [`ProjSpec`] is that description. The
 //! [`BlockConfig::muon_projections`](crate::modules::BlockConfig::muon_projections)
-//! builds one per fused weight, right next to the code that sizes them.
+//! of each family builds one per fused weight, right next to the code that
+//! sizes them.
 
 use burn::module::ParamGroup;
 
-/// The field names a [`Block`](crate::modules::Block) is stored under.
+/// The field names that hold a [`Block`](crate::modules::Block).
 ///
-/// [`Layer`](crate::modules::Layer) holds one (`block`);
-/// [`BidiLayerPair`](crate::modules::bidi::BidiLayerPair) holds a pair. Matching
-/// a block weight under any of them makes a [`ProjSpec`] independent of the
-/// container — one plan covers a plain stack, a virtual-layer stack, and a
-/// bidirectional stack alike, including hand-written models built from these
-/// pieces. Every entry ends in `"block."`, which is what
-/// [`ProjSpec::predicates`] matches on.
+/// [`Layer`](crate::modules::Layer) holds one (`block`).
+/// [`BidiLayerPair`](crate::modules::bidi::BidiLayerPair) holds a pair. A
+/// block weight that matches under any of them makes a [`ProjSpec`]
+/// independent of the container. So one plan covers a plain stack, a
+/// virtual-layer stack, and a bidirectional stack alike, including
+/// hand-written models built from these pieces. Every entry ends in
+/// `"block."`, which is what [`ProjSpec::predicates`] matches on.
 pub const BLOCK_CONTAINERS: [&str; 3] = ["block.", "straight_block.", "reverse_block."];
 
-/// Where in the module tree a [`ProjSpec`]'s path is anchored.
+/// Where in the module tree the path of a [`ProjSpec`] is anchored.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProjScope {
-    /// A weight of the SSM block: the path is matched under each of
+    /// A weight of the mixer block: the path is matched under each of
     /// [`BLOCK_CONTAINERS`].
     Block,
     /// Any other weight: the path is matched as a plain substring of the
@@ -34,13 +35,13 @@ pub enum ProjScope {
 
 /// One contiguous column block of a fused projection weight.
 ///
-/// `width` is the number of *columns* the block owns (Burn's `Linear` weight is
-/// `[d_input, d_output]`, so the fused axis is dim 1).
+/// `width` is the number of *columns* that the block owns (the `Linear` weight
+/// of Burn is `[d_input, d_output]`, so the fused axis is dim 1).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProjSegment {
-    /// Name of the sub-projection, for diagnostics (`"z"`, `"b"`, `"dt"`, …).
+    /// Name of the sub-projection, for diagnostics (`"value"`, `"gate"`, …).
     pub name: &'static str,
-    /// Number of columns this segment spans.
+    /// Number of columns that this segment spans.
     pub width: usize,
     /// Whether Muon owns this segment (`false` ⇒ it stays on the fallback
     /// optimizer, [`FallbackConfig`](super::FallbackConfig)).
@@ -48,18 +49,19 @@ pub struct ProjSegment {
 }
 
 impl ProjSegment {
-    /// A segment Muon orthogonalises on its own.
+    /// A segment that Muon orthogonalises on its own.
     pub fn muon(name: &'static str, width: usize) -> Self {
         Self { name, width, muon: true }
     }
 
     /// A segment left to the fallback optimizer.
     ///
-    /// Used for the channels that produce *per-head scalars* rather than a
-    /// feature vector (Δ, `A`, `λ`): orthogonalising a `[d_model, nheads]` slab
-    /// would force the heads' step-size directions to be mutually orthogonal,
-    /// which is a constraint on a gain, not on a linear map. Same reasoning as
-    /// the usual "no Muon on biases, norm gains or embeddings" rule.
+    /// For the channels that produce *per-head scalars*, not a feature vector
+    /// (a step size, a decay rate). To orthogonalise a `[d_model, nheads]` slab
+    /// would force the step-size directions of the heads to be mutually
+    /// orthogonal. That is a constraint on a gain, not on a linear map. The
+    /// reason is the same as for the usual "no Muon on biases, norm gains or
+    /// embeddings" rule.
     pub fn adamw(name: &'static str, width: usize) -> Self {
         Self { name, width, muon: false }
     }
@@ -68,27 +70,27 @@ impl ProjSegment {
 /// One 2-D weight tensor and how its columns split into independent maps.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProjSpec {
-    /// Trailing part of the parameter path identifying the weight, e.g.
+    /// Trailing part of the parameter path that identifies the weight, e.g.
     /// `"in_proj.weight"`, anchored per [`Self::scope`].
     pub path: String,
     /// Where `path` is anchored.
     pub scope: ProjScope,
-    /// The column blocks, in order; their widths must sum to the weight's output
-    /// width — or, when [`Self::tiled`], to one copy of it.
+    /// The column blocks, in order. Their widths must sum to the output width
+    /// of the weight (or, when [`Self::tiled`], to one copy of it).
     pub segments: Vec<ProjSegment>,
     /// The weight is [untied](crate::utils::untied) along its fused axis: any
-    /// whole number of copies of `segments` side by side, one per application,
-    /// each copy's blocks stepped on their own.
+    /// whole number of copies of `segments` side by side, one per application.
+    /// The blocks of each copy are stepped on their own.
     pub tiled: bool,
 }
 
 impl ProjSpec {
-    /// A fused weight of the SSM block.
+    /// A fused weight of the mixer block.
     pub fn block(path: impl Into<String>, segments: Vec<ProjSegment>) -> Self {
         Self { path: path.into(), scope: ProjScope::Block, segments, tiled: false }
     }
 
-    /// An unfused weight of the SSM block, Muon owns it in full.
+    /// An unfused weight of the mixer block. Muon owns it in full.
     pub fn block_whole(path: impl Into<String>, width: usize) -> Self {
         Self::block(path, vec![ProjSegment::muon("all", width)])
     }
@@ -104,7 +106,8 @@ impl ProjSpec {
         self
     }
 
-    /// An unfused weight matched by plain path substring, Muon owns it in full.
+    /// An unfused weight matched by plain path substring. Muon owns it in
+    /// full.
     pub fn path_whole(path: impl Into<String>, width: usize) -> Self {
         Self::path(path, vec![ProjSegment::muon("all", width)])
     }
@@ -114,28 +117,29 @@ impl ProjSpec {
         self.segments.iter().map(|s| s.width).sum()
     }
 
-    /// Whether any segment is Muon's.
+    /// Whether Muon owns any segment.
     pub fn has_muon(&self) -> bool {
         self.segments.iter().any(|s| s.muon)
     }
 
     /// Whether Muon owns the whole tensor as a single block (so stock
-    /// [`Muon`](burn::optim::Muon) applies directly, no splitting needed) — never
-    /// a [tiled](Self::tiled) weight, whose copies are separate matrices.
+    /// [`Muon`](burn::optim::Muon) applies directly, with no split). Never
+    /// true for a [tiled](Self::tiled) weight, whose copies are separate
+    /// matrices.
     pub fn is_whole_muon(&self) -> bool {
         !self.tiled && self.segments.len() == 1 && self.segments[0].muon
     }
 
-    /// The path substrings a parameter must **all** contain to be this spec's:
-    /// its own path and — under [`ProjScope::Block`] — a block container.
+    /// The path substrings that a parameter must **all** contain to belong to
+    /// this spec: its own path and, under [`ProjScope::Block`], a block
+    /// container.
     ///
-    /// Two substrings rather than one concatenation, because a block need not
-    /// sit *directly* under the container field: a block that is an `enum`
-    /// carries its variant name in between
-    /// (`block.GatedDeltaNet1.in_proj.weight`), which a single
-    /// `"block.in_proj.weight"` predicate would miss — silently, leaving the
-    /// weight on the fallback optimizer. `"block."` alone stands for every
-    /// [`BLOCK_CONTAINERS`] entry, each of which ends with it.
+    /// Two substrings, not one concatenation, because a block need not sit
+    /// *directly* under the container field. A block that is an `enum` carries
+    /// its variant name in between (`block.<Variant>.in_proj.weight`). A
+    /// single `"block.in_proj.weight"` predicate would miss it, silently, and
+    /// leave the weight on the fallback optimizer. `"block."` alone stands for
+    /// every [`BLOCK_CONTAINERS`] entry, because each one ends with it.
     pub fn predicates(&self) -> Vec<String> {
         match self.scope {
             ProjScope::Block => vec!["block.".to_string(), self.path.clone()],

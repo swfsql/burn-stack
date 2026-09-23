@@ -1,8 +1,9 @@
-//! Rendering a classifier's output: one digit beside its 10-bin class
+//! Rendering of the output of a classifier: one digit beside its 10-bin class
 //! distribution, as terminal text or as a PNG.
 //!
-//! Nothing here touches a model — every entry point takes the probabilities
-//! already computed, so the same rendering serves any example's classifier.
+//! Nothing here touches a model. Every entry point takes the probabilities
+//! already computed, so the same rendering serves the classifier of any
+//! example.
 
 use crate::examples::device::FloatElement;
 use crate::examples::mnist::dataset::{HEIGHT, WIDTH};
@@ -24,7 +25,7 @@ const SEP: usize = 2;
 /// `out_dir` (created if missing). The true label and the prediction are encoded
 /// in each file name.
 ///
-/// `images_norm` is `[n, H, W, 1]` in `[0, 1]`; `probs` is `[n, 10]`.
+/// `images_norm` is `[n, H, W, 1]` in `[0, 1]`. `probs` is `[n, 10]`.
 pub fn save_predictions(probs: Tensor<2>, images_norm: Tensor<4>, labels: &[u8], out_dir: &Path) {
     let [n, _h, _w, _c] = images_norm.dims();
     let probs_host = to_host(probs);
@@ -66,8 +67,8 @@ pub fn print_predictions(probs: Tensor<2>, images_norm: Tensor<4>, labels: &[u8]
 
 /// Build a nearest-upscaled grayscale image: the digit on the left, a separator,
 /// then a 10-bar probability chart (bars left→right are classes 0–9). The
-/// predicted bar is full-white; the true class is marked by a faint full-height
-/// column behind its bar.
+/// predicted bar is full-white. A faint full-height column behind its bar marks
+/// the true class.
 pub fn digit_with_bars_png(
     digit: &[f32],
     probs: &[f32],
@@ -104,7 +105,7 @@ pub fn digit_with_bars_png(
             img.put_pixel((true_x + xx) as u32, row as u32, Luma([60]));
         }
     }
-    // Bars: height ∝ probability; predicted class brightest.
+    // Bars: height ∝ probability, predicted class brightest.
     for (c, p) in probs.iter().enumerate().take(NUM_CLASSES) {
         let x0 = base_x + c * (bar_w + gap);
         let hbar = (p.clamp(0.0, 1.0) * (HEIGHT as f32 - 1.0)).round() as usize;

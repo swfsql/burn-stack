@@ -1,14 +1,14 @@
 //! Root-mean-square normalisation over the last dimension.
 //!
-//! `RMSNorm(x) = x / rms(x) · γ` where `rms(x) = √(mean(x²))`.  Unlike
-//! LayerNorm there is no mean-subtraction or bias — only a learnable per-channel
-//! scale `γ`.  Used both as the Pre-LN of every residual block and as a
-//! **QK-Norm** on a block's key/query-like projections.
+//! `RMSNorm(x) = x / rms(x) · γ` where `rms(x) = √(mean(x²))`. Unlike
+//! LayerNorm, there is no mean subtraction and no bias: only a learnable
+//! per-channel scale `γ`. It is the Pre-LN of every residual block, and also a
+//! **QK-Norm** on the key/query-like projections of a block.
 //!
-//! The fp16 path avoids forming `x²` directly (which overflows for moderately
-//! large activations, e.g. 256·256): it first normalises against `max(|x|)` so
-//! the squared values stay `≤ 1`, then rescales.  See [`rms_norm_gated`] for the
-//! SiLU-gated variant.
+//! The fp16 path does not form `x²` directly (it overflows for moderately
+//! large activations, e.g. 256·256). It first normalises against `max(|x|)`,
+//! so the squared values stay `≤ 1`, then rescales. See [`rms_norm_gated`] for
+//! the SiLU-gated variant.
 //!
 //! [`rms_norm_gated`]: crate::modules::norm::rms_norm_gated
 
@@ -36,7 +36,7 @@ impl RmsNormConfig {
 /// Applies RMS normalisation over an input tensor along the last dimension:
 /// `y = x / √(mean(x²)) · γ`.
 ///
-/// Should be created using the [`RmsNormConfig`] configuration.
+/// Create it with [`RmsNormConfig`].
 #[derive(Module, Debug)]
 #[module(custom_display)]
 pub struct RmsNorm {
@@ -54,10 +54,10 @@ impl RmsNorm {
         let normalized = match x.dtype() {
             DType::F64 | DType::F32 | DType::Flex32 | DType::BF16 => {
                 let div_eps = div_eps(x.dtype());
-                // eps *inside* the root (as documented): guards both the forward
-                // division and the `sqrt` node's `1/(2√·)` backward, which is
-                // otherwise singular for a zero-norm slice — see
-                // `tests::rms_norm_gradient_finite_on_collapsed_slice`.
+                // eps *inside* the root. It guards both the forward division
+                // and the `1/(2√·)` backward of the `sqrt` node, which is
+                // otherwise singular for a zero-norm slice (see
+                // `tests::rms_norm_gradient_finite_on_collapsed_slice`).
                 let rms = ((x.clone() * x.clone()).mean_dim(D - 1) + div_eps).sqrt();
                 let normalized = (x / rms) * self.gamma.val().unsqueeze();
                 normalized
@@ -71,7 +71,7 @@ impl RmsNorm {
                 // eps inside the root (matches the main branch): the `sqrt`
                 // backward is otherwise singular for a zero-norm slice.
                 let rms_partial = ((x.clone() * x_).mean_dim(D - 1) + div_eps).sqrt(); // √(x²/max)
-                // `max` is detached; floor it too so an all-zero tensor
+                // `max` is detached. Floor it too, so an all-zero tensor
                 // (`max = 0`) gives a nonzero denominator, not `0/0`.
                 let normalized =
                     (x / rms_partial) / (max + div_eps).sqrt() * self.gamma.val().unsqueeze();

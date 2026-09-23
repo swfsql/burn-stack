@@ -1,13 +1,12 @@
 //! Softplus activation: `softplus(x) = log(1 + eˣ)`, a smooth ReLU.
 //!
 //! Used wherever a strictly-positive quantity is projected from an unbounded
-//! one (an SSM's discretisation step `Δ`, a data-dependent decay).  Above a
-//! per-dtype threshold `log(1 + eˣ)`
-//! is indistinguishable from `x` in that format (in the value *and* in the
-//! derivative, which has already saturated at `1`), so the tail is evaluated as
-//! the identity.  The `log1p(eˣ)` branch is then only ever fed inputs clamped to
-//! that threshold — far below the `eˣ` overflow point — so the usual
-//! `max(x, 0) + log(1 + e^−|x|)` rewrite is not needed.
+//! one (a discretisation step `Δ`, a data-dependent decay). Above a per-dtype
+//! threshold, `log(1 + eˣ)` is indistinguishable from `x` in that format (in
+//! the value *and* in the derivative, which has already saturated at `1`). So
+//! the tail is evaluated as the identity. The `log1p(eˣ)` branch then gets
+//! only inputs clamped to that threshold, far below the `eˣ` overflow point.
+//! So the usual `max(x, 0) + log(1 + e^−|x|)` rewrite is not necessary.
 
 use burn::prelude::*;
 use burn::tensor::DType;

@@ -1,10 +1,15 @@
 //! # Shared utilities
 //!
-//! The lower-level plumbing the composition modules sit on: virtual-layer
-//! scheduling, class tokens, the custom-backward helpers a block family needs
-//! to register its own memory-efficient kernels (`backend_macros` /
-//! `combined_grad` / `fprim`), graph capture of a recurrent step (`graph`), LR
-//! `scheduler`s, and the per-dtype numerical constants below.
+//! The lower-level plumbing under the composition modules:
+//!
+//! - virtual-layer scheduling (`schedule`) and untied parameters (`untied`),
+//! - class tokens (`class`) and right-padded batches (`padding`),
+//! - the custom-backward helpers that a block family needs to register its own
+//!   memory-efficient kernels (`backend_macros` / `combined_grad` / `fprim`),
+//! - no-grad regions (`detach`) and graph capture of a recurrent step
+//!   (`graph`),
+//! - the whole-model init policy (`init`) and the LR `scheduler`s,
+//! - the per-dtype numerical constants below.
 
 use burn::prelude::ToElement;
 use burn::tensor::DType;
@@ -25,6 +30,7 @@ pub mod detach;
 pub mod fprim;
 /// Graph capture/replay of a recurrent step, its caches written back in place.
 pub mod graph;
+/// A whole-model init policy, applied to a module after its build.
 pub mod init;
 /// Right-padded batches: which rows are padding, and each row's place in its
 /// own slot's sequence once class markers are spliced.
@@ -54,12 +60,13 @@ pub use scheduler::{ConstantLr, CosineAnnealingLr, Lr};
 /// returned as `f32`.
 ///
 /// The value is chosen per float format as the geometric mean (average in
-/// log10 space) of two reference magnitudes: a scaled function of the format's
-/// minimum exponent and the format's machine epsilon.  This places `eps`
-/// comfortably above the denormal/underflow floor while staying negligible
-/// relative to typical activations, for each of f64/f32/f16/bf16.  The
-/// resulting constants are noted inline.  `dtype` is the runtime float dtype of
-/// the tensor being divided (e.g. `x.dtype()`).  Panics on non-float dtypes.
+/// log10 space) of two reference magnitudes: a scaled function of the minimum
+/// exponent of the format, and its machine epsilon. For each of
+/// f64/f32/f16/bf16, this places `eps` well above the denormal/underflow
+/// floor, and keeps it negligible relative to typical activations. The
+/// comments in the code note the resulting constants. `dtype` is the runtime
+/// float dtype of the tensor to divide (e.g. `x.dtype()`). Panics on non-float
+/// dtypes.
 pub fn div_eps(dtype: DType) -> f32 {
     match dtype {
         // 4.0693917e-16

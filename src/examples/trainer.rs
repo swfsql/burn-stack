@@ -1,21 +1,22 @@
-//! [`Trainer`]: an example's whole training step — forward, backward and the
-//! optimizer's update — replayed from a captured graph under plain SGD, and
-//! stepped eagerly under any other optimizer.
+//! [`Trainer`]: the whole training step of an example (forward, backward and
+//! the update of the optimizer). Under plain SGD, it replays from a captured
+//! graph. Under any other optimizer, it steps eagerly.
 //!
-//! The step is one [`LossFn`] either way: the module's loss on a batch, and the
-//! outputs the metrics read. Eagerly, its gradients go to the
-//! [`ModuleOptimizer`] each call is handed. Under plain SGD (unless
-//! `--no-graph`) the weights move into a [`CapturedStep`] at the first call:
-//! forward, backward and [`SgdConfig::step`], captured at that batch's shapes
-//! and replayed for every later batch of them — a batch of any other shape (a
-//! short last one) steps eagerly, into the same weights. The capture's own runs
-//! are rolled back and the learning rate is an input, so it trains exactly as
-//! the eager steps would. No other optimizer can be replayed
-//! (tracel-ai/burn#5779), Muon + SGD included, so they step eagerly.
+//! The step is one [`LossFn`] either way: the loss of the module on a batch,
+//! and the outputs that the metrics read. Eagerly, its gradients go to the
+//! [`ModuleOptimizer`] that each call gets. Under plain SGD (unless
+//! `--no-graph`), the weights move into a [`CapturedStep`] at the first call:
+//! forward, backward and [`SgdConfig::step`], captured at the shapes of that
+//! batch and replayed for every later batch of the same shapes. A batch of
+//! any other shape (a short last one) steps eagerly, into the same weights.
+//! The runs of the capture itself are rolled back, and the learning rate is an
+//! input. So it trains exactly as the eager steps would. No other optimizer
+//! can be replayed (tracel-ai/burn#5779), Muon + SGD included, so they step
+//! eagerly.
 //!
-//! A replay freezes the launch sequence, so the loss must keep the batch's
-//! shapes: a mask, not a gather of the positions it scores, and no read back to
-//! the host.
+//! A replay freezes the launch sequence. So the loss must keep the shapes of
+//! the batch: a mask, not a gather of the positions that it scores, and no
+//! read back to the host.
 
 #[cfg(test)]
 mod tests;
@@ -26,20 +27,20 @@ use crate::utils::{CapturedStep, StepInput, Weights};
 use burn::optim::{GradientsParams, ModuleOptimizer};
 use burn::prelude::*;
 
-/// A training step's forward: `module`'s loss on one batch, and the outputs the
-/// metrics read.
+/// The forward of a training step: the loss of `module` on one batch, and the
+/// outputs that the metrics read.
 ///
-/// The batch arrives on the inner backend (lift it with `.autodiff()`); the
-/// loss is the tracked `[1]` mean the gradients come from, and the outputs go
+/// The batch arrives on the inner backend (lift it with `.autodiff()`). The
+/// loss is the tracked `[1]` mean that the gradients come from. The outputs go
 /// back to the inner backend (`.inner()`).
 pub type LossFn<M, I, Y> = fn(&M, I) -> (Tensor<1>, Y);
 
-/// A module under training, one [`step`](Self::step) per batch — see the
-/// [module docs](self).
+/// A module under training, one [`step`](Self::step) per batch (see the
+/// [module docs](self)).
 ///
 /// `M` is the module (on the autodiff backend), `I` a batch (one tensor or a
-/// tuple, on the inner backend), `Y` the outputs its [`LossFn`] returns beside
-/// the loss. Not `Send`, like the [`CapturedStep`] inside.
+/// tuple, on the inner backend), `Y` the outputs that its [`LossFn`] returns
+/// beside the loss. Not `Send`, like the [`CapturedStep`] inside.
 pub struct Trainer<M, I, Y>
 where
     M: Module + Clone + 'static,
@@ -49,14 +50,14 @@ where
     /// `None` only inside [`step`](Self::step).
     state: Option<State<M, I, Y>>,
     loss: LossFn<M, I, Y>,
-    /// The SGD a captured step replays; `None` ⇒ eager steps through the
+    /// The SGD that a captured step replays. `None` ⇒ eager steps through the
     /// module optimizer.
     capture: Option<SgdConfig>,
-    /// The inner device the weights live on.
+    /// The inner device of the weights.
     device: Device,
 }
 
-/// Where a [`Trainer`]'s weights are.
+/// Where the weights of a [`Trainer`] are.
 enum State<M, I, Y>
 where
     M: Module + Clone + 'static,
@@ -67,7 +68,8 @@ where
     Captured(Captured<M, I, Y>),
 }
 
-/// The captured step: `(batch, lr)` → `(loss, outputs)`, the weights its state.
+/// The captured step: `(batch, lr)` → `(loss, outputs)`, with the weights as
+/// its state.
 type Captured<M, I, Y> = CapturedStep<'static, (I, Tensor<1>), (Tensor<1>, Y), Weights<M>>;
 
 impl<M, I, Y> Trainer<M, I, Y>
@@ -76,10 +78,10 @@ where
     I: StepInput + 'static,
     Y: StepInput + 'static,
 {
-    /// `module`, trained through `loss` under `optimizer`: from a captured
-    /// graph if that is plain SGD and `graphs` (the examples'
-    /// [`AppArgs::graphs`](crate::examples::cli::AppArgs::graphs)), else
-    /// eagerly.
+    /// `module`, trained through `loss` under `optimizer`. It replays from a
+    /// captured graph if `optimizer` is plain SGD and `graphs` is set (the
+    /// [`AppArgs::graphs`](crate::examples::cli::AppArgs::graphs) of the
+    /// examples). Else it steps eagerly.
     pub fn new(module: M, loss: LossFn<M, I, Y>, optimizer: &OptimizerConfig, graphs: bool) -> Self {
         let device = module.devices().into_iter().next().expect("a module with parameters");
         Self {
@@ -90,9 +92,10 @@ where
         }
     }
 
-    /// One training step on `batch` (inner backend) at learning rate `lr`: its
-    /// loss and outputs, on the inner backend, in buffers of their own. `optim`
-    /// updates the weights of an eager step; a captured one runs its own SGD.
+    /// One training step on `batch` (inner backend) at learning rate `lr`.
+    /// Returns its loss and outputs, on the inner backend, in buffers of their
+    /// own. `optim` updates the weights of an eager step. A captured step runs
+    /// its own SGD.
     pub fn step(&mut self, batch: I, optim: &mut ModuleOptimizer, lr: f64) -> (Tensor<1>, Y) {
         let state = self.state.take().expect("a step leaves its state behind");
         let (state, output) = match (state, self.capture.clone()) {
@@ -108,8 +111,8 @@ where
                     State::Eager(module) => {
                         let (loss, sgd) = (self.loss, sgd.clone());
                         // Safety: the step reads nothing but its arguments and
-                        // `sgd`, which it owns — `loss` is a `fn`, capturing
-                        // nothing.
+                        // `sgd`, which it owns. `loss` is a `fn`, so it
+                        // captures nothing.
                         unsafe {
                             CapturedStep::capture(&self.device, input.clone(), Weights(module), move |x, w| {
                                 sgd_step(&sgd, loss, x, w)
@@ -118,8 +121,8 @@ where
                     }
                 };
                 let output = if captured.accepts(&input) {
-                    // Copied out of the graph's output buffers, which the next
-                    // replay overwrites.
+                    // Copied out of the output buffers of the graph, because
+                    // the next replay overwrites them.
                     captured.step(input).clone().into_owned()
                 } else {
                     let (output, weights) = sgd_step(&sgd, self.loss, input, captured.caches());
@@ -142,7 +145,7 @@ where
         }
     }
 
-    /// The inner device the weights live on, which a batch must be on.
+    /// The inner device of the weights. A batch must be on it.
     pub fn device(&self) -> &Device {
         &self.device
     }

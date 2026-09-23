@@ -1,34 +1,36 @@
 //! Sampling characters from a trained character LM.
 //!
-//! [`generate`] is *a* sampler for any [`VocabNetwork`] — one policy, not the
-//! contract — and shows a library's three execution modes back to back: whatever
-//! the model splices in front of a sequence is replayed by one
-//! [`prime`](VocabNetwork::prime) (which needs no input token, and answers with
-//! the first character's distribution when there was anything to replay), a
-//! prompt — when there is one — is consumed chunkwise by
-//! [`forward`](VocabNetwork::forward) (prefill: in one pass, or in fixed-shape
-//! chunks by a [`Prefill`]), and every generated character then costs one
-//! [`step`](VocabNetwork::step) against the same cache — O(state) per token,
-//! with no growing KV cache.
+//! [`generate`] is *a* sampler for any [`VocabNetwork`]: one policy, not the
+//! contract. It shows the three execution modes of a library in sequence:
 //!
-//! A model that opens sequences differently — or not at all — wants a different
-//! opening, and is free to write one: the loops in [`lm`](super::lm) ask only for
-//! an unprompted sample, never for this particular way of producing it. A model
-//! with no class markers has no seedless opening here and must be prompted.
+//! 1. One [`prime`](VocabNetwork::prime) replays what the model splices in
+//!    front of a sequence. It needs no input token. When there was something
+//!    to replay, it answers with the distribution of the first character.
+//! 2. A prompt, when there is one, goes chunkwise through
+//!    [`forward`](VocabNetwork::forward) (prefill: in one pass, or in
+//!    fixed-shape chunks by a [`Prefill`]).
+//! 3. Every generated character then costs one [`step`](VocabNetwork::step)
+//!    against the same cache: O(state) per token, with no growing KV cache.
 //!
-//! One call generates **one** story: it opens the sequence, so the
-//! [`ClassCursors`] it threads are used up. A second story wants a second call,
-//! against a **reset** (zero) cache, since a story never followed another in
-//! training.
+//! A model that opens sequences differently (or not at all) needs a different
+//! opening, and can write one. The loops in [`lm`](super::lm) ask only for an
+//! unprompted sample, never for this particular way to produce it. A model
+//! with no class markers has no seedless opening here, and needs a prompt.
 //!
-//! A consumer whose network is an *enum* over families (rather than the generic
-//! container) cannot call [`generate`]; it writes the opening over its own
-//! dispatch and hands the rest to [`decode`], which is where the decode steps
-//! are captured into one replayed graph (see
-//! [`CapturedStep`]); a [`Prefill`] is family-agnostic too.
+//! One call generates **one** story. It opens the sequence, so it uses up the
+//! [`ClassCursors`] that it threads. For a second story, make a second call
+//! against a **reset** (zero) cache, because a story never followed another
+//! story in training.
 //!
-//! Characters are drawn on the device ([`sample_token`]), so decoding waits for
-//! it only to read the story back, a chunk at a time ([`READBACK`]).
+//! A consumer whose network is an *enum* over families (not the generic
+//! container) cannot call [`generate`]. It writes the opening over its own
+//! dispatch and gives the rest to [`decode`]. [`decode`] captures the decode
+//! steps into one replayed graph (see [`CapturedStep`]). A [`Prefill`] is also
+//! family-agnostic.
+//!
+//! Characters are drawn on the device ([`sample_token`]). So decoding waits
+//! for the device only to read the story back, one chunk at a time
+//! ([`READBACK`]).
 
 #[cfg(test)]
 mod tests;
@@ -45,25 +47,29 @@ use rand_chacha::ChaCha8Rng;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-/// Sample `n_chars` characters of one story, continuing `prompt` when there is
-/// one.
+/// Sample `n_chars` characters of one story. When there is a `prompt`,
+/// continue it.
 ///
-/// With `prompt: None` the model writes from its own opening: `prime` replays
-/// whatever it splices in front of a sequence and hands back the distribution of
-/// the first character, so nothing has to be fed in — and nothing
-/// out-of-distribution is, which a seed character taken from the corpus would be.
-/// A model that splices nothing has no such opening and panics here; prompt it,
-/// or write the sampler its opening calls for.
+/// With `prompt: None`, the model writes from its own opening. `prime`
+/// replays what the model splices in front of a sequence, and gives back the
+/// distribution of the first character. So no input is necessary, and no
+/// out-of-distribution input goes in (a seed character from the corpus would
+/// be one). A model that splices nothing has no such opening and panics here.
+/// Prompt it, or write the sampler that its opening needs.
 ///
-/// A prompt is case-folded and filtered through the alphabet (see [`VOCAB`]) and
-/// must not come out empty; anything the model opens with is spliced in front of
-/// it by the same cursors, exactly as in training. `temperature` scales the
-/// logits before the softmax; `<= 0` samples greedily (argmax). `capture`
-/// replays the decode steps from a captured graph where the model allows it
-/// (see [`decode`]); it changes the speed, never the text. With a `prefill` (see
-/// [`Prefill`], which is worth holding across calls) the prompt follows a
-/// `prime`d opening in fixed-shape chunks, where every marker is a `Start`; with
-/// none, or any other marker, one `forward` takes the opening and the prompt.
+/// A prompt is case-folded and filtered through the alphabet (see [`VOCAB`]),
+/// and must not come out empty. The same cursors splice the opening of the
+/// model in front of it, exactly as in training.
+///
+/// - `temperature` scales the logits before the softmax. `<= 0` samples
+///   greedily (argmax).
+/// - `capture` replays the decode steps from a captured graph where the model
+///   allows it (see [`decode`]). It changes the speed, never the text.
+/// - With a `prefill` (see [`Prefill`], worth a hold across calls), the prompt
+///   follows a `prime`d opening in fixed-shape chunks, when every marker is a
+///   `Start`. Without one, or with any other marker, one `forward` takes the
+///   opening and the prompt.
+///
 /// Returns only the generated characters, not the prompt.
 #[allow(clippy::too_many_arguments)]
 pub fn generate<M: Block>(
@@ -82,20 +88,20 @@ where
     M::Caches: CacheTensors,
 {
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
-    // One story: the cursors open the sequence here and are threaded through
-    // every call below, so the opening is emitted once.
+    // One story: the cursors open the sequence here, and go through every call
+    // below. So the opening is emitted once.
     let mut class = ClassCursors::stream();
 
     let (logits, caches) = match prompt {
-        // Prefill, keeping the cache and the logits of the prompt's last
-        // character (what the next character is drawn from).
+        // Prefill. Keep the cache and the logits of the last prompt character
+        // (the next character is drawn from them).
         Some(prompt) => {
             let tokens = VOCAB.encode(prompt);
             assert!(
                 !tokens.is_empty(),
                 "the prompt has no character inside the alphabet: {prompt:?}"
             );
-            // In chunks after the opening, when that opening is all there is.
+            // In chunks after the opening, when the opening holds every marker.
             let prefilled = match prefill {
                 Some(prefill) if model.layers.only_start_latents() => prefill.run(&tokens, || {
                     let mut class = ClassCursors::stream();
@@ -127,7 +133,7 @@ where
             let (logits, caches) = model.prime(1, None, Some(&mut class));
             (
                 logits.expect(
-                    "the model has no class latents to prime from; pass a prompt instead",
+                    "the model has no class latents to prime from. Pass a prompt.",
                 ),
                 caches,
             )
@@ -154,28 +160,30 @@ where
     }
 }
 
-/// Decode `n_chars` characters of one story from its opening — the opening's
-/// `logits`, `caches` and `class` cursors — the loop [`generate`] and a
-/// consumer's own sampler share.
+/// Decode `n_chars` characters of one story from its opening: the `logits`,
+/// `caches` and `class` cursors of the opening. [`generate`] and the sampler
+/// of a consumer share this loop.
 ///
-/// The opening's logits give the first character, and every later one costs a
-/// `step` on the one before, drawn from its logits on the device
-/// ([`sample_token`]): the token is state, like the cache, and the only thing a
-/// step takes from the host is its uniform, all of which `rng` draws up front.
-/// The characters are read back [`READBACK`] at a time.
+/// The logits of the opening give the first character. Every later character
+/// costs a `step` on the character before it, and is drawn from its logits on
+/// the device ([`sample_token`]). The token is state, like the cache. The only
+/// thing that a step takes from the host is its uniform, and `rng` draws all
+/// of them at the start. The characters are read back [`READBACK`] at a time.
 ///
-/// With `capture`, the first [`WARMUP_STEPS`] steps run eagerly and the rest
-/// replay one [`CapturedStep`] of the step and its draw, without cursors. `step`
-/// must then run the same launches at every call — no class marker left to land
+/// With `capture`, the first [`WARMUP_STEPS`] steps run eagerly. The other
+/// steps replay one [`CapturedStep`] of the step and its draw, without
+/// cursors. `step` must then run the same launches at every call, with no
+/// class marker left to land
 /// ([`Layers::only_start_latents`](crate::modules::Layers::only_start_latents)).
-/// Where no hardware graph is available the captured step runs eagerly, so
+/// Where no hardware graph is available, the captured step runs eagerly. So
 /// `capture` changes the speed, never the text.
 ///
 /// # Safety
 ///
-/// With `capture`, that of [`CapturedStep::capture`]: every tensor `step`
-/// reads other than through its arguments stays the same device buffer until
-/// this returns — true of a model it borrows.
+/// With `capture`, the contract of [`CapturedStep::capture`] applies: every
+/// tensor that `step` reads, other than through its arguments, stays the same
+/// device buffer until this function returns. This is true of a model that
+/// `step` borrows.
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn decode<C: CacheTensors>(
     device: &Device,
@@ -197,8 +205,8 @@ pub unsafe fn decode<C: CacheTensors>(
         .collect();
     let draw = |i: usize| Tensor::<1>::from_floats([draws[i]], device);
 
-    // One decode step, from the last token to the next. The token rides as a
-    // float id (exact), the kind a captured state holds.
+    // One decode step, from the last token to the next. The token travels as a
+    // float id (exact), the kind that a captured state holds.
     let advance = move |u: Tensor<1>,
                         (caches, token): (C, Tensor<1>),
                         class: Option<&mut ClassCursors>| {
@@ -217,15 +225,15 @@ pub unsafe fn decode<C: CacheTensors>(
         if capture && i == 1 + WARMUP_STEPS {
             let mut advance = advance.take().expect("captured once");
             let state = state.take().expect("stepped eagerly until captured");
-            // Safety: forwarded from this function's own contract.
+            // Safety: the contract of this function covers it.
             captured = Some(unsafe {
                 CapturedStep::capture(device, draw(i), state, move |u, s| advance(u, s, None))
             });
         }
         let token = match captured.as_mut() {
             Some(captured) => {
-                // Copied out of the graph's output buffer, which the next
-                // replay overwrites.
+                // Copied out of the output buffer of the graph, because the
+                // next replay overwrites it.
                 let token = captured.step_data(TensorData::from([draws[i]]));
                 token.empty_like().slice_assign([0..1], token.clone())
             }
@@ -246,33 +254,35 @@ pub unsafe fn decode<C: CacheTensors>(
     ids.into_iter().map(|id| VOCAB.character(id as u8)).collect()
 }
 
-/// A prompt consumed into a cache `chunk` tokens at a time, the last chunk
-/// right-padded: one shape for every chunk of every prompt, so with `capture`
-/// one graph of it is recorded at the first chunk and replayed for all the
-/// others, for as long as the value lives. Hold one across prompts: a capture
-/// costs a few forwards, and a short prompt is a single chunk.
+/// A prompt consumed into a cache `chunk` tokens at a time, with the last
+/// chunk right-padded. Every chunk of every prompt has one shape. So with
+/// `capture`, one graph of a chunk is recorded at the first chunk (after
+/// [`WARMUP_STEPS`] eager chunks) and replayed for all later chunks, while the
+/// value lives. Hold one across prompts: a capture costs a few forwards, and a
+/// short prompt is a single chunk.
 ///
-/// A prompt continues the opening `prime` runs, and a chunk places no class
-/// marker, so each runs the same launches — which only holds where every marker
-/// is a `Start`
+/// A prompt continues the opening that `prime` runs, and a chunk places no
+/// class marker. So each chunk runs the same launches. This holds only where
+/// every marker is a `Start`
 /// ([`Layers::only_start_latents`](crate::modules::Layers::only_start_latents)).
-/// That opening takes no input, so it is the same for every story: it runs once,
-/// at the first prompt, and is kept. Each chunk comes out as its real rows alone
-/// would, the cache included: the `pad` contract of
-/// [`Layers::forward`](crate::modules::Layers::forward).
+/// That opening takes no input, so it is the same for every story. It runs
+/// once, at the first prompt, and is kept. Each chunk comes out as its real
+/// rows alone would come out, the cache included: this is the `pad` contract
+/// of [`Layers::forward`](crate::modules::Layers::forward).
 pub struct Prefill<'a, C: CacheTensors> {
     device: Device,
     chunk: usize,
     capture: bool,
-    /// The opening's cache and the cursors it leaves (`None`: the model has
-    /// none), once the first prompt ran it.
+    /// The cache of the opening and the cursors that it leaves (`None`: the
+    /// model has no opening), after the first prompt ran it.
     opening: Option<Option<(C, ClassCursors)>>,
-    /// The cursors the opening left, which every chunk starts from.
+    /// The cursors that the opening left. Every chunk starts from them.
     opened: Rc<RefCell<ClassCursors>>,
     /// The chunk, until it is captured.
     run: Option<Box<ChunkFn<'a, C>>>,
     captured: Option<CapturedStep<'a, Tensor<2, Int>, Tensor<2>, C>>,
-    /// Chunks run eagerly so far, [`WARMUP_STEPS`] of which precede a capture.
+    /// The chunks run eagerly so far. [`WARMUP_STEPS`] of them precede a
+    /// capture.
     eager_chunks: usize,
 }
 
@@ -281,17 +291,19 @@ pub struct Prefill<'a, C: CacheTensors> {
 type ChunkFn<'a, C> = dyn FnMut(Tensor<2, Int>, C) -> (Tensor<2>, C) + 'a;
 
 impl<'a, C: CacheTensors + 'a> Prefill<'a, C> {
-    /// `forward` runs one chunk from a cache — `[1, chunk]` ids, the cache, the
-    /// chunk's `pad` mask (`true` at padding) and the cursors the opening left —
-    /// into logits `[1, chunk, vocab]` and the cache after it. Where no hardware
-    /// graph is available the captured chunk runs eagerly, so `capture` changes
-    /// the speed, never the text.
+    /// `forward` runs one chunk from a cache. It takes the `[1, chunk]` ids,
+    /// the cache, the `pad` mask of the chunk (`true` at padding) and the
+    /// cursors that the opening left. It returns the logits `[1, chunk, vocab]`
+    /// and the cache after the chunk. Where no hardware graph is available,
+    /// the captured chunk runs eagerly. So `capture` changes the speed, never
+    /// the text.
     ///
     /// # Safety
     ///
-    /// With `capture`, that of [`CapturedStep::capture`] for as long as the value
-    /// lives: every tensor `forward` reads other than through its arguments stays
-    /// the same device buffer — true of a model it borrows.
+    /// With `capture`, the contract of [`CapturedStep::capture`] applies while
+    /// the value lives: every tensor that `forward` reads, other than through
+    /// its arguments, stays the same device buffer. This is true of a model
+    /// that `forward` borrows.
     pub unsafe fn new(
         device: &Device,
         chunk: usize,
@@ -331,12 +343,12 @@ impl<'a, C: CacheTensors + 'a> Prefill<'a, C> {
         self.captured.as_ref().is_some_and(|c| c.is_captured())
     }
 
-    /// Consume `prompt` (token ids, not empty) after the opening: the logits of
-    /// its last token (`[1, vocab]`, what the next one is drawn from), the cache
-    /// after it and the cursors to continue with. `open` runs the opening —
-    /// `prime` from a zero cache and fresh cursors, `None` when there is nothing
-    /// to prime — at the first call only; with no opening there is nothing to
-    /// continue, and this returns `None`.
+    /// Consume `prompt` (token ids, not empty) after the opening. Returns the
+    /// logits of its last token (`[1, vocab]`, the next token is drawn from
+    /// them), the cache after it, and the cursors to continue with. `open` runs
+    /// the opening at the first call only: `prime` from a zero cache and new
+    /// cursors, or `None` when there is nothing to prime. With no opening,
+    /// there is nothing to continue, and this returns `None`.
     pub fn run(
         &mut self,
         prompt: &[u8],
@@ -360,10 +372,10 @@ impl<'a, C: CacheTensors + 'a> Prefill<'a, C> {
                 let run = self.run.take().expect("captured once");
                 let x = Tensor::from_data(ids(k), &self.device);
                 let caches = caches.take().expect("run eagerly until captured");
-                // Safety: forwarded from `new`'s contract.
+                // Safety: the contract of `new` covers it.
                 self.captured = Some(unsafe { CapturedStep::capture(&self.device, x, caches, run) });
             } else if let Some(captured) = self.captured.as_mut() {
-                // A new prompt's opening, into the graph's own buffers.
+                // The opening of a new prompt, into the buffers of the graph.
                 if let Some(caches) = caches.take() {
                     captured.set_caches(caches);
                 }
@@ -382,7 +394,8 @@ impl<'a, C: CacheTensors + 'a> Prefill<'a, C> {
         }
         let logits = logits.expect("a prompt fills at least one chunk");
         Some(match self.captured.as_ref() {
-            // Copied out of the graph's buffers, which the next prompt overwrites.
+            // Copied out of the buffers of the graph, because the next prompt
+            // overwrites them.
             Some(captured) => {
                 let whole = logits.dims().map(|d| 0..d);
                 (logits.empty_like().slice_assign(whole, logits), captured.caches(), class)
@@ -392,10 +405,10 @@ impl<'a, C: CacheTensors + 'a> Prefill<'a, C> {
     }
 }
 
-/// Characters [`decode`] reads back per sync. Until then the tokens stay on the
-/// device, and every live one slows cubecl's allocator, which an eager step
-/// calls hundreds of times; a replay, bound by the device, barely feels a sync
-/// per chunk.
+/// The characters that [`decode`] reads back per sync. Until the sync, the
+/// tokens stay on the device. Every live token slows the allocator of cubecl,
+/// and an eager step calls that allocator hundreds of times. A replay is bound
+/// by the device, so a sync per chunk costs it almost nothing.
 pub const READBACK: usize = 32;
 
 /// Move `tokens` to the host, onto `ids`.
@@ -405,13 +418,15 @@ fn read_back(tokens: &mut Vec<Tensor<1, Int>>, ids: &mut Vec<i64>) {
     }
 }
 
-/// Draw one token from `logits` (`[1, VOCAB_SIZE]`) on the device: the first
-/// whose cumulative temperature-scaled probability reaches the uniform `draw`
-/// (`[1]`, in `[0, 1)`), or the argmax when `temperature <= 0` (`draw` unused).
+/// Draw one token from `logits` (`[1, VOCAB_SIZE]`) on the device. The token
+/// is the first one whose cumulative temperature-scaled probability reaches
+/// the uniform `draw` (`[1]`, in `[0, 1)`). When `temperature <= 0`, it is the
+/// argmax (`draw` is not used).
 ///
 /// The running total never decreases, so that first token is the count of
-/// totals below `draw` — clamped, since rounding can leave the last total short
-/// of 1, and the last token then takes the remainder. Nothing is read back.
+/// totals below `draw`. The count is clamped, because rounding can leave the
+/// last total short of 1. The last token then takes the remainder. Nothing is
+/// read back.
 pub fn sample_token(logits: Tensor<2>, temperature: f64, draw: Tensor<1>) -> Tensor<1, Int> {
     assert_eq!([1, VOCAB_SIZE], logits.dims());
     if temperature <= 0.0 {

@@ -1,17 +1,21 @@
-//! CLI plumbing shared by the examples: argument parsing into [`AppArgs`],
-//! artifact-directory management, and load/save of the training config, model
-//! config, model weights, and optimizer state (with the run's
-//! [`TrainingProgress`]), plus the [`Session`] a training run threads through its
-//! epoch loops.  See [`HELP`] for the full command-line behaviour.
+//! CLI plumbing shared by the examples:
 //!
-//! [`AppArgs`] carries every flag an example may share; the arguments after
-//! `--` are the example's own, which it parses from [`AppArgs::extra`] and
-//! closes with [`finish_extra`].
+//! - argument parsing into [`AppArgs`],
+//! - artifact-directory management,
+//! - load and save of the training config, the model config, the model weights
+//!   and the optimizer state (with the [`TrainingProgress`] of the run),
+//! - the [`Session`] that a training run threads through its epoch loops.
 //!
-//! The one thing this module cannot know is *whose* example is running, so
-//! [`AppArgs::parse`] takes the prefix of the auto-created artifacts directory
-//! (conventionally `concat!(env!("CARGO_PKG_NAME"), "-", env!("CARGO_BIN_NAME"),
-//! "-")`, evaluated in the example crate).
+//! See [`HELP`] for the full command-line behaviour.
+//!
+//! [`AppArgs`] carries every flag that an example can share. The arguments
+//! after `--` belong to the example. It parses them from [`AppArgs::extra`]
+//! and closes them with [`finish_extra`].
+//!
+//! This module cannot know *whose* example runs. So [`AppArgs::parse`] takes
+//! the prefix of the auto-created artifacts directory (by convention
+//! `concat!(env!("CARGO_PKG_NAME"), "-", env!("CARGO_BIN_NAME"), "-")`,
+//! evaluated in the example crate).
 
 #[cfg(test)]
 mod tests;
@@ -31,66 +35,68 @@ use std::time::Duration;
 pub const HELP: &str = "\
 Burn Example
 
-A command-line tool for training and/or running inference with machine learning models.
-Models, optimizers, and configurations are persisted in an artifacts directory.
+A command-line tool to train machine learning models and/or to run inference with them.
+An artifacts directory keeps the models, the optimizers and the configurations.
 
 USAGE:
     example-name [OPTIONS] [-- <EXTRA_ARGS>...]
 
-When no --training or --inference flag is provided, the program exits after handling configuration logic.
+Without --training or --inference, the program handles the configurations and then exits.
 
 BEHAVIOR OVERVIEW
-- The program manages two configurations: training config and model config.
-- If --training-config or --model-config is given, the corresponding config is loaded from the specified file and saved to the artifacts directory (overwriting any existing file).
-- If no explicit config file is provided for a component, the program attempts to load it from the artifacts directory; if absent, a default configuration is created and saved.
-- The artifacts directory (--artifacts-path) is used to read/write model weights, optimizer state, and configurations. If not specified, a new temporary directory is created and its path is printed.
-- With --remove-artifacts, any existing model and optimizer files (and the saved progress) in the artifacts directory are deleted before training (if --training is active).
-- Model and optimizer weights are loaded from the artifacts directory if present; otherwise new ones are created and saved.
-- With --seed, --epochs, --batch-size or --max-lr, the given value replaces the training config's (loaded or created) before the config is saved, so later runs from the same artifacts directory inherit it. --epochs also rescales a cosine LR schedule's length by the same factor, so the schedule still spans the run; --batch-size rescales its length and warmup by the inverse one (an epoch has that many fewer steps).
-- --adamw, --sgd and --muon choose the optimizer. --muon puts the model's hidden weight matrices on Muon and the other flag (default --adamw) optimizes every other parameter; --adamw and --sgd are exclusive. Without any of them a new training config gets the example's own default. A loaded config's optimizer is replaced by the flags' choice (its LR schedule is kept: see --max-lr), unless optimizer state saved under the old optimizer would then be ignored, which panics instead (the state is removed by --remove-artifacts with --training). Only plain SGD (--sgd alone) has a training step that replays from a captured graph.
-- An example that supports it replays its fixed-shape passes (training steps under plain SGD, validation, decoding) from captured CUDA graphs; --no-graph runs every pass eagerly.
-- The optimizer state is saved together with the run's progress: the LR-schedule step, the epoch, and the batch within it. A run that loads it starts over at step 0 of epoch 1, unless --resume is given, which continues from the saved progress. The interrupted epoch then trains only the batches it has left, drawn from a fresh shuffle (the dataloader workers' batch order cannot be replayed).
-- Training checkpoints at every epoch end and when it stops. --checkpoint-every adds a checkpoint every that many optimizer steps, --valid-every a periodic validation, and --valid-batches caps the batches that validation reads; each example has its own defaults for these three.
-- Every training step and validation is appended as one JSON line to metrics.jsonl in the artifacts directory; each run opens with a \"start\" line.
-- If both --training and --inference are specified, training executes first, followed by inference using the trained model.
-- With --max-batches, training stops after that many mini-batches in total (counted across epochs), checkpointing as usual before it returns. One mini-batch is one optimizer step, which for the character LM is one window of a run rather than one dataloader item. --max-seconds stops it the same way once that much wall-clock time has passed since its first step.
-- Any arguments following -- are captured as-is and forwarded to the example's own flags (-- --help lists them).
+- The program manages two configurations: the training config and the model config.
+- With --training-config or --model-config, the program loads that config from the given file and saves it to the artifacts directory (it overwrites the existing file).
+- Without an explicit config file, the program loads the config from the artifacts directory. If that file is absent, the program creates a default config and saves it.
+- The program reads and writes the model weights, the optimizer state and the configurations in the artifacts directory (--artifacts-path). Without --artifacts-path, the program creates a new temporary directory and prints its path.
+- With --remove-artifacts and --training, the program deletes the model and optimizer files (and the saved progress) in the artifacts directory before training.
+- The program loads the model and optimizer weights from the artifacts directory if they are present. Otherwise it creates new ones and saves them.
+- --seed, --epochs, --batch-size and --max-lr replace the value in the training config (loaded or created) before the program saves the config. So later runs from the same artifacts directory inherit the value. --epochs also rescales the length of a cosine LR schedule by the same factor, so the schedule still spans the run. --batch-size rescales its length and warmup by the inverse factor (an epoch has that many fewer steps).
+- --adamw, --sgd and --muon choose the optimizer. --muon puts the hidden weight matrices of the model on Muon, and the other flag (default --adamw) optimizes every other parameter. --adamw and --sgd are exclusive. Without these flags, a new training config gets the default optimizer of the example.
+- In a loaded config, these flags replace the optimizer and keep the LR schedule (see --max-lr). If the new optimizer would ignore the optimizer state that the old optimizer saved, the program panics. (--remove-artifacts with --training removes that state.)
+- Only plain SGD (--sgd alone) has a training step that replays from a captured graph.
+- An example that supports it replays its fixed-shape passes (training steps under plain SGD, validation, decoding) from captured CUDA graphs. --no-graph runs every pass eagerly.
+- The program saves the optimizer state together with the progress of the run: the LR-schedule step, the epoch, and the batch within it. A run that loads this state starts again at step 0 of epoch 1. With --resume, the run continues from the saved progress. The interrupted epoch then trains only its remaining batches, drawn from a new shuffle (the batch order of the dataloader workers cannot be replayed).
+- Training makes a checkpoint at every epoch end and when it stops. --checkpoint-every adds a checkpoint every N optimizer steps. --valid-every adds a validation every N optimizer steps. --valid-batches caps the batches that a validation reads. Each example has its own defaults for these three flags.
+- Every training step and every validation appends one JSON line to metrics.jsonl in the artifacts directory. Each run starts with a \"start\" line.
+- With both --training and --inference, training runs first. Inference then uses the trained model.
+- With --max-batches, training stops after that many mini-batches in total (counted across epochs), and makes a checkpoint as usual before it returns. One mini-batch is one optimizer step. For the character LM, this is one window of a run, not one dataloader item. --max-seconds stops training in the same way, when that much wall-clock time has passed since its first step.
+- The program forwards all the arguments after -- unchanged to the flags of the example (-- --help lists them).
 
 FLAGS:
     -h, --help                  Show this help message and exit
 
 OPTIONS:
-    -t, --training              Run training (creates or updates model / optimizer)
-    -i, --inference             Run inference after training (if both flags are used) or immediately (if only inference is requested)
-    -r, --remove-artifacts      Delete existing model and optimizer files from the artifacts directory before training
-                                (has no effect if --training is not used)
+    -t, --training              Run training (creates or updates the model and the optimizer)
+    -i, --inference             Run inference: after training (with both flags), or immediately (with this flag only)
+    -r, --remove-artifacts      Delete the model and optimizer files (and the progress) in the artifacts directory
+                                before training (no effect without --training)
     -c, --training-config <PATH>
-                                Load training configuration from this file (overrides any config in artifacts directory)
-    -m, --model-config <PATH>   Load model configuration from this file (overrides any config in artifacts directory)
-    -b, --max-batches <N>       Stop training after N mini-batches in total (across epochs), regardless of the
-                                configured number of epochs. Unlimited when absent.
-        --max-seconds <S>       Stop training once S seconds have passed since its first step. Unlimited when absent.
-    -s, --seed <N>              Replace the training config's RNG seed (model init, data shuffling, sampling)
-        --epochs <N>            Replace the training config's number of epochs (rescaling a cosine LR schedule)
-        --batch-size <N>        Replace the training config's mini-batch size (rescaling a cosine LR schedule)
-        --max-lr <LR>           Replace the LR schedule's peak rate (a constant schedule's only one)
-        --adamw                 Optimize with AdamW (with --muon: every parameter Muon does not own)
-        --sgd                   Optimize with plain SGD (with --muon: every parameter Muon does not own)
+                                Load the training config from this file (overrides the config in the artifacts directory)
+    -m, --model-config <PATH>   Load the model config from this file (overrides the config in the artifacts directory)
+    -b, --max-batches <N>       Stop training after N mini-batches in total (across epochs), for any configured
+                                number of epochs. Unlimited when absent.
+        --max-seconds <S>       Stop training when S seconds have passed since its first step. Unlimited when absent.
+    -s, --seed <N>              Replace the RNG seed of the training config (model init, data shuffle, sampling)
+        --epochs <N>            Replace the number of epochs of the training config (rescales a cosine LR schedule)
+        --batch-size <N>        Replace the mini-batch size of the training config (rescales a cosine LR schedule)
+        --max-lr <LR>           Replace the peak rate of the LR schedule (the only rate of a constant schedule)
+        --adamw                 Optimize with AdamW (with --muon: every parameter that Muon does not own)
+        --sgd                   Optimize with plain SGD (with --muon: every parameter that Muon does not own)
         --muon                  Put the hidden weight matrices on Muon
-        --no-graph              Run every pass eagerly instead of replaying captured CUDA graphs
+        --no-graph              Run every pass eagerly, not from captured CUDA graphs
         --resume                Continue from the progress saved with the optimizer state (schedule step, epoch,
-                                batch) instead of from step 0 (has no effect on a new optimizer)
-        --checkpoint-every <N>  Also checkpoint every N optimizer steps (0: only at epoch ends)
+                                batch), not from step 0 (no effect on a new optimizer)
+        --checkpoint-every <N>  Also make a checkpoint every N optimizer steps (0: only at epoch ends)
         --valid-every <N>       Validate every N optimizer steps (0: no periodic validation)
-        --valid-batches <N>     Batches a periodic validation reads
+        --valid-batches <N>     The batches that a periodic validation reads
     -a, --artifacts-path <PATH>
-                                Directory where configurations, model weights, and optimizer state are saved and loaded.
-                                If the directory does not exist, it will be created.
-                                Defaults to a newly created temporary directory (path will be printed).
+                                Directory to save and load the configs, the model weights and the optimizer state.
+                                The program creates it if it does not exist.
+                                Default: a new temporary directory (the program prints its path).
 
 ARGS:
-    -- <EXTRA_ARGS>             All arguments after -- are forwarded verbatim to the example's own flags.
-                                Passing -h or --help there displays its help information.
+    -- <EXTRA_ARGS>             The program forwards all the arguments after -- unchanged to the flags of the example.
+                                -h or --help there shows the help of the example.
 ";
 
 /// Parsed command-line arguments. For field descriptions, see [`HELP`].
@@ -108,29 +114,30 @@ pub struct AppArgs {
     pub model_config: Option<PathBuf>,
     /// Directory for configs, model weights, and optimizer state.
     pub artifacts_path: PathBuf,
-    /// Optional cap on the total number of training mini-batches; see
+    /// Optional cap on the total number of training mini-batches. See
     /// [`Budget`].
     pub max_batches: Option<usize>,
-    /// Optional cap on the training wall-clock time, in seconds; see
+    /// Optional cap on the training wall-clock time, in seconds. See
     /// [`Budget`].
     pub max_seconds: Option<f64>,
-    /// Optional replacement for the training config's seed; see
+    /// Optional replacement for the seed of the training config. See
     /// [`AppArgs::override_training_config`].
     pub seed: Option<u64>,
-    /// Optional replacement for the training config's number of epochs; see
-    /// [`AppArgs::override_training_config`].
+    /// Optional replacement for the number of epochs of the training config.
+    /// See [`AppArgs::override_training_config`].
     pub epochs: Option<usize>,
-    /// Optional replacement for the training config's mini-batch size; see
-    /// [`AppArgs::override_training_config`].
+    /// Optional replacement for the mini-batch size of the training config.
+    /// See [`AppArgs::override_training_config`].
     pub batch_size: Option<usize>,
-    /// Optional replacement for the LR schedule's peak rate; see
+    /// Optional replacement for the peak rate of the LR schedule. See
     /// [`AppArgs::override_training_config`].
     pub max_lr: Option<f64>,
-    /// The optimizer `--adamw` / `--sgd` / `--muon` chose, if any: a fresh
-    /// config's (see [`AppArgs::optimizer_or`]), and a loaded one's replacement
-    /// (see [`AppArgs::override_training_config`]).
+    /// The optimizer that `--adamw` / `--sgd` / `--muon` chose, if any. It is
+    /// the optimizer of a new config (see [`AppArgs::optimizer_or`]), and the
+    /// replacement in a loaded config (see
+    /// [`AppArgs::override_training_config`]).
     pub optimizer: Option<OptimizerKind>,
-    /// Whether captured graphs are off (`--no-graph`); see [`AppArgs::graphs`].
+    /// Whether captured graphs are off (`--no-graph`). See [`AppArgs::graphs`].
     pub no_graph: bool,
     /// Whether a loaded optimizer continues from its saved [`TrainingProgress`]
     /// (see [`AppArgs::load_or_save_optim`]) rather than from step `0`.
@@ -149,7 +156,7 @@ impl AppArgs {
     /// Parse [`AppArgs`] from `std::env::args_os` (handles `--`, `-h/--help`).
     ///
     /// `artifact_prefix` names the temporary directory created when
-    /// `--artifacts-path` is absent, e.g. `"burn-deltanet-mnist-class-"`.
+    /// `--artifacts-path` is absent, e.g. `"my-crate-mnist-class-"`.
     pub fn parse(artifact_prefix: &str) -> Result<Self, pico_args::Error> {
         let mut args: Vec<_> = std::env::args_os().collect();
         args.remove(0); // remove the executable path.
@@ -201,7 +208,7 @@ impl AppArgs {
                     if extra_args.iter().any(|arg| arg == "-h" || arg == "--help") {
                         return PathBuf::new();
                     }
-                    // e.g. /tmp/burn-mamba-reset-majority-abcd-0
+                    // e.g. /tmp/my-crate-mnist-class-abcd-0
                     let tmp = temp_dir::TempDir::with_prefix(artifact_prefix)
                         .expect("Failed to create the temporary directory")
                         .dont_delete_on_drop();
@@ -227,8 +234,8 @@ impl AppArgs {
         Ok(args)
     }
 
-    /// The arguments after `--`, for the example's own parser; with `-h` /
-    /// `--help` among them, prints `help` and exits. Close it with
+    /// The arguments after `--`, for the parser of the example. With `-h` /
+    /// `--help` among them, prints `help` and exits. Close the parser with
     /// [`finish_extra`].
     pub fn extra(&self, help: &str) -> pico_args::Arguments {
         let mut pargs = pico_args::Arguments::from_vec(self.extra_args.clone());
@@ -239,8 +246,8 @@ impl AppArgs {
         pargs
     }
 
-    /// The optimizer a fresh training config gets: the flags' choice, else the
-    /// example's `default`.
+    /// The optimizer of a new training config: the choice of the flags, else
+    /// the `default` of the example.
     pub fn optimizer_or(&self, default: OptimizerKind) -> OptimizerKind {
         self.optimizer.unwrap_or(default)
     }
@@ -250,7 +257,7 @@ impl AppArgs {
         !self.no_graph
     }
 
-    /// The example's `defaults` under the `--checkpoint-every` /
+    /// The `defaults` of the example, under the `--checkpoint-every` /
     /// `--valid-every` / `--valid-batches` overrides.
     pub fn cadence(&self, defaults: Cadence) -> Cadence {
         let every = |flag: Option<usize>, default| match flag {
@@ -265,12 +272,12 @@ impl AppArgs {
         }
     }
 
-    /// Start a training [`Session`] from `progress` (what
-    /// [`load_or_save_optim`](Self::load_or_save_optim) returned), following
-    /// `training`'s LR schedule over a training split of `items_total` items,
-    /// at the example's `cadence` defaults (see [`cadence`](Self::cadence)).
-    /// Its budget is `--max-batches` and `--max-seconds`; its log, the
-    /// artifacts directory's metrics log.
+    /// Start a training [`Session`] from `progress` (the return value of
+    /// [`load_or_save_optim`](Self::load_or_save_optim)). The session follows
+    /// the LR schedule of `training` over a training split of `items_total`
+    /// items, at the `cadence` defaults of the example (see
+    /// [`cadence`](Self::cadence)). Its budget is `--max-batches` and
+    /// `--max-seconds`. Its log is the metrics log of the artifacts directory.
     pub fn session(
         &self,
         progress: TrainingProgress,
@@ -307,10 +314,12 @@ impl AppArgs {
         self.training_config
             .as_ref()
             .map(|path| {
-                load_training_config(path)
-                    .expect("Failed to find the training config file {path:?}")
+                load_training_config(path).unwrap_or_else(|| {
+                    panic!("Failed to find the training config file {path:?}")
+                })
             })
-            .or({
+            // Lazy: with `--training-config`, the saved config is not read.
+            .or_else(|| {
                 let path = self
                     .artifacts_path
                     .join(TRAINING_CONFIG_NAME)
@@ -319,23 +328,27 @@ impl AppArgs {
             })
     }
 
-    /// Apply the invocation's overrides (`--seed`, `--batch-size`, `--epochs`,
-    /// `--max-lr`, the optimizer flags) onto `training`, the loaded or freshly
-    /// created config, before it is saved.
+    /// Apply the overrides of the invocation (`--seed`, `--batch-size`,
+    /// `--epochs`, `--max-lr`, the optimizer flags) to `training`, the loaded
+    /// or newly created config, before it is saved.
     ///
-    /// `--epochs` rescales a cosine schedule's `total_steps` by the same factor,
-    /// so a schedule sized to the run still spans it (a resumed run then lands
-    /// where the longer or shorter cosine has it); the warmup is left alone.
-    /// `--batch-size` rescales both by the inverse factor, since an epoch then
-    /// takes that many fewer steps.
+    /// `--epochs` rescales the `total_steps` of a cosine schedule by the same
+    /// factor. So a schedule sized to the run still spans it (a resumed run
+    /// then lands where the longer or shorter cosine has it). The warmup does
+    /// not change. `--batch-size` rescales both by the inverse factor, because
+    /// an epoch then takes that many fewer steps.
     ///
-    /// An optimizer flag that disagrees with `training`'s replaces it with
-    /// [`OptimizerConfig::of`] (`dtype` sizes AdamW's epsilon), keeping the LR
-    /// schedule. It panics instead when optimizer state is saved in the
-    /// artifacts directory — i.e. when this is not a fresh run, nor one whose
-    /// `--remove-artifacts --training` already removed it — and the old
-    /// optimizer has any (plain SGD has none), since that state would then be
-    /// loaded into an optimizer that ignores it.
+    /// An optimizer flag that disagrees with the optimizer of `training`
+    /// replaces it with [`OptimizerConfig::of`] (`dtype` sizes the epsilon of
+    /// AdamW), and keeps the LR schedule. It panics instead when both of these
+    /// are true:
+    ///
+    /// - Optimizer state is saved in the artifacts directory. That is, this is
+    ///   not a new run, and `--remove-artifacts --training` did not remove the
+    ///   state.
+    /// - The old optimizer has state (plain SGD has none).
+    ///
+    /// That state would then load into an optimizer that ignores it.
     pub fn override_training_config(&self, training: &mut TrainingConfig, dtype: DType) {
         if let Some(seed) = self.seed {
             training.seed = seed;
@@ -363,12 +376,13 @@ impl AppArgs {
         if let Some(kind) = self.optimizer.filter(|&kind| kind != saved) {
             let optim = self.artifacts_path.join(OPTIM_NAME).with_extension(RECORD_EXT);
             let has_state = saved != OptimizerKind::Sgd
-                && std::fs::exists(&optim).expect("failed to check {optim:?}");
+                && std::fs::exists(&optim)
+                    .unwrap_or_else(|e| panic!("failed to check {optim:?}: {e}"));
             assert!(
                 !has_state,
-                "the training config's optimizer is {saved:?}, and its state {optim:?} would be \
-                 ignored under {kind:?}: drop the optimizer flags to keep it, or remove it \
-                 (--remove-artifacts --training)"
+                "the optimizer of the training config is {saved:?}, and its state {optim:?} \
+                 would be ignored under {kind:?}. Remove the optimizer flags to keep the state, \
+                 or remove the state (--remove-artifacts --training)."
             );
             println!("Replacing the training config's optimizer ({saved:?}) with {kind:?}");
             training.optimizer = OptimizerConfig::of(kind, dtype);
@@ -390,9 +404,10 @@ impl AppArgs {
             .as_ref()
             .map(|path| {
                 load_model_config::<ModelConfig>(path)
-                    .expect("Failed to find the model config file {path:?}")
+                    .unwrap_or_else(|| panic!("Failed to find the model config file {path:?}"))
             })
-            .or({
+            // Lazy: with `--model-config`, the saved config is not read.
+            .or_else(|| {
                 let path = self
                     .artifacts_path
                     .join(MODEL_CONFIG_NAME)
@@ -443,9 +458,10 @@ impl AppArgs {
         load_optim(&self.artifacts_path, optim)
     }
 
-    /// Load the optimizer state into `optim` if saved, otherwise save `optim` as
-    /// the initial state. Also returns the progress to start from: the one saved
-    /// with the loaded state under `--resume`, a fresh one otherwise.
+    /// Load the optimizer state into `optim` if it is saved. Otherwise, save
+    /// `optim` as the initial state. Also returns the progress to start from:
+    /// under `--resume`, the progress saved with the loaded state. Otherwise, a
+    /// new one.
     pub fn load_or_save_optim(&self, optim: ModuleOptimizer) -> (ModuleOptimizer, TrainingProgress) {
         match self.load_optim(optim.clone()) {
             Some(loaded) => (loaded, self.resumed_progress()),
@@ -490,14 +506,14 @@ pub fn parse_path(s: &std::ffi::OsStr) -> Result<std::path::PathBuf, &'static st
     Ok(s.into())
 }
 
-/// Close an example's parser over [`AppArgs::extra`]: panics on any argument it
-/// left over.
+/// Close the parser of an example over [`AppArgs::extra`]. Panics on any
+/// argument that it left.
 pub fn finish_extra(pargs: pico_args::Arguments) {
     let remaining = pargs.finish();
     assert!(remaining.is_empty(), "unused extra arguments: {remaining:?}");
 }
 
-/// `--adamw` / `--sgd` / `--muon` (see [`HELP`]); `None` when none is given.
+/// `--adamw` / `--sgd` / `--muon` (see [`HELP`]). `None` when none is given.
 fn parse_optimizer(pargs: &mut pico_args::Arguments) -> Option<OptimizerKind> {
     let (adamw, sgd, muon) = (
         pargs.contains("--adamw"),
@@ -514,12 +530,11 @@ fn parse_optimizer(pargs: &mut pico_args::Arguments) -> Option<OptimizerKind> {
     }
 }
 
-/// Create the artifacts directory; when `delete` is set, remove any existing
-/// `model`/`optim` files first.
+/// Create the artifacts directory. When `delete` is set, first remove the
+/// `model`, `optim` and progress files.
 pub fn create_artifact_dir(artifact_dir: &Path, delete: bool) {
     if delete {
-        // enforce that the removal should not have errors,
-        // including for when files didn't exist
+        // Every removal must succeed: a missing file is also an error.
         println!("removing {artifact_dir:?}/{{model,optim}}.{RECORD_EXT} and {PROGRESS_NAME}.json");
         std::fs::remove_file(artifact_dir.join(MODEL_NAME).with_extension(RECORD_EXT))
             .expect("failed to remove the model");
@@ -543,7 +558,7 @@ pub fn save_training_config(path: &Path, training_config: &impl Config) {
 
 /// Load a training config from `path`, or `None` if the file is absent.
 pub fn load_training_config<TrainingConfig: Config>(path: &Path) -> Option<TrainingConfig> {
-    let exists = std::fs::exists(path).expect("failed to check {path:?}");
+    let exists = std::fs::exists(path).unwrap_or_else(|e| panic!("failed to check {path:?}: {e}"));
     if exists {
         println!("Loading training config from {path:?}");
         let training_config =
@@ -566,7 +581,7 @@ pub fn save_model_config(path: &Path, model_config: &impl Config) {
 
 /// Load a model config from `path`, or `None` if the file is absent.
 pub fn load_model_config<ModelConfig: Config>(path: &Path) -> Option<ModelConfig> {
-    let exists = std::fs::exists(path).expect("failed to check {path:?}");
+    let exists = std::fs::exists(path).unwrap_or_else(|e| panic!("failed to check {path:?}: {e}"));
     if exists {
         println!("Loading model config from {path:?}");
         let model_config = ModelConfig::load(path).expect("Failed to load the model config");
@@ -578,9 +593,10 @@ pub fn load_model_config<ModelConfig: Config>(path: &Path) -> Option<ModelConfig
 
 /// Canonical burnpack file extension appended to the model/optim records.
 ///
-/// `ModuleRecord`/`ModuleOptimizer` save/load auto-append this when the path
-/// carries no extension, so spell it out here for the existence checks and the
-/// `--remove-artifacts` cleanup to match the files actually written.
+/// The save/load of `ModuleRecord`/`ModuleOptimizer` appends this
+/// automatically when the path has no extension. So it is explicit here, and
+/// the existence checks and the `--remove-artifacts` cleanup match the files
+/// that are written.
 pub const RECORD_EXT: &str = "bpk";
 
 /// Base filename (without extension) for the persisted model weights.
@@ -598,15 +614,16 @@ pub fn save_model(artifact_dir: &Path, model: &impl Module) {
 
 /// Load model weights from `artifact_dir`, or `None` if absent.
 ///
-/// `load_record` restores each parameter's persisted `ParamId`, so the
-/// ParamId-keyed optimizer state stays associated across process relaunches.
+/// `load_record` restores the saved `ParamId` of each parameter. So the
+/// optimizer state, keyed by `ParamId`, stays associated across process
+/// restarts.
 pub fn load_model<ModelConfig: ModelConfigExt>(
     artifact_dir: &Path,
     model_config: &ModelConfig,
     device: &Device,
 ) -> Option<ModelConfig::Model> {
     let path = artifact_dir.join(MODEL_NAME).with_extension(RECORD_EXT);
-    let exists = std::fs::exists(&path).expect("failed to check {path:?}");
+    let exists = std::fs::exists(&path).unwrap_or_else(|e| panic!("failed to check {path:?}: {e}"));
     if exists {
         println!("Loading model from {path:?}");
         let record = ModuleRecord::load(&path).expect("Failed to load the model record");
@@ -628,11 +645,11 @@ pub fn save_optim(artifact_dir: &Path, optim: &ModuleOptimizer) {
 
 /// Load optimizer state from `artifact_dir`, or `None` if absent.
 ///
-/// Optimizer state is keyed by `ParamId`; [`load_model`] preserves the
-/// persisted ids, so the loaded state lands on the resumed model's parameters.
+/// Optimizer state is keyed by `ParamId`. [`load_model`] keeps the saved ids,
+/// so the loaded state lands on the parameters of the resumed model.
 pub fn load_optim(artifact_dir: &Path, optim: ModuleOptimizer) -> Option<ModuleOptimizer> {
     let path = artifact_dir.join(OPTIM_NAME).with_extension(RECORD_EXT);
-    let exists = std::fs::exists(&path).expect("failed to check {path:?}");
+    let exists = std::fs::exists(&path).unwrap_or_else(|e| panic!("failed to check {path:?}: {e}"));
     if !exists {
         return None;
     }
@@ -656,6 +673,6 @@ pub fn save_progress(artifact_dir: &Path, progress: &TrainingProgress) {
 /// Load the training progress from `artifact_dir`, or `None` if absent.
 pub fn load_progress(artifact_dir: &Path) -> Option<TrainingProgress> {
     let path = artifact_dir.join(PROGRESS_NAME).with_added_extension("json");
-    let exists = std::fs::exists(&path).expect("failed to check {path:?}");
+    let exists = std::fs::exists(&path).unwrap_or_else(|e| panic!("failed to check {path:?}: {e}"));
     exists.then(|| TrainingProgress::load(&path).expect("Failed to load the progress"))
 }

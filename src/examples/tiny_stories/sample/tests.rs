@@ -1,11 +1,16 @@
-//! The device draw is the host loop's inverse-CDF draw — at every running total
-//! and one step either side, where the two could part — and a story decodes to
-//! the same text captured, eagerly, and sampled on the host a step at a time. A
-//! chunked prefill is the same captured and eagerly, across prompts sharing one
-//! graph, and within float noise of the opening and prompt in one pass.
+//! These tests assert three things:
 //!
-//! Off a hardware-graph build (flex, the default) the captured decode falls back
-//! to stepping eagerly; under `backend-cuda` it replays a real graph.
+//! - The device draw is the inverse-CDF draw of the host loop. The tests check
+//!   every running total and one step to each side, where the two could
+//!   differ.
+//! - A story decodes to the same text captured, eagerly, and sampled on the
+//!   host one step at a time.
+//! - A chunked prefill is the same captured and eagerly, across prompts that
+//!   share one graph. It is within float noise of the opening and the prompt
+//!   in one pass.
+//!
+//! Off a hardware-graph build (flex, the default), the captured decode runs
+//! eager steps. Under `backend-cuda`, it replays a real graph.
 
 use super::{Prefill, generate, sample_token};
 use crate::examples::tiny_stories::dataset::{VOCAB, VOCAB_SIZE};
@@ -71,7 +76,7 @@ fn device_draw_is_the_host_draw() {
 }
 
 /// Two real layers over the story alphabet, opened by two `Start` latents (so
-/// `generate` primes, and may capture). The block does not check its padding: a
+/// `generate` primes, and can capture). The block does not check its padding: a
 /// captured chunk cannot read its mask back.
 fn story_net(device: &Device) -> VocabNetwork<RefBlock> {
     VocabNetworkBuilder {
@@ -94,8 +99,9 @@ fn expects_graph(device: &Device) -> bool {
         && (name.contains("Cuda") || name.contains("Hip"))
 }
 
-/// The story a host sampler writes: every step's probabilities read back, one
-/// draw per character from the seed's stream (none when greedy).
+/// The story that a host sampler writes. The probabilities of every step are
+/// read back, with one draw per character from the stream of the seed (none
+/// when greedy).
 fn host_story(
     net: &VocabNetwork<RefBlock>,
     device: &Device,
@@ -155,7 +161,7 @@ fn prompt(len: usize) -> Vec<u8> {
     (0..len).map(|i| ((i * 5 + len * 3) % VOCAB_SIZE) as u8).collect()
 }
 
-/// The opening's cache and the cursors it leaves.
+/// The cache of the opening and the cursors that it leaves.
 fn opening(net: &VocabNetwork<RefBlock>) -> (RefCaches, ClassCursors) {
     let mut class = ClassCursors::stream();
     let (_, caches) = net.prime(1, None, Some(&mut class));

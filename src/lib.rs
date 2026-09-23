@@ -1,24 +1,24 @@
-//! # burn-stack — block-generic layer/network composition on Burn
+//! # burn-stack: block-generic layer/network composition on Burn
 //!
-//! Everything that sits *around* a sequence-mixing block: the Pre-LN residual
+//! Everything *around* a sequence-mixing block: the Pre-LN residual
 //! [`Layer`](modules::Layer), the (virtual-)layer [`Layers`](modules::Layers)
 //! stack, bidirectional pairs, latent/vocabulary networks, multi-stream gated
 //! residuals, class tokens, virtual-layer scheduling, and the Muon parameter
 //! groups over fused projections.
 //!
-//! The crate knows nothing about any particular mixer. A family plugs in by
-//! implementing two traits:
+//! The crate knows nothing about any particular mixer. A family joins it with
+//! two traits:
 //!
-//! - [`Block`](modules::Block) — `block_forward` (chunked, for training and
+//! - [`Block`](modules::Block): `block_forward` (chunked, for training and
 //!   prefill), `block_step` (recurrent, for decoding), and the zero-cache
 //!   constructors, plus the associated `Cache` / `Caches` / `Options` types.
-//! - [`BlockConfig`](modules::BlockConfig) — `d_model`, `init_block`, and the
-//!   block's Muon-eligible projections.
+//! - [`BlockConfig`](modules::BlockConfig): `d_model`, `init_block`, and the
+//!   Muon-eligible projections of the block.
 //!
-//! Its cache collection additionally implements
-//! [`CacheStack`](modules::CacheStack), which is all the generic loops need:
-//! one slot per (virtual) layer, plus the backend hop
-//! [`Layers::grad_horizon`](modules::Layers::grad_horizon) performs.
+//! Its cache collection also implements [`CacheStack`](modules::CacheStack),
+//! which is all that the generic loops need: one slot per (virtual) layer,
+//! plus the backend hop of
+//! [`Layers::grad_horizon`](modules::Layers::grad_horizon).
 //!
 //! ## Composition hierarchy
 //!
@@ -33,22 +33,28 @@
 //!
 //! ## Three execution modes
 //!
-//! Every layer and network exposes `forward()` (parallel/chunked: training and
-//! prefill), `step()` (recurrent: token-by-token decode, O(state)/token), and
-//! `prime()` (`step()` without a user token — it emits the class
-//! tokens/latents waiting for the next one). `forward()` from any cache equals
-//! `step()` unrolled from that same cache; a block family is expected to hold
-//! up its half of that contract.
+//! Every layer and network (except the forward-only bidirectional stack) has
+//! three modes:
+//!
+//! - `forward()`: parallel/chunked, for training and prefill,
+//! - `step()`: recurrent, token-by-token decode, O(state)/token,
+//! - `prime()`: `step()` without a user token. It emits the class
+//!   tokens/latents that wait for the next one.
+//!
+//! `forward()` from any cache equals `step()` unrolled from that same cache.
+//! A block family must keep its half of that contract.
 //!
 //! ## Where the pieces live
 //!
-//! - [`modules`] — the composition types and the shared NN modules
+//! - [`modules`]: the composition types and the shared NN modules
 //!   (activations, norms, losses, small tensor helpers).
-//! - [`utils`] — virtual-layer/LR scheduling, class tokens, and the
-//!   custom-backward plumbing a family needs to register its own kernels.
-//! - [`optim`] — Muon parameter groups over fused projection weights.
-//! - `examples` (feature `examples-common`) — the CLI/training/dataset
-//!   scaffolding the consumer crates' `examples/` directories share.
+//! - [`utils`]: virtual-layer/LR scheduling, class tokens, padding, graph
+//!   capture, and the custom-backward plumbing that a family needs to
+//!   register its own kernels.
+//! - [`optim`]: Muon parameter groups over fused projection weights.
+//! - `examples` (feature `examples-common`): the CLI/training/dataset
+//!   scaffolding that the `examples/` directories of the consumer crates
+//!   share.
 
 #![warn(missing_docs)]
 #![allow(clippy::let_and_return)]
@@ -82,8 +88,8 @@ pub mod prelude {
 
 /// When `true`, [`modules::sanity`] panics if it observes a `NaN`.
 ///
-/// Compiled-in guard (off by default) for debugging numerical issues; leaving
-/// it `false` removes the check entirely.
+/// Compiled-in guard (off by default) to debug numerical issues. When it is
+/// `false`, the check is compiled out.
 #[cfg(feature = "check-nan")]
 pub const DENY_NAN: bool = true;
 /// When `true`, [`modules::sanity`] panics if it observes a `NaN`.

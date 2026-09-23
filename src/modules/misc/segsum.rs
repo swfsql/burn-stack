@@ -1,8 +1,8 @@
-//! Stable segment-sum, the building block of the SSD 1-semiseparable mask `L`.
+//! Stable segment-sum, the building block of a 1-semiseparable decay mask `L`.
 //!
-//! `L[i, j] = exp(segsum(a)[i, j])` is the causal decay from step `j` to `i`;
-//! computing it via differences of log-space prefix sums (rather than chained
-//! products) keeps it stable over long sequences.  See [`segsum`] for the math.
+//! `L[i, j] = exp(segsum(a)[i, j])` is the causal decay from step `j` to `i`.
+//! Its computation from differences of log-space prefix sums (not from chained
+//! products) keeps it stable over long sequences. See [`segsum`] for the math.
 
 use crate::modules::sanity as san;
 use burn::prelude::*;

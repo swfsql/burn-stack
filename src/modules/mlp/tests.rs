@@ -8,7 +8,7 @@ type Device = burn::prelude::Device;
 /// `hidden` rounds `d_intermediate` **up** to `multiple_of`, so the realised
 /// `fc1`/`fc2` shapes can differ from the configured figure. Pinned because
 /// published checkpoints rely on it: `d_intermediate: 1264` in `config.json`,
-/// `fc1.weight` of `[2·1280, 768]` on disk.
+/// and an `fc1.weight` of `[2·1280, 768]` on disk.
 #[test]
 fn hidden_rounds_up_to_multiple_of() {
     let device: Device = Default::default();
@@ -22,10 +22,11 @@ fn hidden_rounds_up_to_multiple_of() {
     }
 }
 
-/// The value half of `fc1` comes first and the gate half second — the order
-/// `y.chunk(2, dim=-1)` produces in the reference `GatedMLP`, and therefore the
-/// layout the checkpoint's fused `fc1` is stored in. Swapping the two halves is
-/// silent (shapes are identical), so compare against the split done by hand.
+/// The value half of `fc1` comes first and the gate half second: the order
+/// that `y.chunk(2, dim=-1)` produces in the reference `GatedMLP`, so also the
+/// storage layout of the fused `fc1` of the checkpoint. A swap of the two
+/// halves is silent (the shapes are identical), so compare against the split
+/// done by hand.
 #[test]
 fn value_half_precedes_gate_half() {
     let device: Device = Default::default();

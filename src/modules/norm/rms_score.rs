@@ -1,20 +1,20 @@
-//! The RMSNorm-then-dot **score** — a parameter-free RMS normalisation folded
+//! The RMSNorm-then-dot **score**: a parameter-free RMS normalisation folded
 //! into a dot product against a learnable query.
 //!
 //! It is the scoring primitive of
 //! [`MultiGateResidual`](crate::modules::MultiGateResidual), which scores the
-//! depth-*streams* it pools, and it is public so that a downstream container
-//! mixing some other set of parallel items — a pool of streaming caches, say —
-//! can weight them by the same rule instead of a fresh projection off
+//! depth-*streams* that it pools. It is public, so that a downstream container
+//! that mixes some other set of parallel items (a pool of streaming caches,
+//! for example) can weight them by the same rule, not by a new projection from
 //! `d_model`. A query dotted against RMS-normalised *content* is scale-free in
-//! the content and needs no temperature: the normalisation fixes the scale the
-//! query is read at, and the query itself learns how sharp the resulting
+//! the content and needs no temperature. The normalisation fixes the scale at
+//! which the query reads, and the query itself learns how sharp the resulting
 //! mixture is.
 //!
 //! The RMS denominator is constant along the feature axis, so it is folded
-//! *out* of the reduction — [`normed_score`](crate::modules::normed_score)
-//! never materialises the full-width normalised tensor, while computing
-//! exactly `Σ_feat(rms_norm(x) · w) · scale`.
+//! *out* of the reduction. [`normed_score`](crate::modules::normed_score)
+//! never materialises the full-width normalised tensor, and computes exactly
+//! `Σ_feat(rms_norm(x) · w) · scale`.
 
 use crate::utils::div_eps;
 use burn::prelude::*;
@@ -44,9 +44,9 @@ pub fn rms_denom<const D: usize>(x: Tensor<D>) -> Tensor<D> {
             let x_ = x.clone() / (max.clone() + eps); // x_.abs() <= 1
             // eps inside the root (matches `RmsNorm`'s F16 branch).
             let rms_partial = ((x.clone() * x_).mean_dim(D - 1) + eps).sqrt();
-            // `max` is detached (no backward), but floor it too so an
-            // all-zero tensor (`max = 0`) yields a nonzero denominator
-            // rather than `0/0` in the caller — matching the F32 branch.
+            // `max` is detached (no backward), but floor it too, so an
+            // all-zero tensor (`max = 0`) gives a nonzero denominator, not
+            // `0/0` in the caller. This matches the F32 branch.
             rms_partial * (max + eps).sqrt()
         }
         _ => unreachable!("rms_denom expects a float dtype"),
@@ -57,13 +57,13 @@ pub fn rms_denom<const D: usize>(x: Tensor<D>) -> Tensor<D> {
 /// `[‥, 1]`.
 ///
 /// `w` broadcasts against `x` on every axis but the feature one (`D-1`), where
-/// it must be full width. `scale` is the query's `1/√width` temperature.
+/// it must be full width. `scale` is the `1/√width` temperature of the query.
 pub fn normed_score<const D: usize>(x: Tensor<D>, w: Tensor<D>, scale: f64) -> Tensor<D> {
     let dot = (x.clone() * w).sum_dim(D - 1);
     dot * scale / rms_denom(x)
 }
 
-/// `1/√width` — the temperature keeping a `width`-wide dot product `O(1)`.
+/// `1/√width`: the temperature that keeps a `width`-wide dot product `O(1)`.
 pub fn score_scale(width: usize) -> f64 {
     (width as f64).powf(-0.5)
 }

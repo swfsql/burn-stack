@@ -1,22 +1,23 @@
 //! # Virtual-layer → real-weight scheduling
 //!
-//! A `{Model}Layers` stack can run `n_virtual_layers` logical passes over only
-//! `n_real_layers` weight sets (e.g. 48 logical from 12 real); each virtual
-//! layer keeps its own cache but shares parameters.  A [`Schedule`] maps a
-//! virtual layer index to the real weight index to use.
+//! A [`Layers`](crate::modules::Layers) stack can run `n_virtual_layers`
+//! logical passes over only `n_real_layers` weight sets (e.g. 48 logical from
+//! 12 real). Each virtual layer keeps its own cache but shares parameters. A
+//! [`Schedule`] maps a virtual layer index to the index of the real weights to
+//! use.
 //!
-//! For **bidirectional** stacks, [`BidiSchedule`] additionally interleaves the
-//! two directions: even virtual indices run the straight (→) pass and odd
+//! For **bidirectional** stacks, [`BidiSchedule`] also interleaves the two
+//! directions: even virtual indices run the straight (→) pass, and odd
 //! indices run the reverse (←) pass.
 //!
-//! Each variant is documented with a worked virtual→real mapping example.
+//! Each variant has a worked virtual→real mapping example.
 //!
-//! A [`GradHorizon`] rides on top of that mapping: it says which of the virtual
-//! layers back-propagate, counted **per real layer** so that no weight set is
-//! left untrained, whichever way a schedule spreads it.
+//! A [`GradHorizon`] sits on top of that mapping. It says which of the
+//! virtual layers back-propagate, counted **per real layer**, so that no
+//! weight set is left untrained, however a schedule spreads it.
 //!
-//! [`Applications`] reads the map the other way — which application of its real
-//! layer each virtual layer is — for the parameters a layer unties.
+//! [`Applications`] reads the map the other way (which application of its
+//! real layer each virtual layer is), for the parameters that a layer unties.
 
 /// How a unidirectional layer stack maps virtual layer indices to real
 /// (weight-bearing) layer indices.
@@ -67,21 +68,21 @@ impl Schedule {
 }
 
 /// Which **application** of its real layer each virtual layer is: the
-/// virtual→real map read the other way, counting how often a weight set has
-/// already been used. It is what an untied parameter is indexed by (see
-/// [`crate::utils::untied`]); [`GradHorizon::Depth`] counts the same thing from
-/// the top.
+/// virtual→real map read the other way, which counts how often a weight set
+/// was already used. An untied parameter is indexed by it (see
+/// [`crate::utils::untied`]). [`GradHorizon::Depth`] counts the same thing
+/// from the top.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Applications {
     /// Per virtual layer: how many virtual layers below it share its real layer.
     pub index: Vec<usize>,
-    /// Per real layer: how many applications it has — at least one, since a
-    /// real layer the schedule never reaches is still built.
+    /// Per real layer: its number of applications. At least one, because a
+    /// real layer that the schedule never reaches is still built.
     pub count: Vec<usize>,
 }
 
 impl Applications {
-    /// From each virtual layer's real index, bottom-up.
+    /// From the real index of each virtual layer, bottom-up.
     pub fn new(real_of: impl IntoIterator<Item = usize>, real_len: usize) -> Self {
         let mut count = vec![0; real_len];
         let index = real_of
@@ -98,51 +99,52 @@ impl Applications {
     }
 }
 
-/// Which (virtual) layers of a stack build an autodiff graph — the shape of
+/// Which (virtual) layers of a stack build an autodiff graph: the type of
 /// [`Layers::grad_horizon`](crate::modules::Layers::grad_horizon).
 ///
-/// The layers left out run on the inner (non-autodiff) backend and retain no
-/// activation. A horizon is a **mask**, not one boundary: the stack cuts down
-/// wherever the mask turns off and lifts back wherever it turns on, as many
+/// The other layers run on the inner (non-autodiff) backend, and retain no
+/// activation. A horizon is a **mask**, not one boundary. The stack cuts down
+/// wherever the mask turns off, and lifts back wherever it turns on, as many
 /// times as the mask says.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum GradHorizon {
     /// Back-propagate the last `K` applications of **every real layer**.
     ///
-    /// `K` counts per *weight set*, not per stack, so every real layer keeps a
-    /// tracked application whatever the schedule does with it — which is the
+    /// `K` counts per *weight set*, not per stack. So every real layer keeps a
+    /// tracked application, whatever the schedule does with it. This is the
     /// point: a plain suffix of `K` virtual layers reaches every weight only
-    /// under [`Schedule::Cyclic`], and would leave every [`Schedule::Stretched`]
-    /// real layer but the topmost with no gradient at all.
+    /// under [`Schedule::Cyclic`]. It would leave every [`Schedule::Stretched`]
+    /// real layer except the topmost with no gradient.
     ///
     /// # Example
     /// - virtual len = 8, real len = 3, `Depth(1)` (`T` = tracked):
-    ///   - [`Schedule::Cyclic`] (`0 1 2 0 1 2 0 1`): `. . . . . T T T` —
-    ///     a single cut, at `virtual_len - K·real_len` on an even stack.
-    ///   - [`Schedule::Stretched`] (`0 0 0 1 1 1 2 2`): `. . T . . T . T` —
-    ///     one cut **per real layer**, at the tail of each run.
+    ///   - [`Schedule::Cyclic`] (`0 1 2 0 1 2 0 1`): `. . . . . T T T`, a
+    ///     single cut, at `virtual_len - K·real_len` on an even stack.
+    ///   - [`Schedule::Stretched`] (`0 0 0 1 1 1 2 2`): `. . T . . T . T`, one
+    ///     cut **per real layer**, at the tail of each run.
     ///
     /// A stack **without** weight sharing applies each real layer once, so any
-    /// `K >= 1` tracks all of it; [`Self::last`] states the suffix mask for that
-    /// case. [`Schedule::Custom`] has no canonical run to take a tail of and
-    /// takes a [`Self::Mask`] instead (`Depth` panics on it).
+    /// `K >= 1` tracks all of it. [`Self::last`] states the suffix mask for
+    /// that case. [`Schedule::Custom`] has no canonical run to take a tail of,
+    /// so it takes a [`Self::Mask`] instead (`Depth` panics on it).
     Depth(usize),
     /// Explicit per-virtual-layer mask, `true` = back-propagated. Its length
-    /// must be the stack's virtual-layer count.
+    /// must be the virtual-layer count of the stack.
     Mask(Vec<bool>),
 }
 
 impl GradHorizon {
-    /// A [`Self::Mask`] tracking the **last `k`** of `virtual_len` layers: the
-    /// single-cut suffix horizon, spelled out. It is what [`Self::Depth`] comes
-    /// to under [`Schedule::Cyclic`] with `k = K·real_len`, and the only horizon
-    /// that cuts a stack sharing no weights.
+    /// A [`Self::Mask`] that tracks the **last `k`** of `virtual_len` layers:
+    /// the single-cut suffix horizon, written out. It is what [`Self::Depth`]
+    /// gives under [`Schedule::Cyclic`] with `k = K·real_len`. It is also the
+    /// natural horizon to cut a stack that shares no weights (`Depth` cannot
+    /// cut it).
     pub fn last(k: usize, virtual_len: usize) -> Self {
         GradHorizon::Mask((0..virtual_len).map(|i| i + k >= virtual_len).collect())
     }
 
     /// Resolve to one `tracked` flag per virtual layer. `schedule` is the
-    /// stack's own, `None` when it runs no virtual layers at all (each real
+    /// schedule of the stack, `None` when it runs no virtual layers (each real
     /// layer applied once, `virtual_len == real_len`).
     ///
     /// # Panics
@@ -168,11 +170,11 @@ impl GradHorizon {
                     !matches!(schedule, Some(Schedule::Custom(_))),
                     "GradHorizon::Depth is undefined for Schedule::Custom: a hand-written \
                      virtual→real map has no canonical run to take the last K applications \
-                     of — state the cuts with GradHorizon::Mask instead",
+                     of. State the cuts with GradHorizon::Mask.",
                 );
-                // Walk the stack downwards, keeping each real layer's `k`
-                // topmost applications: one contiguous suffix under `Cyclic`,
-                // one tail per run under `Stretched`.
+                // Walk the stack downwards, and keep the `k` topmost
+                // applications of each real layer: one contiguous suffix under
+                // `Cyclic`, one tail per run under `Stretched`.
                 let mut tracked = vec![false; virtual_len];
                 let mut kept = vec![0usize; real_len];
                 for i in (0..virtual_len).rev() {
@@ -195,7 +197,7 @@ impl GradHorizon {
 pub enum BidiSchedule {
     /// Use even virtual positions for straight-direction (→), and odd virtual positions for
     /// reverse-direction (←), wrapping around for each schedule.
-    //
+    ///
     /// # Example
     /// - virtual len = 10, real len = 4:  
     ///   `   →    ←      →    ←        →    ←      →    ←        →    ←          `  
@@ -237,9 +239,9 @@ pub enum BidiSchedule {
 
 impl BidiSchedule {
     /// Map `virtual_idx` (in `0..virtual_len`) to a real layer index in
-    /// `0..real_len`.  Even/odd `virtual_idx` selects the straight/reverse
-    /// direction; the outer index `virtual_idx / 2` is what the schedule cycles
-    /// or stretches over.
+    /// `0..real_len`. Even/odd `virtual_idx` selects the straight/reverse
+    /// direction. The schedule cycles or stretches over the outer index
+    /// `virtual_idx / 2`.
     pub fn real_idx(&self, virtual_idx: usize, virtual_len: usize, real_len: usize) -> usize {
         let virtual_outer_idx = virtual_idx / 2;
         let virtual_outer_len = virtual_len / 2;

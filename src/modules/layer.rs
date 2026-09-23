@@ -9,16 +9,16 @@ use burn::module::Param;
 use burn::prelude::*;
 use std::borrow::Cow;
 
-/// A single Pre-LN block wrapper computing `M(RMSNorm(x))` — the residual is
-/// **not** applied here. The enclosing [`Layers`] owns
-/// that decision (add the input back, suppress it on the first/last layer, or
-/// thread it through Multi-Gate streams), so no input clone / zero-add is wasted
-/// when no residual is wanted.
+/// A single Pre-LN block wrapper that computes `M(RMSNorm(x))`. It does
+/// **not** apply the residual. The enclosing [`Layers`] owns that decision:
+/// add the input back, suppress it on the first/last layer, or thread it
+/// through Multi-Gate streams. So no input clone or zero-add is wasted when no
+/// residual is wanted.
 ///
-/// With [`Self::mlp`] set the layer additionally runs a second Pre-LN sub-block,
-/// a SwiGLU feed-forward (see [`GatedMlp`]). It
-/// has a residual of its own, *inside* the layer, which is the reason the
-/// methods below return the layer's **total delta** rather than the mixer output:
+/// With [`Self::mlp`] set, the layer also runs a second Pre-LN sub-block, a
+/// SwiGLU feed-forward (see [`GatedMlp`]). It has a residual of its own,
+/// *inside* the layer. This is why the methods below return the **total
+/// delta** of the layer, not the mixer output:
 ///
 /// ```text
 ///   h₁ = M(norm(x))                     the mixer sub-block
@@ -27,24 +27,29 @@ use std::borrow::Cow;
 ///                                       (x + h₁) + h₂ — both residuals
 /// ```
 ///
-/// Folding it this way keeps [`Layers`] the single owner of the *outer* residual
-/// (and of the `ignore_first/last_residual` ablations, which therefore govern
-/// only that outer add — the feed-forward's inner residual is intrinsic to the
-/// sub-block and always applies). Without an `mlp` the delta is just `h₁` and
-/// nothing changes for a block family that carries no feed-forward.
+/// This fold keeps [`Layers`] the single owner of the *outer* residual, and of
+/// the `ignore_first/last_residual` ablations. So these ablations govern only
+/// the outer add. The inner residual of the feed-forward is part of the
+/// sub-block and always applies. Without an `mlp`, the delta is just `h₁`, and
+/// nothing changes for a block family that has no feed-forward.
 ///
-/// May carry its own [`ClassLatent`]s, placed from a [`ClassCursor`]: `step`
-/// splices them around the token it is given, while in `forward` the caller
-/// splices them first (via [`Self::insert_latents`]) so the residual it adds
-/// sees the same lengthened sequence; [`Self::prime`] steps the ones waiting for
-/// the next token *without* that token. They are independent of any class
-/// latents on the enclosing [`Layers`].
+/// A layer can have its own [`ClassLatent`]s, placed from a [`ClassCursor`]:
 ///
-/// Built for a real layer applied several times, it may **untie** parameters —
-/// its [`LayerUntied`] pre-norms and its block's ([`Block::untied_params`]) —
-/// holding one copy per application. A container runs application `k` as
-/// [`Self::application`]`(k)`, the layer that application sees; every other
-/// method acts on the layer it is called on.
+/// - `step` splices them around the token that it gets.
+/// - In `forward`, the caller splices them first (with
+///   [`Self::insert_latents`]), so the residual that it adds sees the same
+///   longer sequence.
+/// - [`Self::prime`] steps the latents that wait for the next token, *without*
+///   that token.
+///
+/// They are independent of the class latents of the enclosing [`Layers`].
+///
+/// A layer built for a real layer that is applied several times can **untie**
+/// parameters: its [`LayerUntied`] pre-norms and those of its block
+/// ([`Block::untied_params`]). It then holds one copy per application. A
+/// container runs application `k` as [`Self::application`]`(k)`, the layer
+/// that this application sees. Every other method acts on the layer that it is
+/// called on.
 #[derive(Module, Debug)]
 pub struct Layer<M: Module> {
     /// Pre-norm applied before the inner block.
@@ -52,7 +57,7 @@ pub struct Layer<M: Module> {
     /// The inner mixer block.
     pub block: M,
     /// Pre-norm of the feed-forward sub-block. `Some` exactly when [`Self::mlp`]
-    /// is (`norm2` in the reference checkpoints).
+    /// is `Some` (`norm2` in the reference checkpoints).
     pub norm2: Option<RmsNorm>,
     /// Optional SwiGLU feed-forward sub-block run after the mixer, with its own
     /// residual. `None` ⇒ the layer is mixer-only.
@@ -62,31 +67,32 @@ pub struct Layer<M: Module> {
     pub class_latents: Vec<ClassLatent>,
     /// The class-latent embeddings, `[num_class_latents, d_model]` (`None` ⇒ none).
     pub class_latents_emb: Option<Param<Tensor<2>>>,
-    /// The pre-norms held once per application ([`LayerUntied`]); empty ⇒ both
+    /// The pre-norms held once per application ([`LayerUntied`]). Empty ⇒ both
     /// tied.
     #[module(skip)]
     pub untied: Vec<LayerUntied>,
-    /// How many applications the untied parameters — the layer's and its
-    /// block's — hold a copy for: `1` for a layer applied once, and for every
-    /// [`Self::application`] view.
+    /// The number of applications for which the untied parameters (of the
+    /// layer and of its block) hold a copy. It is `1` for a layer applied once,
+    /// and for every [`Self::application`] view.
     #[module(skip)]
     pub n_applications: usize,
 }
 
-/// A [`Layer`] parameter that may be **untied**: held once per application of
-/// its real layer (see [`crate::utils::untied`]). The block's own are its
-/// config's to name.
+/// A [`Layer`] parameter that can be **untied**: held once per application of
+/// its real layer (see [`crate::utils::untied`]). The block config names the
+/// untiable parameters of the block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum LayerUntied {
-    /// The mixer's pre-norm gain ([`Layer::norm`]).
+    /// The pre-norm gain of the mixer ([`Layer::norm`]).
     Norm,
-    /// The feed-forward's pre-norm gain ([`Layer::norm2`]); needs [`Layer::mlp`].
+    /// The pre-norm gain of the feed-forward ([`Layer::norm2`]). Needs
+    /// [`Layer::mlp`].
     Norm2,
 }
 
 impl<M: Block> Layer<M> {
-    /// A fresh layer around `block`, for a real layer applied `n_applications`
-    /// times: the pre-norms `untied` names get one gain per application.
+    /// A new layer around `block`, for a real layer applied `n_applications`
+    /// times. The pre-norms that `untied` names get one gain per application.
     pub(crate) fn init(
         block: M,
         d_model: usize,
@@ -97,7 +103,8 @@ impl<M: Block> Layer<M> {
     ) -> Self {
         assert!(
             mlp.is_some() || !untied.contains(&LayerUntied::Norm2),
-            "LayerUntied::Norm2 unties the feed-forward's pre-norm, and this layer has no feed-forward",
+            "LayerUntied::Norm2 unties the pre-norm of the feed-forward, but this layer has no \
+             feed-forward",
         );
         let norm = |part: LayerUntied| {
             let RmsNorm { gamma } = RmsNormConfig::new(d_model).init(device);
@@ -110,7 +117,7 @@ impl<M: Block> Layer<M> {
         Layer {
             norm: norm(LayerUntied::Norm),
             block,
-            // `norm2` exists exactly when `mlp` does — `Layer` relies on it.
+            // `norm2` exists exactly when `mlp` exists. `Layer` relies on this.
             norm2: mlp.map(|_| norm(LayerUntied::Norm2)),
             mlp: mlp.map(|mlp| mlp.init(device)),
             class_latents: Vec::new(),
@@ -120,8 +127,8 @@ impl<M: Block> Layer<M> {
         }
     }
 
-    /// Every parameter of this layer held once per application: its untied
-    /// pre-norms, then its block's ([`Block::untied_params`]).
+    /// Every parameter of this layer that is held once per application: its
+    /// untied pre-norms, then those of its block ([`Block::untied_params`]).
     pub fn untied_params(&self) -> Vec<UntiedParam> {
         let own = self.untied.iter().map(|part| match part {
             LayerUntied::Norm => UntiedParam::new(&self.norm.gamma, 0),
@@ -133,22 +140,23 @@ impl<M: Block> Layer<M> {
         own.chain(self.block.untied_params()).collect()
     }
 
-    /// Whether any of this layer's weights differ between its applications.
+    /// Whether any weight of this layer differs between its applications.
     pub fn has_untied(&self) -> bool {
         self.n_applications > 1 && !self.untied_params().is_empty()
     }
 
-    /// This layer as its `application`-th application sees it: each untied
-    /// parameter narrowed to that application's copy, everything else shared
-    /// (see [`crate::utils::untied`]). The view is a plain tied layer
-    /// (`n_applications = 1`).
+    /// This layer as its `application`-th application sees it. Each untied
+    /// parameter is narrowed to the copy of that application, and everything
+    /// else is shared (see [`crate::utils::untied`]). The view is a plain tied
+    /// layer (`n_applications = 1`).
     ///
-    /// Borrows the layer itself when nothing differs between its applications —
-    /// so a layer built for a single one reads that copy at any application.
+    /// When nothing differs between the applications, this borrows the layer
+    /// itself. So a layer built for a single application reads that copy at
+    /// any application.
     ///
     /// # Panics
-    /// An `application` past the count the layer was built for, if it unties
-    /// anything.
+    /// If the layer unties anything and `application` is past the count that
+    /// the layer was built for.
     pub fn application(&self, application: usize) -> Cow<'_, Self> {
         if self.n_applications == 1 {
             return Cow::Borrowed(self);
@@ -162,22 +170,23 @@ impl<M: Block> Layer<M> {
         Cow::Owned(view)
     }
 
-    /// Reset every untied parameter to copies of its first application: the
-    /// copies [`BlockConfig::init_block`] starts from, over a layer something has
-    /// since redrawn (see [`crate::utils::untied::retie`]).
+    /// Reset every untied parameter to copies of its first application.
+    /// [`BlockConfig::init_block`] starts from such copies. Use this on a
+    /// layer that something redrew after the build (see
+    /// [`crate::utils::untied::retie`]).
     pub fn retie(self) -> Self {
         let params = self.untied_params();
         let n_applications = self.n_applications;
         crate::utils::untied::retie(self, &params, n_applications)
     }
 
-    /// Splice this layer's class latents into the chunk `x` (no-op when there
-    /// are none), advancing `class` past it.
+    /// Splice the class latents of this layer into the chunk `x` (no-op when
+    /// there are none), and advance `class` past the chunk.
     ///
-    /// Public so a caller driving a bare [`Layer`] can lengthen the sequence
-    /// itself (and add the matching residual) before calling [`Self::forward`].
-    /// `None` cursors ⇒ this chunk is the whole sequence. [`Layers`] splices its
-    /// layers' latents itself, since under
+    /// This is public, so a caller that drives a bare [`Layer`] can make the
+    /// sequence longer itself (and add the matching residual) before it calls
+    /// [`Self::forward`]. `None` cursors ⇒ this chunk is the whole sequence.
+    /// [`Layers`] splices the latents of its layers itself, because under
     /// [`MultiGate`](crate::modules::MultiGate) residuals the same rows must
     /// also enter the carried streams.
     pub fn insert_latents(&self, x: Tensor<3>, class: Option<&mut ClassCursor>) -> Tensor<3> {
@@ -193,16 +202,16 @@ impl<M: Block> Layer<M> {
     }
 
     /// The layer input, kept only when the feed-forward sub-block needs it for
-    /// its inner residual — otherwise `None`, so the mixer-only path still moves
+    /// its inner residual. Otherwise `None`, so the mixer-only path still moves
     /// `x` straight into the pre-norm with no clone.
     fn mlp_residual<const D: usize>(&self, x: &Tensor<D>) -> Option<Tensor<D>> {
         self.mlp.as_ref().map(|_| x.clone())
     }
 
-    /// Completes the layer's total delta: `h₁ ↦ h₁ + mlp(norm2(x + h₁))`.
+    /// Completes the total delta of the layer: `h₁ ↦ h₁ + mlp(norm2(x + h₁))`.
     ///
-    /// `residual` is whatever [`Self::mlp_residual`] captured, so a `None` here
-    /// means there is no feed-forward and the delta is the mixer output alone.
+    /// `residual` is what [`Self::mlp_residual`] captured. So `None` here means
+    /// that there is no feed-forward, and the delta is the mixer output alone.
     fn add_mlp_delta<const D: usize>(
         &self,
         residual: Option<Tensor<D>>,
@@ -220,16 +229,16 @@ impl<M: Block> Layer<M> {
         h1 + h2
     }
 
-    /// Full-sequence Pre-LN block **without** the outer residual: the layer's
-    /// total delta `M(RMSNorm(x))`, plus the feed-forward sub-block's own
-    /// contribution when [`Self::mlp`] is set (see the type docs).
+    /// Full-sequence Pre-LN block **without** the outer residual. Returns the
+    /// total delta of the layer: `M(RMSNorm(x))`, plus the contribution of the
+    /// feed-forward sub-block when [`Self::mlp`] is set (see the type docs).
     ///
     /// The caller owns any class-latent insertion ([`Self::insert_latents`]) and
     /// the outer residual.
     ///
-    /// `pad` marks the padded rows of a right-padded batch (`None` ⇒ none): the
-    /// block runs on each slot's rows in that slot's own order (see
-    /// [`Padding::in_slot_order`]), everything else here being per row.
+    /// `pad` marks the padded rows of a right-padded batch (`None` ⇒ none). The
+    /// block runs on the rows of each slot in the order of that slot (see
+    /// [`Padding::in_slot_order`]). Everything else here is per row.
     pub fn forward(
         &self,
         x: Tensor<3>,
@@ -250,16 +259,19 @@ impl<M: Block> Layer<M> {
 
     /// Single-token Pre-LN block step **without** the residual.
     ///
-    /// `class` is this layer's own class-latent cursor. With `Some`, every
-    /// latent whose position falls on this token is stepped around it — before
-    /// it (`Start`/`Middle`/`Custom`, which precede a token) or after it (`End`,
-    /// which closes the sequence) — each a step of its own. What comes back is
-    /// the **last** token the step emitted (see
-    /// [`ClassCursors`](crate::utils::ClassCursors)): the user token, unless an
-    /// `End` latent follows it, that latent being then the sequence's true last
-    /// token. With `None` no class latents are injected — and `Middle`/`End`
-    /// latents panic (their positions need the full sequence length). The
-    /// residual is the caller's responsibility.
+    /// `class` is the class-latent cursor of this layer. With `Some`, every
+    /// latent whose position falls on this token gets a step of its own,
+    /// around the token:
+    ///
+    /// - before it: `Start`/`Middle`/`Custom`, which precede a token,
+    /// - after it: `End`, which closes the sequence.
+    ///
+    /// The call returns the **last** token that the step emitted (see
+    /// [`ClassCursors`](crate::utils::ClassCursors)). This is the user token,
+    /// unless an `End` latent follows it. That latent is then the true last
+    /// token of the sequence. With `None`, no class latents are injected, and
+    /// `Middle`/`End` latents panic (their positions need the full sequence
+    /// length). The caller owns the residual.
     pub fn step(
         &self,
         x: Tensor<2>,
@@ -274,8 +286,8 @@ impl<M: Block> Layer<M> {
         if plan.is_empty() {
             return self.step_one(x, cache);
         }
-        // `at == 0` ⇒ the latent precedes the user token, `at == 1` ⇒ it is an
-        // `End` closing the sequence, and follows it.
+        // `at == 0` ⇒ the latent precedes the user token. `at == 1` ⇒ it is an
+        // `End` that closes the sequence, and follows the token.
         let [batch, d_model] = x.dims();
         let row = |i: usize| class_row(self.class_latents_emb.as_ref(), i, batch, d_model);
         let (before, after): (Vec<_>, Vec<_>) = plan.into_iter().partition(|&(at, _)| at == 0);
@@ -286,8 +298,8 @@ impl<M: Block> Layer<M> {
         }
         let (mut out, mut cache) = self.step_one(x, cache);
         for (_, i) in after {
-            // A closing `End` *is* the sequence's last token — its output, not
-            // the user token's, is what this step produced.
+            // A closing `End` *is* the last token of the sequence. This step
+            // produced its output, not that of the user token.
             let (o, c) = self.step_one(row(i), Some(cache));
             out = o;
             cache = c;
@@ -295,22 +307,22 @@ impl<M: Block> Layer<M> {
         (out, cache)
     }
 
-    /// Step the class latents this layer has waiting for its next token — with
-    /// **no** token of its own, so nothing but class data is consumed.
+    /// Step the class latents that this layer has waiting for its next token,
+    /// with **no** token of its own. So the call consumes only class data.
     ///
-    /// This is [`Self::step`]'s opening half on its own (see
-    /// [`ClassCursors`](crate::utils::ClassCursors)): the latents that would
-    /// have preceded the next token are stepped now, in the same order, so a
-    /// `prime` followed by a `step` runs exactly the sequence that `step` alone
-    /// would have. `End` latents are never primed — closing the sequence, they
-    /// belong to the step carrying its last token.
+    /// This is the opening half of [`Self::step`] on its own (see
+    /// [`ClassCursors`](crate::utils::ClassCursors)). The latents that would
+    /// precede the next token get their steps now, in the same order. So a
+    /// `prime` followed by a `step` runs exactly the sequence that the `step`
+    /// alone would run. `End` latents are never primed. They close the
+    /// sequence, so they belong to the step that carries its last token.
     ///
-    /// Returns the **last** latent stepped, as the pair `(delta, latent)` — this
-    /// layer's own embedding row alongside the delta it produced, since the
-    /// caller has no other way to complete the residual (`delta + latent`, as it
-    /// does with the token it hands to [`Self::step`]). `None` ⇒ nothing was
-    /// waiting, and the cache comes back exactly as it went in (`None` included:
-    /// a layer that stepped nothing has the state it already had).
+    /// Returns the **last** latent stepped, as the pair `(delta, latent)`: the
+    /// embedding row of this layer with the delta that it produced. The caller
+    /// has no other way to complete the residual (`delta + latent`, as it does
+    /// with the token that it gives to [`Self::step`]). `None` ⇒ nothing was
+    /// waiting, and the cache comes back exactly as it went in. This includes
+    /// `None`: a layer that stepped nothing has the state that it already had.
     pub fn prime(
         &self,
         batch: usize,
@@ -340,13 +352,14 @@ impl<M: Block> Layer<M> {
 
     /// The actual one-token work: no class injection, no outer residual.
     ///
-    /// [`Layers`]'s cascade uses it to place this layer's class latents from the
-    /// stack-wide [`ClassCursors`](crate::utils::ClassCursors) itself, bypassing
-    /// [`Self::step`]'s cursorless guard (that guard rejects `Middle`/`End`,
-    /// which the cascade has already resolved). It is public because an external
-    /// container that owns the residual — one threading its own state between
-    /// layers rather than a per-layer cache — needs exactly this: the layer's
-    /// delta and the cache it produced, with nothing added.
+    /// The cascade of [`Layers`] uses it to place the class latents of this
+    /// layer from the stack-wide [`ClassCursors`](crate::utils::ClassCursors)
+    /// itself. This bypasses the cursorless guard of [`Self::step`], which
+    /// rejects `Middle`/`End` (the cascade has already resolved them). It is
+    /// public for an external container that owns the residual and threads
+    /// its own state between layers, not a per-layer cache. Such a container
+    /// needs exactly this: the delta of the layer and the cache that it
+    /// produced, with nothing added.
     pub fn step_one(&self, x: Tensor<2>, cache: Option<M::Cache>) -> (Tensor<2>, M::Cache) {
         let residual = self.mlp_residual(&x);
         let normed = self.norm.forward(x);
@@ -354,4 +367,3 @@ impl<M: Block> Layer<M> {
         (self.add_mlp_delta(residual, h1), cache)
     }
 }
-

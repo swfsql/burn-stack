@@ -1,23 +1,23 @@
-//! A training invocation's control state, threaded through the epoch loops as
-//! one [`Session`]:
+//! The control state of a training invocation, threaded through the epoch
+//! loops as one [`Session`]:
 //!
-//! - **where the run stands** — [`TrainingProgress`] (schedule step, epoch, and
-//!   batch within it), saved next to every optimizer checkpoint and restored by
-//!   `--resume`;
-//! - **how far this invocation may go** — the `--max-batches` /
-//!   `--max-seconds` [`Budget`];
-//! - **how often it checkpoints and validates** — [`Cadence`], each example's
-//!   defaults under the `--checkpoint-every` / `--valid-every` /
-//!   `--valid-batches` overrides;
-//! - **what it measured** — the [`MetricsLog`], one JSON object per line in the
-//!   artifacts directory's `metrics.jsonl`.
+//! - **where the run stands**: [`TrainingProgress`] (schedule step, epoch, and
+//!   batch within it). It is saved next to every optimizer checkpoint and
+//!   restored by `--resume`.
+//! - **how far this invocation can go**: the `--max-batches` /
+//!   `--max-seconds` [`Budget`].
+//! - **how often it checkpoints and validates**: [`Cadence`], the defaults of
+//!   each example under the `--checkpoint-every` / `--valid-every` /
+//!   `--valid-batches` overrides.
+//! - **what it measured**: the [`MetricsLog`], one JSON object per line in
+//!   `metrics.jsonl` in the artifacts directory.
 //!
 //! # Resuming mid-epoch
 //!
-//! The dataloaders shuffle inside each of their worker threads, and the workers'
-//! batches interleave in whatever order they finish, so no run can replay the
-//! exact batches an earlier one trained. A resumed epoch therefore trains only
-//! the batches it has left, drawn from a **fresh** shuffle
+//! The dataloaders shuffle inside each of their worker threads, and the
+//! batches of the workers interleave in the order that they finish. So no run
+//! can replay the exact batches that an earlier run trained. A resumed epoch
+//! thus trains only its remaining batches, drawn from a **new** shuffle
 //! ([`TrainingProgress::shuffle_seed`]): statistically the rest of the epoch,
 //! never a replay of its start.
 
@@ -29,12 +29,12 @@ use std::io::Write;
 use std::ops::RangeInclusive;
 use std::path::Path;
 
-/// Where a training run stands. Saved next to every optimizer checkpoint (a
-/// position only means something for the state it was taken with) and read
-/// back only under `--resume`.
+/// Where a training run stands. It is saved next to every optimizer checkpoint
+/// (a position has a meaning only for the state that it was taken with), and
+/// read back only under `--resume`.
 #[derive(Config, Debug)]
 pub struct TrainingProgress {
-    /// Optimizer steps taken, i.e. the LR-schedule step of the last one.
+    /// Optimizer steps taken, that is, the LR-schedule step of the last one.
     #[config(default = 0)]
     pub step: usize,
     /// The epoch in progress (1-based).
@@ -46,9 +46,10 @@ pub struct TrainingProgress {
 }
 
 impl TrainingProgress {
-    /// The training dataloader's shuffle seed: `seed` itself for a fresh run,
-    /// offset by the step for a resumed one, so the rest of a resumed epoch is a
-    /// new draw rather than a replay of the batches its start already trained.
+    /// The shuffle seed of the training dataloader: `seed` itself for a new
+    /// run, offset by the step for a resumed run. So the rest of a resumed
+    /// epoch is a new draw, not a replay of the batches that its start already
+    /// trained.
     pub fn shuffle_seed(&self, seed: u64) -> u64 {
         seed.wrapping_add(self.step as u64)
     }
@@ -56,22 +57,22 @@ impl TrainingProgress {
 
 /// How often a training loop checkpoints and validates, in optimizer steps.
 ///
-/// Each example sets its own defaults; `--checkpoint-every`, `--valid-every`
+/// Each example sets its own defaults. `--checkpoint-every`, `--valid-every`
 /// and `--valid-batches` override them for one invocation (see
 /// [`AppArgs::cadence`](crate::examples::cli::AppArgs::cadence)). The
-/// end-of-epoch checkpoint is not part of it: it always happens.
+/// end-of-epoch checkpoint is not part of the cadence: it always happens.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Cadence {
-    /// Steps between mid-epoch checkpoints; `None` ⇒ only at epoch ends (and
+    /// Steps between mid-epoch checkpoints. `None` ⇒ only at epoch ends (and
     /// when the budget stops the run).
     pub checkpoint_every: Option<usize>,
-    /// Steps between periodic validations; `None` ⇒ none.
+    /// Steps between periodic validations. `None` ⇒ none.
     pub valid_every: Option<usize>,
-    /// Batches a periodic validation reads; `None` ⇒ the whole split.
+    /// The batches that a periodic validation reads. `None` ⇒ the whole split.
     pub valid_batches: Option<usize>,
 }
 
-/// One invocation's training state; see the [module docs](self).
+/// The training state of one invocation (see the [module docs](self)).
 ///
 /// Built by [`AppArgs::session`](crate::examples::cli::AppArgs::session). A loop
 /// calls [`begin_batch`](Self::begin_batch) per dataloader item and
@@ -128,12 +129,13 @@ impl Session {
         &self.progress
     }
 
-    /// The effective cadence (the example's defaults under the CLI overrides).
+    /// The effective cadence (the defaults of the example under the CLI
+    /// overrides).
     pub fn cadence(&self) -> Cadence {
         self.cadence
     }
 
-    /// The metric metadata the burn metrics are updated with.
+    /// The metric metadata for the updates of the burn metrics.
     pub fn meta(&self) -> &MetricMetadata {
         &self.meta
     }
@@ -143,14 +145,14 @@ impl Session {
         self.progress.epoch..=num_epochs
     }
 
-    /// Dataloader items this epoch may still take: what it has left, capped by
-    /// the budget.
+    /// The dataloader items that this epoch can still take: its remaining
+    /// items, capped by the budget.
     pub fn batch_limit(&self, batches_per_epoch: usize) -> usize {
         let left = batches_per_epoch.saturating_sub(self.progress.batch);
         left.min(self.budget.take_limit())
     }
 
-    /// Start the next dataloader item; returns its 1-based index in the epoch.
+    /// Start the next dataloader item. Returns its 1-based index in the epoch.
     pub fn begin_batch(&mut self) -> usize {
         self.progress.batch += 1;
         self.progress.batch
@@ -169,14 +171,14 @@ impl Session {
     }
 
     /// Advance the schedule by `steps` without training them (the character
-    /// LM charges it for the windows its frontier gate dropped).
+    /// LM uses this for the windows that its frontier gate dropped).
     pub fn skip_steps(&mut self, steps: usize) {
         self.progress.step += steps;
         self.meta.iteration = Some(self.progress.step);
     }
 
-    /// Close the epoch the loop just left. It is complete unless the budget cut
-    /// it short, in which case the progress stays inside it.
+    /// Close the epoch that the loop just left. It is complete unless the
+    /// budget cut it short. Then the progress stays inside it.
     pub fn end_epoch(&mut self, batches_per_epoch: usize) {
         if !self.budget.is_exhausted() || self.progress.batch >= batches_per_epoch {
             self.progress.epoch += 1;
@@ -184,7 +186,7 @@ impl Session {
         }
     }
 
-    /// Whether the budget is spent, i.e. training must stop.
+    /// Whether the budget is spent, that is, training must stop.
     pub fn is_exhausted(&self) -> bool {
         self.budget.is_exhausted()
     }
@@ -200,7 +202,7 @@ impl Session {
         Self::due(self.cadence.valid_every, self.progress.step, &mut self.last_valid)
     }
 
-    /// Whether the current step has been validated already — by a periodic
+    /// Whether the current step is already validated: by a periodic
     /// validation, or by the initial one when no step was taken.
     pub fn validated_now(&self) -> bool {
         self.last_valid == self.progress.step
@@ -229,22 +231,23 @@ impl Session {
 /// Base filename (without extension) of the metrics log.
 pub const METRICS_LOG_NAME: &str = "metrics";
 
-/// The append-only metrics log: one flat JSON object per line (`jsonl`), so a
-/// curve is one `jq`/pandas call away instead of a stdout parse.
+/// The append-only metrics log: one flat JSON object per line (`jsonl`). So a
+/// curve is one `jq`/pandas call away, not a parse of stdout.
 ///
-/// Every line carries `event` (`start` | `train` | `valid`), the run's `step`,
-/// `epoch` and `batch`, and `elapsed` seconds since the session started; a
-/// `valid` line adds its `split`. Sessions append to the same file, each one
-/// opening with a `start` line (which also records the wall-clock `unix_time`),
-/// so a resumed run continues the curve and a restarted one is visibly a new
-/// segment. Non-finite values are written as `null`.
+/// Every line carries `event` (`start` | `train` | `valid`), the `step`,
+/// `epoch` and `batch` of the run, and `elapsed` seconds since the start of
+/// the session. A `valid` line adds its `split`. Sessions append to the same
+/// file, and each one opens with a `start` line (which also records the
+/// wall-clock `unix_time`). So a resumed run continues the curve, and a
+/// restarted run is visibly a new segment. Non-finite values are written as
+/// `null`.
 pub struct MetricsLog {
     file: std::fs::File,
     start: std::time::Instant,
 }
 
 impl MetricsLog {
-    /// Open (creating if absent) the log in `artifact_dir` for appending.
+    /// Open the log in `artifact_dir` to append to it (create it if absent).
     pub fn open(artifact_dir: &Path) -> Self {
         let path = artifact_dir
             .join(METRICS_LOG_NAME)

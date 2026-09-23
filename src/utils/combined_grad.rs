@@ -1,11 +1,13 @@
-//! Helpers for the "two-output, one autodiff node" pattern a recompute-backward
-//! kernel needs when it returns both a sequence output and a final state.
+//! Helpers for the "two outputs, one autodiff node" pattern that a
+//! recompute-backward kernel needs when it returns both a sequence output and
+//! a final state.
 //!
-//! Burn's `prep.finish` accepts only a single tracked tensor, so the two
+//! The `prep.finish` of Burn accepts only a single tracked tensor. So the two
 //! outputs (`y` and `final_state`) are flattened and concatenated into a
-//! single 1-D tracked tensor; the caller then `narrow`s it back into two
-//! reshaped views. Burn's autodiff accumulates the upstream gradients of those
-//! views into the combined gradient vector which the custom backward consumes.
+//! single 1-D tracked tensor. The caller then `narrow`s it back into two
+//! reshaped views. The autodiff of Burn accumulates the upstream gradients of
+//! those views into the combined gradient vector, which the custom backward
+//! consumes.
 
 use burn::backend::Autodiff;
 use burn::backend::Backend;
@@ -16,9 +18,9 @@ use burn::backend::ops::FloatTensorOps;
 use burn::backend::tensor::FloatTensor;
 use burn::prelude::*;
 
-/// Flatten the two outputs (`y` and `final_state`) and concatenate them along a
-/// fresh axis-0 into a single 1-D tensor. Returns the combined tensor and the
-/// per-output flat lengths needed to split it later.
+/// Flatten the two outputs (`y` and `final_state`), and concatenate them along
+/// axis 0 into a single 1-D tensor. Returns the combined tensor, and the
+/// per-output flat lengths that a later split needs.
 pub fn flatten_pair<B: Backend>(
     y: <B as BackendTypes>::FloatTensorPrimitive,
     final_state: <B as BackendTypes>::FloatTensorPrimitive,
@@ -50,8 +52,8 @@ pub fn unflatten_pair<B: Backend, const DA: usize, const DB: usize>(
     (y, s)
 }
 
-/// Inverse of [`flatten_pair`]: split a 1-D combined tensor back into the two
-/// outputs at their original ranks/shapes.
+/// [`unflatten_pair`] on the autodiff backend: split a 1-D combined tensor
+/// back into the two outputs at their original ranks/shapes.
 #[allow(clippy::type_complexity)]
 pub fn autodiff_unflatten_pair<
     B: Backend,

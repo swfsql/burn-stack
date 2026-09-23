@@ -1,7 +1,7 @@
 //! SiLU (a.k.a. swish) activation: `silu(x) = x · sigmoid(x)`.
 //!
 //! Implemented as `x / (1 + exp(−x))`, which is fp16-aware (no separate
-//! `sigmoid` op) and used for the gating branches throughout this crate.
+//! `sigmoid` op). The gating branches of this crate use it.
 
 use burn::prelude::*;
 

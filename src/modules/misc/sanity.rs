@@ -1,9 +1,9 @@
 //! Optional `NaN`/`Inf` guards for debugging numerical issues.
 //!
-//! Both checks are gated by the compile-time flags [`crate::DENY_NAN`] /
-//! [`crate::DENY_INF`] (both `false` by default).  When the flags are off the
-//! functions compile down to nothing — there is no runtime cost in release
-//! builds — so calls can be sprinkled liberally through the forward passes.
+//! The compile-time flags [`crate::DENY_NAN`] / [`crate::DENY_INF`] (both
+//! `false` by default) gate both checks. When the flags are off, the functions
+//! compile to nothing (no runtime cost in release builds). So calls can go
+//! anywhere in the forward passes.
 
 use crate::{DENY_INF, DENY_NAN};
 use burn::prelude::*;

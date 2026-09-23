@@ -4,20 +4,20 @@ use burn::tensor::Distribution;
 
 type Device = burn::prelude::Device;
 
-/// Gated RMSNorm's backward must stay finite when the normalised input (the SSD
-/// output `y`) collapses to zero norm on a slice — the exact NaN localised in
-/// the combined-penalty grokking run (`d_y` arriving NaN at the SSD backward).
-/// Same root cause as the ungated [`RmsNorm`](crate::modules::norm::rms_norm):
-/// `div_eps` guards the forward division but not the `sqrt` node's `1/(2√·)`
-/// backward.
+/// The backward of gated RMSNorm must stay finite when the normalised input
+/// (the output `y` of a mixer) collapses to zero norm on a slice. This is the
+/// exact NaN localised in a training run (`d_y` arrived NaN at the backward of
+/// the mixer). The root cause is the same as for the ungated
+/// [`RmsNorm`](crate::modules::norm::rms_norm): `div_eps` guards the forward
+/// division, but not the `1/(2√·)` backward of the `sqrt` node.
 #[test]
 fn rms_norm_gated_gradient_finite_on_collapsed_slice() {
     let device: Device = Default::default();
     let (batch, seq, d_model) = (2, 3, 8);
     let norm = RmsNormGatedConfig::new(d_model).init(&device.clone().autodiff());
 
-    // The normalised input (SSD output) has one token collapsed to zero norm;
-    // the gate `z` stays healthy.
+    // The normalised input (mixer output) has one token collapsed to zero
+    // norm. The gate `z` stays healthy.
     let normal = Tensor::<3>::random(
         [batch, seq - 1, d_model],
         Distribution::Normal(0.0, 1.0),

@@ -15,7 +15,7 @@ fn logits(device: &Device) -> Tensor<3> {
     )
 }
 
-/// The wrapped loss reports the number it was given: the penalty rides in the
+/// The wrapped loss reports the number that it got. The penalty is in the
 /// gradient alone, so a training curve stays comparable to an unpenalised run
 /// (and to the reference, whose hand-written backward does the same).
 #[test]
@@ -30,9 +30,9 @@ fn the_reported_loss_is_unchanged() {
     assert!((before[0] - after[0]).abs() < 1e-6, "{before:?} vs {after:?}");
 }
 
-/// Only the winning logit is pulled, and by exactly `factor/(B·T) · z_max` —
-/// the derivative of `½·factor·mean(max²)`, which is what the reference's
-/// custom backward scatters.
+/// Only the winning logit is pulled, and by exactly `factor/(B·T) · z_max`:
+/// the derivative of `½·factor·mean(max²)`, which the custom backward of the
+/// reference scatters.
 #[test]
 fn only_the_max_logit_is_pulled_and_by_the_right_amount() {
     let device = Device::default().autodiff();
@@ -48,7 +48,7 @@ fn only_the_max_logit_is_pulled_and_by_the_right_amount() {
         .try_to_vec::<f32>()
         .unwrap();
 
-    // Two positions, so the mean divides by 2; the winners are 4.0 and 5.0.
+    // Two positions, so the mean divides by 2. The winners are 4.0 and 5.0.
     let scale = FACTOR as f32 / 2.0;
     let expected = [0.0, 4.0 * scale, 0.0, 5.0 * scale, 0.0, 0.0];
     for (i, (got, want)) in g.iter().zip(expected).enumerate() {

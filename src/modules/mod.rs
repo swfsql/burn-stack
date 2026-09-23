@@ -5,13 +5,13 @@
 //! shared neural pieces they are built from (activations, norms, losses, small
 //! tensor helpers).
 //!
-//! Everything here is parameterised by the mixer block `M: `[`Block`] — the one
-//! trait a family of sequence-mixing blocks implements to drop into this stack.
+//! Everything here is parameterised by the mixer block `M: `[`Block`]. A family
+//! of sequence-mixing blocks implements this one trait to join this stack.
 //!
-//! Their *serializable* counterparts are the [`shape`] types
+//! The [`shape`] types are their *serializable* counterparts
 //! ([`NetworkShape`]/[`LatentShape`]/[`VocabShape`]/[`BidiShape`]): the same
-//! knobs with the block generic split off, so a consumer's model config is the
-//! pair `{ shape, block }` and no architecture is restated per family.
+//! knobs, with the block generic split off. So the model config of a consumer
+//! is the pair `{ shape, block }`, and no family restates the architecture.
 
 use burn::config::Config;
 use burn::prelude::*;
@@ -26,12 +26,15 @@ pub mod cache;
 pub mod layer;
 /// The (virtual-)layer stack over real weight sets ([`Layers`]).
 pub mod layers;
-/// Loss functions (binary cross-entropy, cross-entropy, mean squared error).
+/// Loss functions (binary cross-entropy, cross-entropy, mean squared error,
+/// the L2-warp penalty).
 pub mod loss;
 /// Tensor helpers: `segsum`, `gqa`, typed `split`, and `sanity` guards.
 pub mod misc;
 /// The SwiGLU feed-forward block interleaved with the mixer ([`GatedMlp`]).
 pub mod mlp;
+/// The config → module interface of a generic training loop
+/// ([`ModelConfigExt`]).
 pub mod model_config;
 /// Multi-Gate Residuals: multi-stream gated depth-wise residuals ([`Residuals`]).
 pub mod multi_gate;
@@ -39,6 +42,7 @@ pub mod multi_gate;
 pub mod network;
 /// RMS norms ([`RmsNorm`] and [`RmsNormGated`]), fp16-safe.
 pub mod norm;
+/// Serializable network shapes: a stack without its block ([`NetworkShape`]).
 pub mod shape;
 
 pub use activation::log_sigmoid::log_sigmoid;
@@ -68,17 +72,17 @@ pub use network::{
 
 /// The mixer-block interface the generic [`Layer`]/[`Layers`] delegate to.
 ///
-/// Implement it once per block family (a selective SSM, an attention variant, a
-/// gated convolution, …) and every container in this crate — layers, virtual
-/// stacks, bidirectional pairs, latent/vocab networks, class tokens, the Muon
-/// plan — applies unchanged.
+/// Implement it once per block family (a selective SSM, an attention variant,
+/// a gated convolution, …). Then every container in this crate applies
+/// unchanged: layers, virtual stacks, bidirectional pairs, latent/vocab
+/// networks, class tokens, the Muon plan.
 ///
-/// `ModuleDisplay` is a supertrait so that the generic containers are themselves
-/// `Module`s (Burn's derive requires it of every module-typed generic); `Module`'s
-/// own `valid` is what lets
-/// [`Layers::grad_horizon`](crate::modules::Layers::grad_horizon) move the stack
-/// to the inner backend for its no-grad prefix. A `#[derive(Module)]` block
-/// satisfies them.
+/// `ModuleDisplay` is a supertrait, so that the generic containers are
+/// themselves `Module`s (the derive of Burn requires it of every module-typed
+/// generic). The `valid` of `Module` lets
+/// [`Layers::grad_horizon`](crate::modules::Layers::grad_horizon) move the
+/// stack to the inner backend for its untracked segments. A
+/// `#[derive(Module)]` block satisfies both.
 pub trait Block: Module + burn::module::ModuleDisplay {
     /// Per-block streaming cache (one layer's worth of state).
     type Cache;
@@ -90,13 +94,13 @@ pub trait Block: Module + burn::module::ModuleDisplay {
 
     /// Full-sequence (chunked) pass — training / prefill.
     ///
-    /// `pad` (`[batch, sequence]`, `true` at padding; `None` ⇒ every row real)
-    /// is **right** padding: in every slot it follows all of the real rows. A
-    /// padded row is absent — the outputs of the real rows and the returned
-    /// cache are exactly those of the slot's real rows run alone, which is
-    /// `step` unrolled over them — and its own output is unspecified. The
-    /// containers keep the mask right-padded whatever class markers they splice
-    /// (see [`crate::utils::padding`]).
+    /// `pad` (`[batch, sequence]`, `true` at padding, `None` ⇒ every row real)
+    /// is **right** padding: in every slot, it follows all of the real rows. A
+    /// padded row is absent. The outputs of the real rows and the returned
+    /// cache are exactly those of the real rows of the slot run alone, which
+    /// is `step` unrolled over them. The output of a padded row is
+    /// unspecified. The containers keep the mask right-padded, whatever class
+    /// markers they splice (see [`crate::utils::padding`]).
     fn block_forward(
         &self,
         x: Tensor<3>,
@@ -113,13 +117,13 @@ pub trait Block: Module + burn::module::ModuleDisplay {
     /// Build `n_virtual` zero caches sized for a `[batch, d_model]` input.
     fn zero_caches_2d(&self, x: &Tensor<2>, n_virtual: usize) -> Self::Caches;
 
-    /// The parameters this block stores **once per application** of its real
-    /// layer rather than once, each with the axis its copies are laid along —
-    /// empty when its config unties nothing. The [`BlockConfig`] decides which
-    /// they are and tiles them; the containers run the block only through
-    /// [`Layer::application`], which narrows each one to the running
-    /// application's copy (and sizes the zero caches from that view too). See
-    /// [`crate::utils::untied`].
+    /// The parameters that this block stores **once per application** of its
+    /// real layer (not once), each with the axis of its copies. Empty when its
+    /// config unties nothing. The [`BlockConfig`] decides which they are and
+    /// tiles them. The containers run the block only through
+    /// [`Layer::application`], which narrows each one to the copy of the
+    /// running application (and also sizes the zero caches from that view).
+    /// See [`crate::utils::untied`].
     fn untied_params(&self) -> Vec<crate::utils::UntiedParam>;
 }
 
@@ -128,16 +132,16 @@ pub trait Block: Module + burn::module::ModuleDisplay {
 pub trait BlockConfig: Config {
     /// The block this config builds.
     type Block: Block;
-    /// Model width, used to size each layer's pre-norm.
+    /// Model width, used to size the pre-norm of each layer.
     fn d_model(&self) -> usize;
     /// Allocate and initialise the block on `device`, for a real layer applied
-    /// `n_applications` times: every parameter the config unties is
-    /// [tiled](crate::utils::untied::tile) that many times, every other one is
-    /// built once. A config that unties nothing ignores the count.
+    /// `n_applications` times. Every parameter that the config unties is
+    /// [tiled](crate::utils::untied::tile) that many times. Every other
+    /// parameter is built once. A config that unties nothing ignores the count.
     fn init_block(&self, n_applications: usize, device: &Device) -> Self::Block;
 
-    /// The block's 2-D weights Muon may own, and where their fused columns
-    /// split. See [`crate::optim`] for what is (and is not) listed.
+    /// The 2-D weights of the block that Muon can own, and where their fused
+    /// columns split. See [`crate::optim`] for what is (and is not) listed.
     #[cfg(feature = "optim")]
     fn muon_projections(&self) -> Vec<crate::optim::ProjSpec>;
 }

@@ -82,10 +82,12 @@ impl Mapper<MnistFlatItemRaw, MnistFlatItem> for BytesToFlatImage {
 type MappedDataset =
     MapperDataset<InMemDataset<MnistFlatItemRaw>, BytesToFlatImage, MnistFlatItemRaw>;
 
-/// The MNIST dataset consists of 70,000 28x28 black-and-white images in 10 classes (one for each digits), with 7,000
-/// images per class. There are 60,000 training images and 10,000 test images.
+/// The MNIST dataset: 70,000 28x28 black-and-white images in 10 classes (one
+/// for each digit), with 7,000 images per class. There are 60,000 training
+/// images and 10,000 test images.
 ///
-/// The data is downloaded from the web from the [CVDF mirror](https://github.com/cvdfoundation/mnist).
+/// The data is downloaded from the
+/// [CVDF mirror](https://github.com/cvdfoundation/mnist).
 pub struct MnistDataset {
     dataset: MappedDataset,
 }
@@ -137,7 +139,7 @@ impl MnistDataset {
     /// Download the MNIST dataset files from the web.
     /// Panics if the download cannot be completed or the content of the file cannot be written to disk.
     fn download(split: &str) -> PathBuf {
-        // Dataset files are stored un the burn-dataset cache directory
+        // Dataset files are stored in the burn-dataset cache directory
         let cache_dir = dirs::home_dir()
             .expect("Could not get home directory")
             .join(".cache")

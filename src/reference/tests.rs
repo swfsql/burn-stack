@@ -1,13 +1,19 @@
 //! Contract tests for the block-generic containers, composed over
 //! [`RefBlock`](super::RefBlock).
 //!
-//! The point is coverage that is *independent of any mixer family*: if these
-//! pass, the containers do not secretly depend on anything a real block
-//! happens to provide. They pin the properties every family relies on —
-//! forward/step parity through a `Layer` and a `Layers` stack, cache threading,
-//! virtual-layer weight sharing, gradient reachability across a `grad_horizon`
-//! cut, multi-gate residuals, bidirectional pairing, class-marker placement,
-//! and the Muon allowlist.
+//! The point is coverage that is *independent of any mixer family*. If these
+//! tests pass, the containers do not secretly depend on something that a real
+//! block happens to provide. They pin the properties that every family relies
+//! on:
+//!
+//! - forward/step parity through a `Layer` and a `Layers` stack,
+//! - cache threading,
+//! - virtual-layer weight sharing,
+//! - gradient reachability across a `grad_horizon` cut,
+//! - multi-gate residuals,
+//! - bidirectional pairing,
+//! - class-marker placement,
+//! - the Muon allowlist.
 
 use super::*;
 use crate::modules::bidi::{BidiLayersBuilder, OutputMergeConfig};
@@ -86,8 +92,8 @@ fn block_forward_is_chunkable_through_the_cache() {
 // Layer / Layers
 // ---------------------------------------------------------------------------
 
-/// `Layers::forward` equals `Layers::step` unrolled — the container threads
-/// caches per (virtual) layer without reordering or dropping any.
+/// `Layers::forward` equals `Layers::step` unrolled: the container threads
+/// caches per (virtual) layer, and does not reorder or drop any.
 #[test]
 fn layers_forward_equals_step_unrolled() {
     let device: Device = Default::default();
@@ -109,7 +115,7 @@ fn layers_forward_equals_step_unrolled() {
 }
 
 /// An `mlp` on the layer adds a second, *inner* residual. The layer returns its
-/// total delta, so the stack's single outer add must reproduce
+/// total delta, so the single outer add of the stack must reproduce
 /// `(x + mixer) + mlp(norm2(x + mixer))`.
 #[test]
 fn layer_mlp_reproduces_two_separate_residuals() {
@@ -136,8 +142,9 @@ fn layer_mlp_reproduces_two_separate_residuals() {
     assert!(max_abs_diff(got, want) < TOL);
 }
 
-/// Virtual layers reuse one real weight set: 6 virtual over 2 real must hold
-/// exactly 2 weight sets, 6 cache slots, and reach every real layer's gradient.
+/// Virtual layers reuse one real weight set. 6 virtual over 2 real must hold
+/// exactly 2 weight sets and 6 cache slots, and reach the gradient of every
+/// real layer.
 #[test]
 fn virtual_layers_share_weights_and_keep_one_cache_each() {
     let device = Device::default().autodiff();
@@ -162,9 +169,10 @@ fn virtual_layers_share_weights_and_keep_one_cache_each() {
     }
 }
 
-/// A `grad_horizon` covering the whole stack must be a no-op on the values, and
-/// a shorter one must cut the gradient to the untracked layers' own parameters
-/// while leaving the stack input reachable (the straight-through re-attachment).
+/// A `grad_horizon` that covers the whole stack must be a no-op on the
+/// values. A shorter one must cut the gradient to the parameters of the
+/// untracked layers, and keep the stack input reachable (the straight-through
+/// re-attachment).
 #[test]
 fn grad_horizon_cuts_the_prefix_but_not_the_input() {
     let device = Device::default().autodiff();
@@ -204,16 +212,16 @@ fn grad_horizon_cuts_the_prefix_but_not_the_input() {
 }
 
 /// A stretched schedule gives each real layer one contiguous run of virtual
-/// layers, so a horizon must cut and lift back **once per real layer** — the
-/// tail of every run tracked. A single top suffix (what the horizon used to be)
-/// would leave every real layer but the topmost with no gradient at all.
+/// layers. So a horizon must cut and lift back **once per real layer**, with
+/// the tail of every run tracked. A single top suffix would leave every real
+/// layer except the topmost with no gradient.
 #[test]
 fn grad_horizon_stretched_trains_every_real_layer() {
     let device = Device::default().autodiff();
     let x = Tensor::random([2, 4, D_MODEL], Distribution::Normal(0.0, 1.0), &device)
         .require_grad();
 
-    // 8 virtual over 3 real: runs [0,1,2], [3,4,5], [6,7]; `Depth(1)` tracks
+    // 8 virtual over 3 real: runs [0,1,2], [3,4,5], [6,7]. `Depth(1)` tracks
     // {2, 5, 7}, so the stack crosses the boundary three times.
     let build = || LayersBuilder {
         n_virtual_layers: Some((8, Schedule::Stretched)),
@@ -253,10 +261,10 @@ fn grad_horizon_stretched_trains_every_real_layer() {
     }
 }
 
-/// The mask may alternate arbitrarily: only the layers it tracks collect a
-/// gradient, and `forward` still equals `step` unrolled through every one of
-/// those boundaries — under both residual schemes, the Multi-Gate streams
-/// making the same hop as the tokens.
+/// The mask can alternate arbitrarily. Only the layers that it tracks collect
+/// a gradient, and `forward` still equals `step` unrolled through every one of
+/// those boundaries. This holds under both residual schemes, and the
+/// Multi-Gate streams make the same hop as the tokens.
 #[test]
 fn grad_horizon_mask_alternates_and_keeps_forward_step_parity() {
     let device = Device::default().autodiff();
@@ -292,8 +300,8 @@ fn grad_horizon_mask_alternates_and_keeps_forward_step_parity() {
             "an alternating mask changes the graph, never the values",
         );
 
-        // `forward` = `step` unrolled must survive the boundaries too, the
-        // cascade taking them token stream by token stream.
+        // `forward` = `step` unrolled must also survive the boundaries. The
+        // cascade takes them one token stream at a time.
         let mut caches = None;
         let mut ys = Vec::new();
         for t in 0..3 {
@@ -317,8 +325,8 @@ fn grad_horizon_mask_alternates_and_keeps_forward_step_parity() {
     }
 }
 
-/// A class latent belonging to an **untracked** layer still trains: it is a
-/// learnable *input row*, not part of that layer's transform, so it rides the
+/// A class latent of an **untracked** layer still trains. It is a learnable
+/// *input row*, not part of the transform of that layer. So it rides the
 /// straight-through carry as a value-zero ghost row. The mask here also ends
 /// untracked, so the stack lifts its output at the very top.
 #[test]
@@ -387,8 +395,8 @@ fn multi_gate_forward_equals_step_and_stays_bounded() {
 // Bidirectional
 // ---------------------------------------------------------------------------
 
-/// A bidi stack pairs a straight and a reversed pass; with more virtual than
-/// real pairs the per-pair merge must be indexed by the **real** pair.
+/// A bidi stack pairs a straight and a reversed pass. With more virtual than
+/// real pairs, the per-pair merge must be indexed by the **real** pair.
 #[test]
 fn bidi_virtual_pairs_share_the_real_pair_merge() {
     let device = Device::default().autodiff();
@@ -425,9 +433,9 @@ fn bidi_virtual_pairs_share_the_real_pair_merge() {
 // Class markers
 // ---------------------------------------------------------------------------
 
-/// A `Start` class token lengthens the sequence by one and reports its own
-/// output index; the same placement must hold whether the sequence arrives via
-/// `forward` or one token at a time.
+/// A `Start` class token makes the sequence one longer, and reports its own
+/// output index. The same placement must hold whether the sequence arrives
+/// through `forward` or one token at a time.
 #[test]
 fn class_token_placement_is_the_same_for_forward_and_step() {
     let device: Device = Default::default();
@@ -458,8 +466,9 @@ fn class_token_placement_is_the_same_for_forward_and_step() {
         caches = Some(c);
         ys.push(y_t.unsqueeze_dim::<3>(1));
     }
-    // `step` returns the last token it emitted, so the marker is folded into
-    // the first step's state rather than surfacing as an extra output row.
+    // `step` returns the last token that it emitted. So the marker is folded
+    // into the state of the first step, and does not come out as an extra
+    // output row.
     assert_eq!(Tensor::cat(ys, 1).dims(), [1, sequence, 2]);
 }
 
@@ -486,8 +495,8 @@ fn class_latents_receive_gradients() {
 // ---------------------------------------------------------------------------
 
 /// Two real layers over five virtual ones (`Cyclic`: three applications and
-/// two), untying everything that can be — both pre-norms and both of
-/// `RefBlock`'s untiable tensors.
+/// two). Everything untiable is untied: both pre-norms and both untiable
+/// tensors of `RefBlock`.
 fn untied_builder() -> LayersBuilder<RefBlockConfig> {
     LayersBuilder {
         n_virtual_layers: Some((5, Schedule::Cyclic)),
@@ -507,7 +516,8 @@ fn tied_view(layers: &Layers<RefBlock>) -> Layers<RefBlock> {
     }
 }
 
-/// Adds noise to every parameter, so an untied stack's copies stop agreeing.
+/// Adds noise to every parameter, so the copies of an untied stack stop
+/// agreeing.
 struct Jitter;
 
 impl ModuleMapper for Jitter {
@@ -519,10 +529,10 @@ impl ModuleMapper for Jitter {
     }
 }
 
-/// An untied stack is the *unshared* stack of its application views: virtual
+/// An untied stack is the *unshared* stack of its application views. Virtual
 /// layer `i` runs application `index[i]` of its real layer, in `forward` and
-/// `step` alike. The copies are jittered apart first, so reading the wrong one
-/// shows.
+/// in `step`. The test first adds noise to the copies, so a read of the wrong
+/// copy shows.
 #[test]
 fn an_untied_stack_is_the_unshared_stack_of_its_application_views() {
     let device: Device = Default::default();
@@ -561,8 +571,8 @@ fn an_untied_stack_is_the_unshared_stack_of_its_application_views() {
     assert!(max_abs_diff(y, y_tied) > TOL);
 }
 
-/// Every copy of `g` (the untied gradient, copies along `axis`) is non-zero,
-/// and together they sum to copy 0 of `g_tied` — the gradient the tied weight
+/// Every copy of `g` (the untied gradient, copies along `axis`) is non-zero.
+/// Together they sum to copy 0 of `g_tied`: the gradient that the tied weight
 /// collects, which lands on copy 0 alone.
 fn assert_copies_split<const D: usize>(g: Tensor<D>, g_tied: Tensor<D>, axis: usize, n: usize) {
     let copies = g.chunk(n, axis);
@@ -575,9 +585,9 @@ fn assert_copies_split<const D: usize>(g: Tensor<D>, g_tied: Tensor<D>, axis: us
     assert!(max_abs_diff(sum, g_tied.narrow(axis, 0, len)) < TOL);
 }
 
-/// Untied copies start as the tied weight: the untied stack computes exactly
-/// its application-0 view, and the tied weight's gradient is the sum of its
-/// copies' — the copies part under training alone.
+/// Untied copies start as the tied weight. The untied stack computes exactly
+/// its application-0 view, and the gradient of the tied weight is the sum of
+/// the gradients of its copies. Only training makes the copies differ.
 #[test]
 fn untied_copies_start_tied_and_split_the_tied_gradient() {
     let device = Device::default().autodiff();
@@ -611,8 +621,8 @@ fn untied_copies_start_tied_and_split_the_tied_gradient() {
     }
 }
 
-/// A copy is read by its own application alone, so a cut through a layer that
-/// unties anything would leave copies that never train — it panics instead.
+/// Only its own application reads a copy. So a cut through a layer that
+/// unties anything would leave copies that never train. It panics instead.
 #[test]
 #[should_panic(expected = "unties parameters across its applications")]
 fn grad_horizon_refuses_to_cut_an_untied_layer() {
@@ -625,8 +635,9 @@ fn grad_horizon_refuses_to_cut_an_untied_layer() {
     let _ = layers.forward(randn3(1, 3, &device), None, (), None, None);
 }
 
-/// A post-build `InitPolicy` redraws every 2-D `weight` element by element; the
-/// shape ties an untied one back to copies of its first application.
+/// A post-build `InitPolicy` redraws every 2-D `weight` element by element.
+/// `NetworkShape` then ties an untied weight back to copies of its first
+/// application.
 #[test]
 fn an_init_policy_keeps_untied_copies_tied() {
     use crate::modules::NetworkShape;
@@ -646,7 +657,8 @@ fn an_init_policy_keeps_untied_copies_tied() {
 }
 
 /// Both directions of a bidirectional pair are applications of the real layer
-/// they index: every copy an untied bidi stack holds is read, and trains.
+/// that they index. Every copy that an untied bidi stack holds is read, and
+/// trains.
 #[test]
 fn bidi_untied_copies_each_train() {
     let device = Device::default().autodiff();
@@ -683,8 +695,8 @@ fn bidi_untied_copies_each_train() {
 // Muon plan
 // ---------------------------------------------------------------------------
 
-/// The plan is an **allowlist**: only the rank-2 weights a `BlockConfig` names
-/// are moved off AdamW, and every listed path must exist on the real module.
+/// The plan is an **allowlist**. Only the rank-2 weights that a `BlockConfig`
+/// names move off AdamW, and every listed path must exist on the real module.
 #[cfg(feature = "optim")]
 #[test]
 fn muon_plan_matches_only_existing_rank_2_weights() {
@@ -712,8 +724,9 @@ fn muon_plan_matches_only_existing_rank_2_weights() {
     }
 }
 
-/// An untied projection is one matrix per application: Muon orthogonalises each
-/// copy on its own, and the plan hands the untied weight to that stepping.
+/// An untied projection is one matrix per application. Muon orthogonalises
+/// each copy on its own, and the plan gives the untied weight to that
+/// per-copy step.
 #[cfg(feature = "optim")]
 #[test]
 fn muon_steps_an_untied_projection_one_copy_at_a_time() {

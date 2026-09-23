@@ -1,24 +1,28 @@
-//! Example-support scaffolding shared by this crate's consumers.
+//! Example-support scaffolding shared by the consumers of this crate.
 //!
-//! None of this is part of the composition layer: it is the plumbing every
-//! `examples/` directory otherwise rewrites — CLI + artifact handling ([`cli`]),
-//! runtime dtype selection ([`device`]), the [`training`] config (AdamW or SGD,
-//! optionally with Muon), the [`trainer`] that steps a module under it (from a
-//! captured graph under plain SGD), the per-invocation [`session`] every epoch loop threads
-//! (resume position, budget, cadence, metrics log), and the two datasets with
-//! their epoch loops — the
-//! sequential-[`mnist`] classifier and the character-level [`tiny_stories`]
-//! language model. It lives here so `burn-mamba` and `burn-deltanet` share one
-//! copy.
+//! None of this is part of the composition layer. It is the plumbing that
+//! every `examples/` directory would otherwise write again:
 //!
-//! Gated behind the off-by-default `examples-common` feature, which is what
-//! pulls `burn/train`, `burn/dataset` and the download/CLI crates; a consumer
+//! - CLI + artifact handling ([`cli`]),
+//! - runtime dtype selection ([`device`]),
+//! - the [`training`] config (AdamW or SGD, optionally with Muon),
+//! - the [`trainer`] that steps a module under it (from a captured graph under
+//!   plain SGD),
+//! - the per-invocation [`session`] that every epoch loop threads (resume
+//!   position, budget, cadence, metrics log),
+//! - the two datasets with their epoch loops: the sequential-[`mnist`]
+//!   classifier and the character-level [`tiny_stories`] language model.
+//!
+//! It lives here so that the consumer crates share one copy.
+//!
+//! The off-by-default `examples-common` feature gates it. That feature pulls
+//! `burn/train`, `burn/dataset` and the download/CLI crates. A consumer
 //! enables it in its **dev**-dependencies only.
 //!
-//! The `config → module` seam these use,
-//! [`ModelConfigExt`](crate::modules::ModelConfigExt), is *not* here: consumers
-//! implement it on their own network configs, so it sits in [`crate::modules`]
-//! with the rest of the plug-in surface.
+//! The `config → module` interface that these use,
+//! [`ModelConfigExt`](crate::modules::ModelConfigExt), is *not* here.
+//! Consumers implement it on their own network configs, so it is in
+//! [`crate::modules`] with the rest of the plug-in surface.
 
 pub mod cli;
 pub mod device;

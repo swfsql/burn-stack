@@ -1,27 +1,27 @@
-//! The SwiGLU feed-forward block interleaved between sequence mixers — the
-//! channel mixer of the Llama macro architecture, which the reference linear-
-//! attention models keep verbatim and the reference SSMs make optional
-//! (selected there by `d_intermediate > 0`).
+//! The SwiGLU feed-forward block between sequence mixers: the channel mixer of
+//! the Llama macro architecture. The reference linear-attention models keep it
+//! as is. The reference SSMs make it optional (with `d_intermediate > 0`).
 //!
 //! ```text
-//!   [v | g] = fc1(x)            split of the `2·hidden` output down the last dim
+//!   [v | g] = fc1(x)            split of the `2·hidden` output along the last dim
 //!   y       = fc2(v ⊙ silu(g))
 //! ```
 //!
-//! The value half comes first and the gate half second — the order the reference
-//! `y.chunk(2, dim=-1)` produces, and therefore the order the checkpoint's single
-//! fused `fc1` matrix is stored in. (The reference linear-attention models keep
-//! the two halves in *separate* matrices, `up_proj` and `gate_proj`; that is the
-//! same function with one more GEMM.)
+//! The value half comes first and the gate half second. This is the order that
+//! the reference `y.chunk(2, dim=-1)` produces, so it is also the storage order
+//! of the single fused `fc1` matrix of the checkpoint. (The reference
+//! linear-attention models keep the two halves in *separate* matrices,
+//! `up_proj` and `gate_proj`. That is the same function with one more GEMM.)
 //!
-//! `hidden` is rounded **up** to a multiple of [`GatedMlpConfig::multiple_of`], so
-//! the config figure and the checkpoint shape can legitimately disagree — a
-//! published checkpoint may state `d_intermediate: 1264` while its `fc1.weight`
-//! is `[2·1280, 768]`. [`GatedMlpConfig::from_hidden_ratio`] states the width the
-//! other way round, as the parameter budget the Llama-style configs specify.
+//! `hidden` is rounded **up** to a multiple of [`GatedMlpConfig::multiple_of`].
+//! So the config figure and the checkpoint shape can legitimately disagree: a
+//! published checkpoint can state `d_intermediate: 1264` while its
+//! `fc1.weight` is `[2·1280, 768]`. [`GatedMlpConfig::from_hidden_ratio`]
+//! states the width the other way round, as the parameter budget that the
+//! Llama-style configs specify.
 //!
-//! Point-wise in the sequence, so `forward` and `step` are the same map applied at
-//! different ranks — hence the rank-generic body.
+//! It is point-wise in the sequence, so `forward` and `step` are the same map
+//! at different ranks. This is why the body is rank-generic.
 
 use crate::modules::Silu;
 use crate::modules::split_into;
@@ -33,9 +33,9 @@ use burn::prelude::*;
 pub struct GatedMlpConfig {
     /// Input and output width (the residual stream), `d_model`.
     pub d_model: usize,
-    /// Inner width **before** rounding — `d_intermediate` in the reference
-    /// configs. Rounded up to a multiple of [`Self::multiple_of`] by
-    /// [`Self::hidden`].
+    /// Inner width **before** rounding (`d_intermediate` in the reference
+    /// configs). [`Self::hidden`] rounds it up to a multiple of
+    /// [`Self::multiple_of`].
     pub d_intermediate: usize,
     /// Round [`Self::d_intermediate`] up to a multiple of this.
     #[config(default = 128)]
@@ -46,13 +46,15 @@ pub struct GatedMlpConfig {
 }
 
 impl GatedMlpConfig {
-    /// The Llama-style sizing rule: a feed-forward of `ratio · d_model²`
-    /// parameters, which for a *gated* MLP (three matrices, not two) means an
-    /// inner width of `⅔ · ratio · d_model` — rounded up to a multiple of 256.
+    /// The Llama-style sizing rule: a feed-forward with the parameters of a
+    /// plain two-matrix MLP of inner width `ratio · d_model`
+    /// (`2 · ratio · d_model²`). For a *gated* MLP (three matrices, not two),
+    /// this means an inner width of `⅔ · ratio · d_model`, rounded up to a
+    /// multiple of 256.
     ///
-    /// `ratio = 4` is what every reference linear-attention config uses
-    /// (`hidden_ratio`), and it is the figure those configs state; the width
-    /// below is derived, not chosen.
+    /// Every reference linear-attention config uses `ratio = 4`
+    /// (`hidden_ratio`), and states that figure. The width below is derived
+    /// from it, not chosen.
     pub fn from_hidden_ratio(d_model: usize, ratio: usize) -> Self {
         Self::new(d_model, d_model * ratio * 2 / 3).with_multiple_of(256)
     }
@@ -80,7 +82,7 @@ impl GatedMlpConfig {
 
 /// A SwiGLU feed-forward block: `fc2(v ⊙ silu(g))` where `[v | g] = fc1(x)`.
 ///
-/// Should be created using the [`GatedMlpConfig`] configuration.
+/// Create it with [`GatedMlpConfig`].
 #[derive(Module, Debug)]
 pub struct GatedMlp {
     /// Fused value+gate up-projection, `d_model → 2·hidden`.

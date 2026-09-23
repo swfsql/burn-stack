@@ -7,7 +7,7 @@ fn test_cosine_annealing_warmup() {
         .with_min_lr(0.01)
         .with_warmup_steps(100);
 
-    // At step 0, LR should be 0.0001
+    // At step 0, LR should be 0
     assert_eq!(scheduler.get_lr(0), 0.);
 
     // At half warmup, LR should be max_lr / 2

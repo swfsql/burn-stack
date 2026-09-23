@@ -1,12 +1,15 @@
-//! A minimal reference [`Block`] — the smallest thing that satisfies the trait.
+//! A minimal reference [`Block`]: the smallest thing that satisfies the trait.
 //!
-//! It exists for two reasons: it is what this crate's own test suite composes
-//! (so the containers are exercised without depending on any real mixer
-//! family), and it is a worked example of the four things a family has to
-//! supply — a cache, a [`CacheStack`], [`Block`], and [`BlockConfig`] (plus
-//! [`CacheTensors`], which only a captured step needs). It
-//! unties its decay and its gate map on request ([`RefUntied`]), so the
-//! containers' untied path is exercised the same way.
+//! It exists for two reasons:
+//!
+//! - The test suite of this crate composes it. So the tests exercise the
+//!   containers without a dependency on any real mixer family.
+//! - It is a worked example of the four things that a family must supply: a
+//!   cache, a [`CacheStack`], [`Block`] and [`BlockConfig`] (plus
+//!   [`CacheTensors`], which only a captured step needs).
+//!
+//! It unties its decay and its gate map on request ([`RefUntied`]), so the
+//! tests exercise the untied path of the containers in the same way.
 //!
 //! The recurrence is a gated exponential moving average, one state vector per
 //! token channel:
@@ -16,13 +19,14 @@
 //!   yₜ = W_out (hₜ ⊙ silu(W_g xₜ))
 //! ```
 //!
-//! Stateful (so cache threading is observable), non-linear (so gradients are
-//! not degenerate), and cheap. `block_forward` unrolls the same recurrence
-//! `block_step` applies, which makes the forward/step parity the containers
-//! rely on exact by construction — a real family earns it with a chunkwise
-//! algorithm instead.
+//! It is stateful (so cache threading is observable), non-linear (so the
+//! gradients are not degenerate), and cheap. `block_forward` unrolls the same
+//! recurrence that `block_step` applies. So the forward/step parity that the
+//! containers rely on is exact by construction. A real family gets it from a
+//! chunkwise algorithm instead.
 //!
-//! Enabled by the `test-helpers` feature (or inside this crate's own tests).
+//! The `test-helpers` feature enables it (the tests of this crate also have
+//! it).
 
 use crate::modules::{Block, BlockConfig, CacheStack, CacheTensors, Silu, TensorZip};
 use crate::utils::untied::{self, UntiedParam};
@@ -31,7 +35,8 @@ use burn::module::Param;
 use burn::nn::{Linear, LinearConfig};
 use burn::prelude::*;
 
-/// One (virtual) layer's streaming state: the EMA accumulator `[batch, d_model]`.
+/// The streaming state of one (virtual) layer: the EMA accumulator
+/// `[batch, d_model]`.
 #[derive(Module, Debug)]
 pub struct RefCache {
     /// The accumulator `hₜ`.
@@ -41,7 +46,7 @@ pub struct RefCache {
 /// One slot per (virtual) layer.
 #[derive(Module, Debug)]
 pub struct RefCaches {
-    /// Per-layer caches; length = number of virtual layers.
+    /// Per-layer caches, length = number of virtual layers.
     pub caches: Vec<RefCache>,
 }
 
@@ -81,14 +86,14 @@ impl CacheTensors for RefCaches {
     }
 }
 
-/// A [`RefBlock`] parameter that may be held once per application instead of
-/// tied (see [`crate::utils::untied`]).
+/// A [`RefBlock`] parameter that can be held once per application, not tied
+/// (see [`crate::utils::untied`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RefUntied {
     /// The decay [`RefBlock::decay_raw`], its copies along its only axis.
     Decay,
-    /// The gate map [`RefBlock::gate_proj`], its copies along the output axis —
-    /// the untied 2-D weight Muon has to step a copy at a time.
+    /// The gate map [`RefBlock::gate_proj`], its copies along the output axis.
+    /// This is the untied 2-D weight that Muon must step one copy at a time.
     GateProj,
 }
 
@@ -138,10 +143,10 @@ impl RefBlock {
 impl Block for RefBlock {
     type Cache = RefCache;
     type Caches = RefCaches;
-    /// Nothing to select — the block has one algorithm.
+    /// Nothing to select: the block has one algorithm.
     type Options = ();
 
-    /// A padded row keeps the state it found — the recurrence skips it.
+    /// A padded row keeps the state that it found: the recurrence skips it.
     fn block_forward(
         &self,
         x_bsd: Tensor<3>,
@@ -205,10 +210,10 @@ impl Block for RefBlock {
     }
 }
 
-/// Panic unless every slot's padding follows all of its real rows. The
-/// reference block would skip padding anywhere, but a real one leans on the
-/// right padding [`Block::block_forward`] promises — so the reference checks
-/// that the containers keep that promise, whatever they splice.
+/// Panic unless the padding of every slot follows all of its real rows. The
+/// reference block would skip padding anywhere. But a real block relies on
+/// the right padding that [`Block::block_forward`] promises. So the reference
+/// checks that the containers keep that promise, whatever they splice.
 fn assert_right_padded(pad_bs: Tensor<2, Bool>) {
     let [_batch, sequence] = pad_bs.dims();
     // Read as ints: a backend may store a bool as a byte.
@@ -229,8 +234,8 @@ pub struct RefBlockConfig {
     /// The parameters held once per application instead of tied.
     #[config(default = "Vec::new()")]
     pub untied: Vec<RefUntied>,
-    /// Whether `forward` checks its `pad` mask is right-padded — a read to the
-    /// host, which a captured forward cannot make.
+    /// Whether `forward` checks that its `pad` mask is right-padded. The check
+    /// reads to the host, which a captured forward cannot do.
     #[config(default = true)]
     pub check_padding: bool,
 }
@@ -241,8 +246,8 @@ impl RefBlockConfig {
         self.init_applications(1, device)
     }
 
-    /// Allocate the block on `device` for `n_applications` applications, every
-    /// [`Self::untied`] parameter tiled that many times.
+    /// Allocate the block on `device` for `n_applications` applications, with
+    /// every [`Self::untied`] parameter tiled that many times.
     pub fn init_applications(&self, n_applications: usize, device: &Device) -> RefBlock {
         let lin = || LinearConfig::new(self.d_model, self.d_model).with_bias(false).init(device);
         let mut gate_proj = lin();
@@ -275,9 +280,9 @@ impl BlockConfig for RefBlockConfig {
         self.init_applications(n_applications, device)
     }
 
-    /// Three plain (unfused) square maps, the gate one per application when
-    /// untied; the `[d_model]` decay is rank 1 and so stays on the fallback
-    /// optimizer.
+    /// Three plain (unfused) square maps. The gate map is one per application
+    /// when untied. The `[d_model]` decay is rank 1, so it stays on the
+    /// fallback optimizer.
     #[cfg(feature = "optim")]
     fn muon_projections(&self) -> Vec<crate::optim::ProjSpec> {
         use crate::optim::ProjSpec;

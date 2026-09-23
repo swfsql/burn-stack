@@ -1,19 +1,22 @@
-//! Serializable **network shapes**: everything about a stack *except* the block
-//! it is made of.
+//! Serializable **network shapes**: everything about a stack *except* the
+//! block that it is made of.
 //!
 //! The builders next door ([`LayersBuilder`], [`LatentNetworkBuilder`],
-//! [`VocabNetworkBuilder`], [`BidiLayersBuilder`]) carry the block config `C`,
-//! so they cannot be `#[derive(Config)]` without dragging that generic through
-//! serde. Splitting the block off leaves a plain, block-*independent* struct
-//! that can: [`NetworkShape`] is the whole stack — depth, virtual scheduling,
-//! residuals, the feed-forward, the init policy — and [`LatentShape`] /
-//! [`VocabShape`] / [`BidiShape`] add only their own I/O boundary.
+//! [`VocabNetworkBuilder`], [`BidiLayersBuilder`]) carry the block config `C`.
+//! So they cannot be `#[derive(Config)]` unless serde also handles that
+//! generic. A split of the block leaves plain, block-*independent* structs
+//! that can:
 //!
-//! A family's serializable model config is then the pair `{ shape, block }`,
-//! with the family chosen in `block` and *nothing* about the surrounding
-//! architecture restated per family. Every knob an example's `model_config()`
-//! can turn is declared here, once, so one file describes what any stack in any
-//! consumer crate does:
+//! - [`NetworkShape`] is the whole stack: depth, virtual scheduling,
+//!   residuals, the feed-forward, the init policy.
+//! - [`LatentShape`] / [`VocabShape`] add only their own I/O boundary to it.
+//! - [`BidiShape`] is the bidirectional counterpart.
+//!
+//! The serializable model config of a family is then the pair
+//! `{ shape, block }`. `block` chooses the family, and no family restates
+//! *anything* about the surrounding architecture. Every knob that the
+//! `model_config()` of an example can turn is declared here, once. So one file
+//! describes what any stack in any consumer crate does:
 //!
 //! ```text
 //!   NetworkShape   depth, virtual layers, grad horizon, residuals, class
@@ -23,17 +26,18 @@
 //!   BidiShape      the bidirectional counterpart (pairs, per-pair merges)
 //! ```
 //!
-//! **The reference architecture.** The delta-rule and Mamba language models are
-//! Llama's macro design with a recurrent mixer in place of self-attention, so a
-//! faithful stack sets [`NetworkShape::mlp`]
-//! (`GatedMlpConfig::from_hidden_ratio(d_model, 4)`) and
-//! [`NetworkShape::init`] ([`InitPolicy`], the reference `initializer_range`);
-//! a mixer-only stack with per-module Burn defaults is the ablation, not the
-//! default. The knobs with no reference counterpart —
-//! [`NetworkShape::n_virtual_layers`], [`NetworkShape::grad_horizon`],
-//! [`Residuals::MultiGate`](crate::modules::Residuals) — buy depth or memory at
-//! a parameter budget the reference never has to work under; each is off unless
-//! asked for.
+//! **The reference architecture.** The reference language models of the
+//! recurrent families follow the macro design of Llama, with a recurrent
+//! mixer in place of self-attention. So a faithful stack sets
+//! [`NetworkShape::mlp`] (`GatedMlpConfig::from_hidden_ratio(d_model, 4)`) and
+//! [`NetworkShape::init`] ([`InitPolicy`](crate::utils::InitPolicy), the reference
+//! `initializer_range`). A mixer-only stack with the per-module defaults of
+//! Burn is the ablation, not the default. The knobs with no reference
+//! counterpart ([`NetworkShape::n_virtual_layers`],
+//! [`NetworkShape::grad_horizon`],
+//! [`Residuals::MultiGate`](crate::modules::Residuals)) buy depth or memory at
+//! a parameter budget that the reference never has to work under. Each one is
+//! off unless you ask for it.
 
 use crate::modules::{
     BidiLayers, BidiLayersBuilder, Block, BlockConfig, GatedMlpConfig, LatentNetwork,
@@ -56,12 +60,12 @@ pub struct NetworkShape {
     pub n_real_layers: usize,
 
     /// Optional virtual-layer scheduling: run `n` logical layers over the real
-    /// weight sets, mapped by a [`Schedule`]. Depth at no parameter cost, and
-    /// not something the reference architectures do.
+    /// weight sets, mapped by a [`Schedule`]. Depth at no parameter cost. The
+    /// reference architectures do not do this.
     #[config(default = "None")]
     pub n_virtual_layers: Option<(usize, Schedule)>,
 
-    /// Which virtual layers back-propagate; everything else runs on the inner
+    /// Which virtual layers back-propagate. The others run on the inner
     /// backend (truncated BPTT for deep recursion). `None` ⇒ track the whole
     /// stack. See [`Layers::grad_horizon`].
     #[config(default = "None")]
@@ -76,8 +80,8 @@ pub struct NetworkShape {
     #[config(default = false)]
     pub ignore_first_residual: bool,
 
-    /// Suppress the last virtual layer's residual (the output is then the last
-    /// layer's transform alone).
+    /// Suppress the last virtual layer's residual (the output is then the
+    /// transform of the last layer alone).
     #[config(default = false)]
     pub ignore_last_residual: bool,
 
@@ -89,37 +93,37 @@ pub struct NetworkShape {
     /// Optional per-layer SwiGLU feed-forward sub-block, with its own pre-norm
     /// and inner residual. `None` ⇒ mixer-only layers.
     ///
-    /// Every reference language model in this family has one: the architecture
-    /// is Llama's macro design with a recurrent mixer in place of
-    /// self-attention, so a token mixer is followed by a SwiGLU MLP of
-    /// [`GatedMlpConfig::from_hidden_ratio`] width.
+    /// Every reference language model of the recurrent families has one. The
+    /// architecture is the macro design of Llama, with a recurrent mixer in
+    /// place of self-attention. So a SwiGLU MLP of
+    /// [`GatedMlpConfig::from_hidden_ratio`] width follows each token mixer.
     #[config(default = "None")]
     pub mlp: Option<GatedMlpConfig>,
 
-    /// The layer's own parameters held once per application of its real layer
-    /// instead of tied across them — the block's are its config's to name. Only
-    /// virtual layers give a real layer more than one application. See
-    /// [`crate::utils::untied`].
+    /// The parameters of the layer itself that are held once per application
+    /// of its real layer, not tied across them. The block config names those
+    /// of the block. Only virtual layers give a real layer more than one
+    /// application. See [`crate::utils::untied`].
     #[config(default = "Vec::new()")]
     pub untied: Vec<LayerUntied>,
 
     /// Optional post-build re-initialisation of the whole network (the
-    /// reference `initializer_range` + residual rescale). `None` ⇒ keep Burn's
-    /// per-module defaults. See [`InitPolicy`].
+    /// reference `initializer_range` + residual rescale). `None` ⇒ keep the
+    /// per-module defaults of Burn. See [`InitPolicy`].
     #[config(default = "None")]
     pub init: Option<InitPolicy>,
 }
 
 impl NetworkShape {
-    /// The number of residual sub-blocks per layer this stack has, which is
-    /// what an [`InitPolicy`] rescale is counted over: the mixer, plus the
-    /// feed-forward when there is one.
+    /// The number of residual sub-blocks per layer of this stack: the mixer,
+    /// plus the feed-forward when there is one. An [`InitPolicy`] rescale
+    /// counts over this number.
     pub fn residuals_per_layer(&self) -> usize {
         if self.mlp.is_some() { 2 } else { 1 }
     }
 
-    /// The stack's depth in *applied* layers — the virtual count when there is
-    /// one, else the real count.
+    /// The depth of the stack in *applied* layers: the virtual count when
+    /// there is one, else the real count.
     pub fn n_applied_layers(&self) -> usize {
         self.n_virtual_layers
             .as_ref()
@@ -127,8 +131,8 @@ impl NetworkShape {
             .unwrap_or(self.n_real_layers)
     }
 
-    /// The [`InitPolicy`] to apply after building, with its rescale resolved
-    /// against this stack's depth.
+    /// The [`InitPolicy`] to apply after the build, with its rescale resolved
+    /// against the depth of this stack.
     pub fn init_policy(&self) -> Option<InitPolicy> {
         self.init
             .clone()
@@ -165,9 +169,10 @@ impl NetworkShape {
         self.retie(self.apply_init(self.layers(block).init(device)))
     }
 
-    /// Tie a stack's untied copies back together after [`Self::apply_init`],
-    /// whose redraw of every 2-D `weight` would start each application from a
-    /// draw of its own (see [`Layers::retie`]). A no-op without an init policy.
+    /// Tie the untied copies of a stack back together after
+    /// [`Self::apply_init`]. Its redraw of every 2-D `weight` would start each
+    /// application from a draw of its own (see [`Layers::retie`]). A no-op
+    /// without an init policy.
     pub fn retie<M: Block>(&self, layers: Layers<M>) -> Layers<M> {
         match self.init {
             Some(_) => layers.retie(),
@@ -176,11 +181,12 @@ impl NetworkShape {
     }
 
     /// The [`MuonPlan`](crate::optim::MuonPlan) for a stack of this shape at
-    /// `block`: the block's fused projections plus the optional MLP's.
+    /// `block`: the fused projections of the block, plus those of the optional
+    /// MLP.
     ///
-    /// A network's own boundary weights — `in_proj`/`out_proj`, the embedding
-    /// and LM head, class-marker tables — are deliberately left out; see
-    /// [`crate::optim`].
+    /// The boundary weights of a network (`in_proj`/`out_proj`, the embedding
+    /// and LM head, class-marker tables) stay out on purpose (see
+    /// [`crate::optim`]).
     #[cfg(feature = "optim")]
     pub fn muon_plan<C: BlockConfig>(&self, block: &C) -> crate::optim::MuonPlan {
         crate::optim::MuonPlan::new(block.muon_projections()).with_mlp(self.mlp.as_ref())
@@ -191,21 +197,21 @@ impl NetworkShape {
 // LatentShape
 // ===========================================================================
 
-/// A [`LatentNetwork`]'s own knobs, on top of [`NetworkShape`].
+/// The knobs that only a [`LatentNetwork`] has, on top of [`NetworkShape`].
 #[derive(Config, Debug)]
 pub struct LatentShape {
     /// Input feature width, fed to `in_proj`.
     pub input_size: usize,
     /// Output feature width, produced by `out_proj`.
     pub output_size: usize,
-    /// The stack's knobs.
+    /// The knobs of the stack.
     pub stack: NetworkShape,
-    /// Insert a final RMSNorm before `out_proj` — the counterpart of the
-    /// unconditional `norm_f` a [`VocabNetwork`] puts before its LM head.
+    /// Insert a final RMSNorm before `out_proj`: the counterpart of the
+    /// unconditional `norm_f` that a [`VocabNetwork`] puts before its LM head.
     #[config(default = false)]
     pub final_norm: bool,
     /// Network-level class tokens, spliced into the input before `in_proj`
-    /// (width `input_size`, unlike the stack's class latents).
+    /// (width `input_size`, unlike the class latents of the stack).
     #[config(default = "Vec::new()")]
     pub class_tokens: Vec<ClassToken>,
 }
@@ -222,7 +228,8 @@ impl LatentShape {
         }
     }
 
-    /// Allocate the network on `device`, with the stack's init policy applied.
+    /// Allocate the network on `device`, with the init policy of the stack
+    /// applied.
     pub fn init<C: BlockConfig>(&self, block: C, device: &Device) -> LatentNetwork<C::Block> {
         let mut net = self.stack.apply_init(self.build(block).init(device));
         net.layers = self.stack.retie(net.layers);
@@ -234,12 +241,12 @@ impl LatentShape {
 // VocabShape
 // ===========================================================================
 
-/// A [`VocabNetwork`]'s own knobs, on top of [`NetworkShape`].
+/// The knobs that only a [`VocabNetwork`] has, on top of [`NetworkShape`].
 #[derive(Config, Debug)]
 pub struct VocabShape {
     /// Unpadded vocabulary size.
     pub vocab_size: usize,
-    /// The stack's knobs.
+    /// The knobs of the stack.
     pub stack: NetworkShape,
     /// Round `vocab_size` up to a multiple of this (1 disables rounding).
     #[config(default = 1)]
@@ -260,7 +267,8 @@ impl VocabShape {
         }
     }
 
-    /// Allocate the model on `device`, with the stack's init policy applied.
+    /// Allocate the model on `device`, with the init policy of the stack
+    /// applied.
     pub fn init<C: BlockConfig>(&self, block: C, device: &Device) -> VocabNetwork<C::Block> {
         let mut net = self.stack.apply_init(self.build(block).init(device));
         net.layers = self.stack.retie(net.layers);
@@ -272,16 +280,16 @@ impl VocabShape {
 // BidiShape
 // ===========================================================================
 
-/// A [`BidiLayers`] stack's block-independent knobs.
+/// The block-independent knobs of a [`BidiLayers`] stack.
 ///
-/// Its own shape rather than a [`NetworkShape`]: the pairs carry per-pair merge
-/// configs and a [`BidiSchedule`], and there is no feed-forward or init policy
-/// on this path.
+/// It is its own shape, not a [`NetworkShape`]: the pairs carry per-pair
+/// merge configs and a [`BidiSchedule`], and this path has no feed-forward or
+/// init policy.
 #[derive(Config, Debug)]
 pub struct BidiShape {
-    /// Number of real (weight-bearing) layers. Must be even — they pair up.
+    /// Number of real (weight-bearing) layers. Must be even: they pair up.
     pub n_real_layers: usize,
-    /// One merge config per pair; length `n_real_layers / 2`.
+    /// One merge config per real pair, length `n_real_layers / 2`.
     pub outputs_merge: Vec<OutputMergeConfig>,
     /// Optional virtual-layer scheduling over the real pairs.
     #[config(default = "None")]
@@ -298,8 +306,8 @@ pub struct BidiShape {
     /// Inter-pair residual scheme.
     #[config(default = "ResidualsConfig::Standard")]
     pub residuals: ResidualsConfig,
-    /// The layers' own parameters held once per application instead of tied
-    /// (see [`NetworkShape::untied`]).
+    /// The parameters of the layers that are held once per application, not
+    /// tied (see [`NetworkShape::untied`]).
     #[config(default = "Vec::new()")]
     pub untied: Vec<LayerUntied>,
 }

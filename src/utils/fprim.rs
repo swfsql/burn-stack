@@ -1,22 +1,23 @@
 //! # Rank-tagged primitive tensor wrapper for the custom backward math
 //!
-//! [`F`](crate::utils::fprim::F) is a thin newtype over a backend's
-//! [`FloatTensor`](burn::backend::BackendTypes::FloatTensorPrimitive) primitive that
-//! mirrors the subset of the high-level [`Tensor`](burn::tensor::Tensor) method
-//! API used by the recompute-backward gradient math
-//! (`*/serial_recalculated/combined_backward.rs`).
+//! [`F`](crate::utils::fprim::F) is a thin newtype over the
+//! [`FloatTensor`](burn::backend::BackendTypes::FloatTensorPrimitive)
+//! primitive of a backend. It mirrors the subset of the high-level
+//! [`Tensor`](burn::tensor::Tensor) method API that the gradient math of a
+//! recompute backward uses.
 //!
-//! Why it exists: in Burn 0.22 the high-level `Tensor` is pinned to the global
-//! `Dispatch` backend, so it cannot be built from an arbitrary backend `B`'s
-//! primitive.  A custom [`Backward`](burn::backend::autodiff::ops::Backward)
-//! node runs with a *generic* `B`, so its gradient math must operate directly on
-//! `B`'s primitives via the `B::float_*` ops.  This wrapper keeps that
-//! primitive-level math reading like the original `Tensor` code (method
-//! chaining, shape-suffixed names) instead of deeply nested free-function calls.
+//! Why it exists: in Burn 0.22, the high-level `Tensor` is pinned to the
+//! global `Dispatch` backend. So it cannot be built from the primitive of an
+//! arbitrary backend `B`. A custom
+//! [`Backward`](burn::backend::autodiff::ops::Backward) node runs with a
+//! *generic* `B`, so its gradient math must operate directly on the primitives
+//! of `B`, through the `B::float_*` ops. This wrapper keeps that
+//! primitive-level math similar to the original `Tensor` code (method
+//! chaining, shape-suffixed names), not deeply nested free-function calls.
 //!
-//! The rank `D` is a compile-time tag for parity with the ported code and to
-//! catch rank mistakes; every operation ultimately defers to `B`'s
-//! runtime-shaped primitive ops.
+//! The rank `D` is a compile-time tag, for parity with the ported code and to
+//! catch rank mistakes. Every operation defers to the runtime-shaped primitive
+//! ops of `B`.
 
 use burn::backend::Backend;
 use burn::backend::get_device_settings;
@@ -25,8 +26,9 @@ use burn::backend::{FloatDType, Scalar, Shape, Slice, SliceArg, TensorMetadata};
 
 /// A backend float-tensor primitive tagged with a compile-time rank `D`.
 ///
-/// Mirrors the slice of [`Tensor`](burn::tensor::Tensor)'s method API needed by
-/// the custom backward gradient math, operating directly on `B`'s primitives.
+/// It mirrors the part of the [`Tensor`](burn::tensor::Tensor) method API that
+/// the custom backward gradient math needs, and operates directly on the
+/// primitives of `B`.
 pub struct F<B: Backend, const D: usize>(pub FloatTensor<B>);
 
 impl<B: Backend, const D: usize> Clone for F<B, D> {
@@ -209,7 +211,7 @@ impl<B: Backend, const D: usize> F<B, D> {
 
     /// Zero everything strictly above the `diagonal` (keeps the lower triangle).
     ///
-    /// Equivalent to [`Tensor::tril`](burn::tensor::Tensor::tril); the mirror of
+    /// Equivalent to [`Tensor::tril`](burn::tensor::Tensor::tril), and the mirror of
     /// [`Self::triu`].
     pub fn tril(self, diagonal: i64) -> Self {
         self.tri_zero(diagonal, true)
@@ -362,11 +364,11 @@ impl<B: Backend> Mask<B> {
 
 /// Build a `[rows, cols]` triangular boolean mask on-device.
 ///
-/// Mirrors `tri_mask` in Burn: with `matrix = row - col`, the result is
-/// `matrix < -offset` when `lower` (the `tril_mask`/lower-triangle region) and
-/// `matrix > -offset` otherwise (the `triu_mask`/upper-triangle region) — i.e.
-/// the original `row - col + offset ≷ 0` test with `offset` folded into the
-/// comparison threshold.
+/// Mirrors `tri_mask` in Burn. With `matrix = row - col`, the result is
+/// `matrix < -offset` when `lower` (the `tril_mask`/lower-triangle region),
+/// and `matrix > -offset` otherwise (the `triu_mask`/upper-triangle region).
+/// That is, the original `row - col + offset ≷ 0` test, with `offset` folded
+/// into the comparison threshold.
 ///
 /// Built from on-device `arange`/comparison rather than uploaded host `bool`
 /// data: cubecl backends reject a `Bool(Native)` `bool_from_data`, and the

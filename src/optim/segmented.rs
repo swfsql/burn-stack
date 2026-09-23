@@ -1,20 +1,20 @@
 //! [`Segmented`]: run a different optimizer on each column block of a fused
 //! projection weight.
 //!
-//! Burn's [`Muon`](burn::optim::Muon) orthogonalises the *whole* matrix it is handed. Handing it a
-//! fused `in_proj` would couple the singular values of maps that have nothing to
-//! do with each other (the gate `z`, the values `x`, the SSM keys/queries `B`/`C`,
-//! the per-head Δ/`A`/`λ` scalars, …). [`Segmented`] slices the weight and its
-//! gradient along the fused axis, steps each block with its own optimizer, and
-//! concatenates the results — so each sub-matrix is orthogonalised (and
-//! shape-LR-adjusted) on its own, exactly as if it had been a separate `Linear`.
+//! The [`Muon`](burn::optim::Muon) of Burn orthogonalises the *whole* matrix
+//! that it gets. A fused `in_proj` would then couple the singular values of
+//! unrelated maps (a gate, the values, the keys and queries, the per-head
+//! scalars, …). [`Segmented`] slices the weight and its gradient along the
+//! fused axis, steps each block with its own optimizer, and concatenates the
+//! results. So each sub-matrix is orthogonalised (and shape-LR-adjusted) on
+//! its own, exactly as if it were a separate `Linear`.
 //!
-//! Nothing about the *model* changes: the forward pass keeps one fused GEMM.
+//! The *model* does not change: the forward pass keeps one fused GEMM.
 //!
-//! Slicing along columns is exact for every optimizer used here: AdamW and SGD
-//! are elementwise, and Muon's Newton–Schulz is per-matrix. A [`Segmented`]
-//! whose blocks are all AdamW is therefore bit-comparable to plain AdamW on the
-//! whole tensor (asserted in `tests.rs`).
+//! A slice along columns is exact for every optimizer used here: AdamW and SGD
+//! are elementwise, and the Newton–Schulz of Muon is per-matrix. So a
+//! [`Segmented`] whose blocks are all AdamW is bit-comparable to plain AdamW
+//! on the whole tensor (the test suite of a block family asserts this).
 
 use burn::optim::{
     AdamW, AdamWState, LearningRate, Muon, MuonState, Optimizer, RecordState, Sgd, StateSink,
@@ -28,7 +28,7 @@ use super::spec::ProjSpec;
 /// The optimizer owning one column block.
 #[derive(Clone)]
 enum BlockOptim {
-    /// Muon — orthogonalised momentum-SGD, for genuine feature maps.
+    /// Muon: orthogonalised momentum-SGD, for genuine feature maps.
     Muon(Muon),
     /// The fallback for scalar-producing (or otherwise unsuitable) blocks: AdamW …
     AdamW(AdamW),
@@ -43,8 +43,8 @@ impl BlockOptim {
     }
 }
 
-/// One column block's optimizer state.
-// The AdamW variant is the bigger one; a handful of these exist per fused
+/// The optimizer state of one column block.
+// The AdamW variant is the bigger one. Only a few of these exist per fused
 // weight, so the padding is not worth an extra indirection.
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone)]
@@ -65,8 +65,9 @@ pub struct SegmentedState<const D: usize> {
 
 /// Per-column-block optimizer over a fused projection weight.
 ///
-/// Built by [`ProjSpec`]-driven [`MuonPlan`](super::MuonPlan) assembly; the
-/// blocks' widths must sum to the parameter's size along [`Self::dim`].
+/// The [`ProjSpec`]-driven assembly of a [`MuonPlan`](super::MuonPlan) builds
+/// it. The widths of the blocks must sum to the size of the parameter along
+/// [`Self::dim`].
 #[derive(Clone)]
 pub struct Segmented {
     optims: Vec<BlockOptim>,
@@ -76,9 +77,9 @@ pub struct Segmented {
 }
 
 impl Segmented {
-    /// Build the per-block optimizers for `spec` — `muon` on its Muon segments,
-    /// `fallback` on the rest — splitting along `dim` (`1` for a Burn `Linear`
-    /// weight, whose layout is `[d_input, d_output]`).
+    /// Build the per-block optimizers for `spec`: `muon` on its Muon segments,
+    /// `fallback` on the others. The split is along `dim` (`1` for a Burn
+    /// `Linear` weight, whose layout is `[d_input, d_output]`).
     pub fn new(spec: &ProjSpec, muon: Muon, fallback: impl Into<Fallback>, dim: usize) -> Self {
         let fallback = match fallback.into() {
             Fallback::AdamW(adamw) => BlockOptim::AdamW(adamw),
@@ -99,7 +100,7 @@ impl Segmented {
         Self { optims, widths, dim, tiled: spec.tiled }
     }
 
-    /// The axis the blocks are laid out along.
+    /// The axis of the blocks.
     pub fn dim(&self) -> usize {
         self.dim
     }
@@ -127,7 +128,7 @@ impl Optimizer for Segmented {
         assert_eq!(
             width,
             per_copy * copies,
-            "Segmented: the parameter's dim-{} width does not match the projection spec",
+            "Segmented: the dim-{} width of the parameter does not match the projection spec",
             self.dim
         );
         let n_blocks = self.optims.len() * copies;
@@ -138,7 +139,8 @@ impl Optimizer for Segmented {
         let grads = grad.split_with_sizes(widths, self.dim);
 
         // A missing (first-step) state, or one whose length drifted from the
-        // spec, restarts every block from scratch rather than mis-pairing them.
+        // spec, restarts every block from scratch. This prevents a wrong
+        // pairing.
         let mut prev = match state {
             Some(s) if s.blocks.len() == n_states => s.blocks,
             _ => Vec::new(),
@@ -191,10 +193,11 @@ impl Optimizer for Segmented {
     }
 }
 
-/// Hand-written because the `RecordState` derive covers `Vec<Tensor>` but not a
-/// `Vec` of nested states, and because the reload has no access to the spec: the
-/// two block kinds are told apart by their leaf names (`momentum.velocity` for
-/// Muon, `momentum.moment_1`/`moment_2` for AdamW), which never overlap.
+/// Hand-written, for two reasons. The `RecordState` derive covers
+/// `Vec<Tensor>`, but not a `Vec` of nested states. Also, the reload has no
+/// access to the spec. So the leaf names tell the two block kinds apart
+/// (`momentum.velocity` for Muon, `momentum.moment_1`/`moment_2` for AdamW).
+/// These names never overlap.
 impl<const D: usize> RecordState for SegmentedState<D> {
     fn state_flatten(&self, prefix: &str, out: &mut StateSink) {
         for (i, block) in self.blocks.iter().enumerate() {
@@ -213,8 +216,8 @@ impl<const D: usize> RecordState for SegmentedState<D> {
             if !src.has_under(&prefix) {
                 break;
             }
-            // A failed attempt consumes nothing (the leaf it looks for is
-            // absent), so trying Muon first is safe.
+            // A failed attempt consumes nothing (the leaf that it looks for is
+            // absent). So it is safe to try Muon first.
             let block = MuonState::state_unflatten(&prefix, src, device)
                 .map(BlockState::Muon)
                 .or_else(|| {

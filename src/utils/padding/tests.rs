@@ -1,8 +1,8 @@
-//! A padded batch is each of its slots run alone: every row a slot owns — its
-//! user tokens, and the class markers placed against its own length — comes out
-//! as that slot's own forward gives it, with the same caches and gradients.
-//! Composed over [`RefBlock`], so what is pinned is the containers' half of the
-//! contract.
+//! A padded batch is each of its slots run alone. Every row that a slot owns
+//! (its user tokens, and the class markers placed against its own length)
+//! comes out as the forward of that slot alone gives it, with the same caches
+//! and gradients. The tests compose [`RefBlock`], so they pin the half of the
+//! contract that belongs to the containers.
 
 use crate::modules::bidi::{BidiLayersBuilder, OutputMergeConfig};
 use crate::modules::{LatentNetworkBuilder, Layers, LayersBuilder, ResidualsConfig};
@@ -122,10 +122,10 @@ fn assert_grads_match(padded: Vec<Option<Tensor<1>>>, solo: Vec<Option<Tensor<1>
     }
 }
 
-/// Run `forward` on the padded batch and on each slot alone, and compare every
-/// row each slot owns, every cache slot, and every parameter's gradient of a
-/// loss over those rows. `rows(len)` names the rows a `len`-token input comes
-/// out as.
+/// Run `forward` on the padded batch and on each slot alone. Compare every row
+/// that each slot owns, every cache slot, and the gradient of every parameter
+/// for a loss over those rows. `rows(len)` names the rows that a `len`-token
+/// input comes out as.
 fn check_each_slot_alone<M: Module>(
     module: &M,
     lens: &[usize],
@@ -167,9 +167,10 @@ fn check_each_slot_alone<M: Module>(
     );
 }
 
-/// Three layers carrying every marker kind at both levels, over slots down to a
-/// single token — so `Middle`/`End` land at each slot's own length, a `Custom`
-/// past a short slot's end is absent there, and several markers share a place.
+/// Three layers with every marker kind at both levels, over slots down to a
+/// single token. So `Middle`/`End` land at the length of each slot, a `Custom`
+/// past the end of a short slot is absent there, and several markers share a
+/// place.
 fn marked_layers(residuals: ResidualsConfig, device: &Device) -> Layers<RefBlock> {
     let mut layers = LayersBuilder {
         class_latents: vec![
@@ -229,7 +230,8 @@ fn padded_multi_gate_layers_are_each_slot_alone() {
     );
 }
 
-/// The untracked layers run on the inner backend; the padding hops with them.
+/// The untracked layers run on the inner backend, and the padding hops with
+/// them.
 #[test]
 fn padded_layers_under_a_grad_horizon_are_each_slot_alone() {
     let device = Device::default().autodiff();
@@ -295,9 +297,9 @@ fn padded_bidi_layers_are_each_slot_alone() {
     );
 }
 
-/// Split into chunks, a padded batch is still each slot alone: the slot that
-/// ends in the first chunk carries its state through the second untouched, and
-/// its `End` lands there — in the chunk that closes the batch.
+/// Split into chunks, a padded batch is still each slot alone. The slot that
+/// ends in the first chunk carries its state through the second chunk
+/// untouched. Its `End` lands there, in the chunk that closes the batch.
 #[test]
 fn chunked_padded_layers_are_each_slot_alone() {
     let device = Device::default().autodiff();

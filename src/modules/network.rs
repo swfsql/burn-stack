@@ -23,14 +23,15 @@ pub struct LatentNetwork<M: Module> {
     pub in_proj: Linear,
     /// The shared layer stack.
     pub layers: Layers<M>,
-    /// Optional final RMSNorm before [`Self::out_proj`] — the counterpart of
+    /// Optional final RMSNorm before [`Self::out_proj`]: the counterpart of
     /// [`VocabNetwork::norm_f`], which is unconditional there.
     ///
-    /// It makes the head's input scale-free, which matters whenever the stack's
-    /// output magnitude is not `O(1)`: a plain additive residual grows it with
-    /// depth, while [`Residuals::MultiGate`](crate::modules::Residuals) is a
-    /// convex mixture (mean-pooled over `n` streams) that *shrinks* it, so the
-    /// two schemes otherwise hand `out_proj` signals of very different scale.
+    /// It makes the input of the head scale-free. This matters whenever the
+    /// output magnitude of the stack is not `O(1)`. A plain additive residual
+    /// grows it with depth. [`Residuals::MultiGate`](crate::modules::Residuals)
+    /// is a convex mixture (mean-pooled over `n` streams) that *shrinks* it.
+    /// Without the norm, the two schemes give `out_proj` signals of very
+    /// different scale.
     pub norm_f: Option<RmsNorm>,
     /// Linear projection `d_model → output_size`.
     pub out_proj: Linear,
@@ -49,13 +50,14 @@ where
     /// Output positions of the class tokens for an `orig_len` input.
     ///
     /// A marker that never lands (a `Custom` at or past the end) reports a
-    /// position past the emitted sequence — compare against its length.
+    /// position past the emitted sequence. Compare it against the sequence
+    /// length.
     pub fn class_token_output_indices(&self, orig_len: usize) -> Vec<usize> {
         class_marker_output_indices(&self.class_tokens, orig_len)
     }
 
-    /// Splice this network's class tokens into the chunk `x` (no-op when there
-    /// are none), advancing the network-level cursor.
+    /// Splice the class tokens of this network into the chunk `x` (no-op when
+    /// there are none), and advance the network-level cursor.
     fn insert_tokens(
         &self,
         x: Tensor<3>,
@@ -79,14 +81,14 @@ where
     /// (`[batch, sequence, input_size]` → `[batch, sequence (+ class tokens),
     /// output_size]`).
     ///
-    /// `class` places this network's class tokens *and* the inner stack's class
-    /// latents; `None` takes `x` for the whole sequence. Handing the same
-    /// [`ClassCursors`] to consecutive chunks places every marker exactly where
-    /// a single call over the concatenated sequence would.
+    /// `class` places the class tokens of this network *and* the class latents
+    /// of the inner stack. `None` takes `x` as the whole sequence. The same
+    /// [`ClassCursors`] given to consecutive chunks places every marker exactly
+    /// where a single call over the concatenated sequence would place it.
     ///
     /// `pad` marks a right-padded batch (`None` ⇒ none), as in
-    /// [`Layers::forward`]; the class tokens are placed against each slot's own
-    /// length too.
+    /// [`Layers::forward`]. The class tokens are also placed against the length
+    /// of each slot.
     pub fn forward(
         &self,
         x: Tensor<3>,
@@ -100,7 +102,8 @@ where
         let class = class.unwrap_or(&mut whole);
         let (x, padding) = self.insert_tokens(x, pad.map(Padding::new), class);
         let x = self.in_proj.forward(x);
-        // The stack's sequence is this one, lengthened by the class tokens.
+        // The sequence of the stack is this one, made longer by the class
+        // tokens.
         let saved = class.enter(&self.class_tokens);
         let (x, caches) = self
             .layers
@@ -112,18 +115,19 @@ where
 
     /// Single-token step (`[batch, input_size]` → `[batch, output_size]`).
     ///
-    /// `class` drives all three class levels at once: this network's own
-    /// [`Self::class_tokens`] (`class.network`) plus the inner [`Layers::step`]
-    /// cursors (`class.stack`, `class.per_layer`).
+    /// `class` drives all three class levels at once: the
+    /// [`Self::class_tokens`] of this network (`class.network`), plus the
+    /// cursors of the inner [`Layers::step`] (`class.stack`, `class.per_layer`).
     ///
-    /// As in `forward`, the network's class tokens are part of the sequence that
-    /// enters the layers, so each is run through a full network pass (carrying
-    /// the inner cursors, so the layers splice their own latents around it
-    /// exactly as in `forward`). What comes back is the output of the **last**
-    /// token the step emitted: the user token, unless an `End` marker (at either
-    /// level) follows it, that marker being then the sequence's true last token.
-    /// `None` injects nothing anywhere; `Middle`/`End` markers then panic, as
-    /// they do without a [`ClassCursors::full_len`] hint.
+    /// As in `forward`, the class tokens of the network are part of the
+    /// sequence that enters the layers. So each one runs through a full network
+    /// pass. The pass carries the inner cursors, so the layers splice their own
+    /// latents around it exactly as in `forward`. The call returns the output
+    /// of the **last** token that the step emitted. This is the user token,
+    /// unless an `End` marker (at either level) follows it. That marker is then
+    /// the true last token of the sequence. `None` injects nothing anywhere.
+    /// `Middle`/`End` markers then panic, as they do without a
+    /// [`ClassCursors::full_len`] hint.
     pub fn step(
         &self,
         x: Tensor<2>,
@@ -140,8 +144,8 @@ where
         if plan.is_empty() {
             return self.step_one(x, caches, Some(&mut *class));
         }
-        // `at == 0` ⇒ the class token precedes the user token, `at == 1` ⇒ it is
-        // an `End` closing the sequence, and follows it.
+        // `at == 0` ⇒ the class token precedes the user token. `at == 1` ⇒ it is
+        // an `End` that closes the sequence, and follows the token.
         let [batch, input_size] = x.dims();
         let row = |i: usize| class_row(self.class_tokens_emb.as_ref(), i, batch, input_size);
         let (before, after): (Vec<_>, Vec<_>) = plan.into_iter().partition(|&(at, _)| at == 0);
@@ -152,8 +156,8 @@ where
         }
         let (mut out, mut caches) = self.step_one(x, caches, Some(&mut *class));
         for (_, i) in after {
-            // A closing `End` token *is* the sequence's last token — its output,
-            // not the user token's, is what this step produced.
+            // A closing `End` token *is* the last token of the sequence. This
+            // step produced its output, not that of the user token.
             let (o, c) = self.step_one(row(i), Some(caches), Some(&mut *class));
             out = o;
             caches = c;
@@ -161,22 +165,22 @@ where
         (out, caches)
     }
 
-    /// Step the class tokens/latents this network has waiting for its next user
-    /// token — with **no** user token, so no input data is needed.
+    /// Step the class tokens/latents that this network has waiting for its next
+    /// user token, with **no** user token. So the call needs no input data.
     ///
-    /// This is [`Self::step`]'s opening half on its own, at all three class
-    /// levels: the network's own class tokens due now each run a full pass (so
-    /// the layers splice their latents around them exactly as in `step`), and
-    /// whatever the stack still has waiting for its next token is flushed after
-    /// them ([`Layers::prime`]). A `prime` followed by a `step` therefore runs
-    /// the very sequence that `step` alone would have — `prime` → sample →
-    /// `step` → sample → … is the seedless-generation loop. `End` markers are
-    /// never primed: they close the sequence, so they belong to the step
-    /// carrying its last user token.
+    /// This is the opening half of [`Self::step`] on its own, at all three
+    /// class levels. Each class token of the network that is due now runs a
+    /// full pass (so the layers splice their latents around it exactly as in
+    /// `step`). After them, the call flushes what the stack still has waiting
+    /// for its next token ([`Layers::prime`]). So a `prime` followed by a
+    /// `step` runs the same sequence that the `step` alone would run. `prime`
+    /// → sample → `step` → sample → … is the seedless-generation loop. `End`
+    /// markers are never primed. They close the sequence, so they belong to
+    /// the step that carries its last user token.
     ///
     /// Returns the output of the **last** marker emitted, or `None` when none
     /// were waiting (the caches then come back untouched, `None` included).
-    /// `batch` sizes the marker rows, the only inputs there are.
+    /// `batch` sizes the marker rows, which are the only inputs.
     pub fn prime(
         &self,
         batch: usize,
@@ -203,8 +207,8 @@ where
                 caches = Some(c);
             }
         }
-        // The stack's own levels may still hold latents waiting for the next
-        // token to reach them — the class tokens above just went past.
+        // The levels of the stack can still hold latents that wait for the
+        // next token to reach them. The class tokens above just went past.
         let saved = class.enter(&self.class_tokens);
         let (y, caches) = self.layers.prime(batch, caches, Some(&mut *class));
         class.leave(saved);
@@ -214,8 +218,8 @@ where
         (out, caches)
     }
 
-    /// One token through `in_proj → layers → out_proj`; the network's own class
-    /// tokens are placed by [`Self::step`], the inner cursors are forwarded.
+    /// One token through `in_proj → layers → out_proj`. [`Self::step`] places
+    /// the class tokens of the network. The inner cursors are forwarded.
     fn step_one(
         &self,
         x: Tensor<2>,
@@ -224,7 +228,8 @@ where
     ) -> (Tensor<2>, M::Caches) {
         let x = self.in_proj.forward(x);
         let (x, caches) = match class {
-            // The stack's sequence is this one, lengthened by the class tokens.
+            // The sequence of the stack is this one, made longer by the class
+            // tokens.
             Some(class) => {
                 let saved = class.enter(&self.class_tokens);
                 let out = self.layers.step(x, caches, Some(&mut *class));
@@ -290,14 +295,17 @@ impl<C: BlockConfig> LatentNetworkBuilder<C> {
 /// `Embedding (vocab → d_model) → Layers<M> → norm_f → LM head (d_model →
 /// vocab)`.
 ///
-/// This is the token-LM counterpart of [`LatentNetwork`]; both are built on the
-/// shared [`Layers`] core. The only differences are the I/O boundary (a token
-/// `Embedding` and a vocab logit head, instead of two latent `Linear`s) and a
-/// final pre-head [`RmsNorm`].
+/// This is the token-LM counterpart of [`LatentNetwork`]. Both are built on
+/// the shared [`Layers`] core. They differ in three things:
 ///
-/// The LM head is **tied** (`lm_head = None`, the transposed embedding weight is
-/// reused) or **untied** (a dedicated `Linear`); the vocabulary is rounded up to
-/// a multiple for GPU alignment (see [`VocabNetworkBuilder`]).
+/// - the I/O boundary: a token `Embedding` and a vocab logit head, not two
+///   latent `Linear`s,
+/// - the final pre-head [`RmsNorm`]: always present here, optional there,
+/// - the class tokens: only [`LatentNetwork`] has network-level ones.
+///
+/// The LM head is **tied** (`lm_head = None`, the transposed embedding weight
+/// is reused) or **untied** (a dedicated `Linear`). The vocabulary is rounded
+/// up to a multiple for GPU alignment (see [`VocabNetworkBuilder`]).
 #[derive(Module, Debug)]
 pub struct VocabNetwork<M: Module> {
     /// Token embedding table, weight shape `[padded_vocab, d_model]`.
@@ -315,9 +323,9 @@ where
     M::Options: Clone,
 {
     /// Full-sequence pass: token IDs `[batch, sequence]` → logits
-    /// `[batch, sequence, padded_vocab]`. `class` places the inner stack's class
-    /// latents (`None` ⇒ `x` is the whole sequence) and `pad` marks a
-    /// right-padded batch — see [`Layers::forward`].
+    /// `[batch, sequence, padded_vocab]`. `class` places the class latents of
+    /// the inner stack (`None` ⇒ `x` is the whole sequence), and `pad` marks a
+    /// right-padded batch (see [`Layers::forward`]).
     pub fn forward(
         &self,
         x: Tensor<2, Int>,
@@ -334,9 +342,9 @@ where
 
     /// Single-token step: token IDs `[batch]` → logits `[batch, padded_vocab]`.
     ///
-    /// The vocab network has no class tokens of its own (those would duplicate
-    /// the layers' class latents); it simply forwards `class` — the stack-level
-    /// and per-virtual-layer cursors — to [`Layers::step`].
+    /// The vocab network has no class tokens of its own (they would duplicate
+    /// the class latents of the layers). It forwards `class` (the stack-level
+    /// and per-virtual-layer cursors) to [`Layers::step`].
     pub fn step(
         &self,
         x: Tensor<1, Int>,
@@ -355,12 +363,12 @@ where
         (logits, caches)
     }
 
-    /// Step the class latents the stack has waiting for its next token, with no
-    /// token of its own: logits `[batch, padded_vocab]` for the **last** latent
-    /// emitted, or `None` when none were waiting — the seedless-generation entry
-    /// point (`prime` → sample → `step` → …). Having no class tokens of its own,
-    /// the vocab network just forwards `class` to [`Layers::prime`], whose docs
-    /// carry the placement rules.
+    /// Step the class latents that the stack has waiting for its next token,
+    /// with no token of its own. Returns the logits `[batch, padded_vocab]` of
+    /// the **last** latent emitted, or `None` when none were waiting. This is
+    /// the entry point of seedless generation (`prime` → sample → `step` → …).
+    /// The vocab network has no class tokens of its own, so it forwards `class`
+    /// to [`Layers::prime`], whose docs state the placement rules.
     pub fn prime(
         &self,
         batch: usize,
@@ -433,4 +441,3 @@ impl<C: BlockConfig> VocabNetworkBuilder<C> {
         }
     }
 }
-

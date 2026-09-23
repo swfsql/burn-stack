@@ -1,16 +1,17 @@
 //! Macros to cut down the per-backend boilerplate for `*BackendExt` traits.
 //!
 //! A block family that ships a custom (memory-efficient) backward declares a
-//! backend-extension trait whose default body already does the right thing for
-//! every burn backend except `Autodiff` — which gets the custom backward. The
+//! backend-extension trait. Its default body already does the right thing for
+//! every burn backend except `Autodiff`, which gets the custom backward. The
 //! macros below emit the per-backend "use the default impl" blocks and the
 //! autodiff marker trait.
 
-/// Emit `impl $trait_name for <backend> {}` blocks for every burn backend
-/// supported by this crate, opting in to the trait's default body.
+/// Emit `impl $trait_name for <backend> {}` blocks for every burn backend that
+/// this crate supports, with the default body of the trait.
 ///
-/// Each impl is feature-gated by the corresponding `backend-*` / `cubecl` /
-/// `fusion` feature.
+/// The matching `backend-*` / `cubecl` / `fusion` feature gates each impl.
+/// The `cfg`s are evaluated in the crate that expands the macro, so that crate
+/// must declare the same features.
 #[macro_export]
 macro_rules! impl_backend_ext_for_burn_backends {
     ($trait_name:path) => {
@@ -26,11 +27,11 @@ macro_rules! impl_backend_ext_for_burn_backends {
         #[cfg(feature = "backend-remote")]
         impl $trait_name for burn::backend::Remote {}
 
-        // Every cubecl runtime is this one type; the device says which of them.
+        // Every cubecl runtime is this one type. The device says which one.
         #[cfg(feature = "cubecl")]
         impl $trait_name for burn_cubecl::CubeBackend {}
 
-        // Fusion delegates to the inner backend's default impl.
+        // Fusion delegates to the default impl of the inner backend.
         #[cfg(feature = "fusion")]
         impl<B: burn_fusion::FusionBackend + $trait_name> $trait_name for burn_fusion::Fusion<B> {}
     };

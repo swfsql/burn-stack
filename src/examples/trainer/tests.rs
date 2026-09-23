@@ -1,8 +1,10 @@
-//! A trainer's captured SGD steps are its eager ones: under plain SGD the whole
-//! step is captured (a hardware graph under `backend-cuda`, which
-//! [`expects_graph`] asserts), a batch of another shape steps eagerly into the
-//! same weights, and every loss, output and final weight is what Burn's `Sgd`
-//! gets stepping the same [`LossFn`] eagerly.
+//! The captured SGD steps of a trainer are its eager steps:
+//!
+//! - Under plain SGD, the whole step is captured (a hardware graph under
+//!   `backend-cuda`, which [`expects_graph`] asserts).
+//! - A batch of another shape steps eagerly into the same weights.
+//! - Every loss, output and final weight is what the `Sgd` of Burn gets when
+//!   it steps the same [`LossFn`] eagerly.
 
 use super::Trainer;
 use crate::examples::training::OptimizerConfig;

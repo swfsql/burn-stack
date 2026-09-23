@@ -1,16 +1,17 @@
 //! Shared training configuration for the examples.
 //!
 //! [`TrainingConfig`] holds the common hyperparameters (epochs, batch size, LR
-//! schedule, seed) plus the [`OptimizerConfig`]: a fallback optimizer (AdamW or
-//! plain SGD, the one a captured training step replays), optionally with Muon on
-//! the hidden weight matrices (see [`crate::optim`]). [`OptimizerKind`] names
-//! the four combinations, and [`OptimizerConfig::of`] builds each one's defaults
-//! ([`optimizer_config`] for AdamW, [`sgd_config`] for SGD).
+//! schedule, seed), plus the [`OptimizerConfig`]: a fallback optimizer (AdamW
+//! or plain SGD, the one that a captured training step replays), optionally
+//! with Muon on the hidden weight matrices (see [`crate::optim`]).
+//! [`OptimizerKind`] names the four combinations, and [`OptimizerConfig::of`]
+//! builds the defaults of each one ([`optimizer_config`] for AdamW,
+//! [`sgd_config`] for SGD).
 //!
 //! [`Budget`] is the run-length knob that is *not* part of the config: the
-//! `--max-batches` and `--max-seconds` caps, which belong to the invocation
-//! rather than to the persisted hyperparameters (the loops reach it through
-//! their [`Session`](crate::examples::session::Session)).
+//! `--max-batches` and `--max-seconds` caps. They belong to the invocation,
+//! not to the saved hyperparameters (the loops reach the budget through their
+//! [`Session`](crate::examples::session::Session)).
 
 use burn::{
     optim::{AdamWConfig, ModuleOptimizer, MuonConfig},
@@ -31,27 +32,27 @@ pub fn metric_current(entry: Option<NumericEntry>) -> f64 {
 /// How the examples optimize: a fallback optimizer, optionally with Muon on
 /// the hidden weight matrices.
 ///
-/// `muon = None` puts every parameter on the fallback. When set, the model
-/// config's [`MuonPlan`] decides which weights move over (and where the fused
-/// projections split) — everything else, 1-D and 3-D tensors included, keeps
-/// the fallback.
+/// `muon = None` puts every parameter on the fallback. When set, the
+/// [`MuonPlan`] of the model config decides which weights move to Muon (and
+/// where the fused projections split). Everything else, 1-D and 3-D tensors
+/// included, keeps the fallback.
 #[derive(Config, Debug)]
 pub struct OptimizerConfig {
-    /// The optimizer of every parameter Muon does not own.
+    /// The optimizer of every parameter that Muon does not own.
     pub fallback: FallbackConfig,
     /// Muon for the planned hidden matrices. `None` ⇒ the fallback everywhere.
     pub muon: Option<MuonConfig>,
 }
 
-/// Which optimizer a run trains with: the four [`OptimizerConfig`] shapes, and
-/// what `--adamw` / `--sgd` / `--muon` select (see
+/// The optimizer of a run: the four [`OptimizerConfig`] shapes, and what
+/// `--adamw` / `--sgd` / `--muon` select (see
 /// [`AppArgs::optimizer`](crate::examples::cli::AppArgs::optimizer)).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OptimizerKind {
     /// AdamW everywhere.
     AdamW,
-    /// Plain SGD everywhere: the one optimizer a captured training step replays
-    /// (see [`crate::optim::sgd`]).
+    /// Plain SGD everywhere: the one optimizer that a captured training step
+    /// replays (see [`crate::optim::sgd`]).
     Sgd,
     /// Muon on the planned hidden matrices, AdamW on the rest.
     MuonAdamW,
@@ -60,10 +61,10 @@ pub enum OptimizerKind {
 }
 
 impl OptimizerConfig {
-    /// The examples' defaults for `kind`: [`optimizer_config`] or [`sgd_config`]
-    /// as the fallback, and a paired Muon ([`muon_config`]) mirroring the
-    /// fallback's weight decay and sharing its LR. `dtype` sizes AdamW's
-    /// epsilon.
+    /// The defaults of the examples for `kind`: [`optimizer_config`] or
+    /// [`sgd_config`] as the fallback, and a paired Muon ([`muon_config`])
+    /// with the weight decay and the LR of the fallback. `dtype` sizes the
+    /// epsilon of AdamW.
     pub fn of(kind: OptimizerKind, dtype: burn::tensor::DType) -> Self {
         let adamw = || FallbackConfig::AdamW(optimizer_config(dtype));
         let sgd = sgd_config();
@@ -108,25 +109,25 @@ impl OptimizerConfig {
     }
 }
 
-/// How far one training invocation may go, spanning every epoch: a cap on its
+/// How far one training invocation can go, across every epoch: a cap on its
 /// mini-batches (`--max-batches`) and one on its wall-clock time
-/// (`--max-seconds`), each `None` ⇒ unlimited.
+/// (`--max-seconds`). Each `None` ⇒ unlimited.
 ///
-/// It is a *budget*, not a per-epoch limit: the epoch loops' [`Session`] holds
-/// it, bounds their `take()` by the batches left and spends one per optimizer
-/// step, so a cap of 600 stops 600 steps into the run whichever epoch that lands
-/// in. The clock starts at the first step (data loading and an initial
-/// validation are free), and a loop sees it run out by checking
-/// [`Session::is_exhausted`] after each step. Checking it after each epoch is
-/// what breaks the outer loop (the caller still checkpoints and validates
-/// first).
+/// It is a *budget*, not a per-epoch limit. The [`Session`] of the epoch loops
+/// holds it. The session bounds their `take()` by the remaining batches, and
+/// spends one per optimizer step. So a cap of 600 stops 600 steps into the
+/// run, in whichever epoch that lands. The clock starts at the first step
+/// (data loading and an initial validation are free). A loop sees it run out
+/// when it checks [`Session::is_exhausted`] after each step. A check after
+/// each epoch breaks the outer loop (the caller still checkpoints and
+/// validates first).
 ///
 /// [`Session`]: crate::examples::session::Session
 /// [`Session::is_exhausted`]: crate::examples::session::Session::is_exhausted
 ///
-/// It deliberately lives outside [`TrainingConfig`]: it describes this
-/// invocation ("stop early so I can look at it"), not the hyperparameters the
-/// artifacts directory persists and a resumed run should inherit.
+/// It lives outside [`TrainingConfig`] on purpose. It describes this
+/// invocation ("stop early so I can look at it"), not the hyperparameters that
+/// the artifacts directory saves and that a resumed run should inherit.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Budget {
     /// Batches still allowed, or `None` when uncapped.
@@ -139,7 +140,7 @@ pub struct Budget {
 
 impl Budget {
     /// A budget of `max_batches` training mini-batches and `max_time` of wall
-    /// clock; `None` ⇒ unlimited.
+    /// clock. `None` ⇒ unlimited.
     pub fn new(max_batches: Option<usize>, max_time: Option<Duration>) -> Self {
         Self {
             remaining: max_batches,
@@ -158,7 +159,7 @@ impl Budget {
         self.remaining.is_some() || self.max_time.is_some()
     }
 
-    /// Batches still allowed, as an `Iterator::take` count — `usize::MAX` when
+    /// Batches still allowed, as an `Iterator::take` count: `usize::MAX` when
     /// uncapped.
     pub fn take_limit(&self) -> usize {
         self.remaining.unwrap_or(usize::MAX)
@@ -169,7 +170,7 @@ impl Budget {
         self.remaining
     }
 
-    /// Whether a cap was given and is now fully spent, i.e. training must stop.
+    /// Whether a cap was given and is fully spent, that is, training must stop.
     pub fn is_exhausted(&self) -> bool {
         let out_of_time = match (self.max_time, self.started) {
             (Some(max_time), Some(started)) => started.elapsed() >= max_time,
@@ -178,7 +179,7 @@ impl Budget {
         self.remaining == Some(0) || out_of_time
     }
 
-    /// Charge one mini-batch to the budget (starting the clock at the first).
+    /// Charge one mini-batch to the budget (the first one starts the clock).
     pub fn spend(&mut self) {
         self.started.get_or_insert_with(Instant::now);
         if let Some(remaining) = &mut self.remaining {
@@ -209,12 +210,13 @@ pub struct TrainingConfig {
     pub seed: u64,
 }
 
-/// The weight decay of [`optimizer_config`], which a paired Muon mirrors.
+/// The weight decay of [`optimizer_config`], which a paired Muon also uses.
 pub const ADAMW_WEIGHT_DECAY: f32 = 1e-4;
 
 /// The AdamW defaults shared by the examples: per-dtype epsilon, gradient
-/// clipping at 1.0, and cautious weight decay ([`ADAMW_WEIGHT_DECAY`]). `dtype`
-/// should be the device's default float dtype (epsilon is sized to it).
+/// clipping at 1.0, and cautious weight decay ([`ADAMW_WEIGHT_DECAY`]).
+/// `dtype` should be the default float dtype of the device (the epsilon is
+/// sized to it).
 pub fn optimizer_config(dtype: burn::tensor::DType) -> AdamWConfig {
     AdamWConfig::new()
         .with_epsilon(crate::utils::div_eps(dtype))
@@ -225,8 +227,8 @@ pub fn optimizer_config(dtype: burn::tensor::DType) -> AdamWConfig {
         .with_cautious_weight_decay(true)
 }
 
-/// The SGD defaults shared by the examples: [`optimizer_config`]'s gradient
-/// clipping (at 1.0), no weight decay.
+/// The SGD defaults shared by the examples: the gradient clipping of
+/// [`optimizer_config`] (at 1.0), and no weight decay.
 pub fn sgd_config() -> SgdConfig {
     SgdConfig::new().with_grad_clipping(Some(
         burn::grad_clipping::GradientClippingConfig::Value(1.0),

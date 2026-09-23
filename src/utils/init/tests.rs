@@ -41,9 +41,10 @@ fn std_of(values: &[f32]) -> f32 {
     (values.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / values.len() as f32).sqrt()
 }
 
-/// Every 2-D `weight` is redrawn at the policy's `std`, and every `bias` zeroed.
-/// Burn's own default is Kaiming-uniform off `fan_in`, so a width change would
-/// otherwise change the initial scale — which is the thing a global rule fixes.
+/// Every 2-D `weight` is redrawn at the `std` of the policy, and every `bias`
+/// is zeroed. The default of Burn is Kaiming-uniform from `fan_in`. So a
+/// change of width would otherwise change the initial scale, which is what a
+/// global rule fixes.
 #[test]
 fn weights_are_redrawn_and_biases_zeroed() {
     let device: Device = Default::default();
@@ -56,14 +57,14 @@ fn weights_are_redrawn_and_biases_zeroed() {
         "block in_proj drawn at std {sampled}, expected {STD}",
     );
 
-    // `LatentNetwork`'s boundary projections carry a bias; it is zeroed.
+    // The boundary projections of `LatentNetwork` carry a bias. It is zeroed.
     let bias = net.in_proj.bias.as_ref().expect("in_proj has a bias");
     assert!(values(bias).iter().all(|v| *v == 0.0));
 }
 
 /// A weight that writes into the residual stream is drawn narrower, by
-/// `√(residual branches)` — the GPT-2 scheme, which is about the stream's
-/// variance at depth and so cannot be a per-module decision.
+/// `√(residual branches)`: the GPT-2 scheme. It is about the variance of the
+/// stream at depth, so it cannot be a per-module decision.
 #[test]
 fn residual_weights_are_rescaled_by_depth() {
     let device: Device = Default::default();
@@ -89,9 +90,9 @@ fn residual_weights_are_rescaled_by_depth() {
     assert!(entry > expected * 1.5, "in_proj was rescaled too: {entry}");
 }
 
-/// A block's own parameters mean something — a decay, a spread of timescales, a
-/// norm gain — and a global rule must not touch them. Only a matrix stored as
-/// `weight` and a 1-D `bias` are its business.
+/// The parameters of a block mean something (a decay, a spread of timescales,
+/// a norm gain), and a global rule must not touch them. It touches only a
+/// matrix stored as `weight` and a 1-D `bias`.
 #[test]
 fn bespoke_parameters_are_left_alone() {
     let device: Device = Default::default();
@@ -108,8 +109,8 @@ fn bespoke_parameters_are_left_alone() {
     );
 }
 
-/// The redraw replaces values, not parameters: ids are what an optimizer's
-/// state and a saved record are keyed by.
+/// The redraw replaces values, not parameters: the state of an optimizer and a
+/// saved record are keyed by ids.
 #[test]
 fn parameter_ids_survive_the_redraw() {
     #[derive(Default)]
@@ -132,10 +133,10 @@ fn parameter_ids_survive_the_redraw() {
     assert_eq!(before.0, after.0);
 }
 
-/// A redrawn weight must still train. `Param::map` reads `require_grad` off the
-/// tensor it is handed, and a freshly drawn one carries none — so a redraw that
-/// forgets to restore the flag detaches the parameter silently, with every
-/// forward value still correct.
+/// A redrawn weight must still train. `Param::map` reads `require_grad` from
+/// the tensor that it gets, and a new draw carries none. So a redraw that does
+/// not restore the flag silently detaches the parameter, while every forward
+/// value stays correct.
 #[test]
 fn redrawn_weights_still_receive_gradient() {
     let device = Device::default().autodiff();

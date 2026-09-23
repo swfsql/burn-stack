@@ -1,76 +1,83 @@
+//! A *class token* / *class latent* is a learnable embedding spliced into the
+//! sequence: a register in the style of the transformer `[CLS]`, which the
+//! model can read and write through. A container inserts them at its input
+//! boundary:
+//!
+//! - a network at its input, for [`ClassToken`] (width = the input feature
+//!   width),
+//! - a layer in its working sequence, for [`ClassLatent`] (width = `d_model`).
+//!
+//! They make the sequence longer for everything downstream. A container can
+//! carry any number of them. The markers below say *where* each one lands. A
+//! single `Param<Tensor<2>>` of shape `[num_markers, width]` holds the
+//! embeddings (row `i` ↔ marker `i`).
+//!
+//! # Placement
+//!
+//! Each marker names an index into the *original* sequence of length `L`:
+//! `Start` 0, `Middle` `L/2`, `End` `L`, `Custom(k)` `k`. The markers are
+//! inserted in the order of that index. At a shared index, the kind breaks
+//! the tie (`Start` < `Middle` < `End` < `Custom`), then the `Vec` order.
+//!
+//! One rule places three of the four kinds: the marker is emitted immediately
+//! **before** the user token at its index. `Start` (0) opens the sequence,
+//! `Middle` (`L/2`) splits it, and `Custom(k)` precedes token `k`. `End` is
+//! the only exception, because it has no token to precede. It **closes** the
+//! sequence, after the last user token.
+//!
+//! `Custom` is uniform in `k`, so a `Custom(k ≥ L)` never lands: there is no
+//! token `k` to precede. If the caller feeds tokens past the announced `L`,
+//! it lands then, still *before* the next token. It never trails. An
+//! open-ended stream (no hint) is also never closed, for the same reason that
+//! `End` needs the length hint below.
+//!
+//! So `step` returns the output of the **last** token that it emitted (and
+//! leaves the state after it). This is the user token, unless `End` follows
+//! it: `End` is then the latest token of the sequence. The markers emitted
+//! before the user token only leave their mark on the state.
+//!
+//! `prime` is the call that reads *those* back. It emits the markers that
+//! wait for the next user token, without that token, so it needs no input
+//! data. It returns the last of them (`None` when none were waiting). `prime`
+//! is exactly the opening half of `step`. So `prime` followed by `step` emits
+//! what that `step` alone would emit, in the same order. Seedless generation
+//! is `prime` → sample → `step` → sample → … `End` is never primed. It
+//! *closes* the sequence, so it belongs to the call that carries the last
+//! user token. This is why it is the one marker that `step` (and `forward`)
+//! already returns.
+//!
+//! # Streamed placement
+//!
+//! Placement is **streamed**, in the same way for `forward` (a chunk of the
+//! sequence) and `step` (a single token). [`ClassCursors`] carries one
+//! `full_len` hint (the length of the whole sequence that the call is part
+//! of), plus one cursor per level. Each cursor records how much of the output
+//! sequence of *that* level the earlier calls already emitted. From those:
+//!
+//! - A marker whose output position is behind the cursor was emitted by an
+//!   earlier call, and is skipped. So `Start` fires only while the cursor is
+//!   still at 0, and a resumed stream does not insert it again.
+//! - `Middle`/`End` resolve only against the whole sequence, so they
+//!   **panic** without a `full_len` hint. `Start`/`Custom` do not depend on
+//!   the length, and work on an open-ended stream.
+//! - A marker that lands exactly at the end of a chunk is emitted by that
+//!   chunk only if the chunk *closes* the sequence. Otherwise it opens the
+//!   next chunk. So a split of a sequence at any point leaves the placement
+//!   unchanged.
+//!
+//! Without cursors (`None`), `forward` treats its argument as the whole
+//! sequence (`full_len` = its length, cursors at 0), and `step` injects
+//! nothing.
+
 use crate::utils::Padding;
 use burn::config::Config;
 use burn::module::Param;
 use burn::nn::Initializer;
 use burn::prelude::*;
 
-
-// ===========================================================================
-// Class tokens / latents (learnable sequence-inserted tokens)
-// ===========================================================================
-//
-// A *class token* / *class latent* is a learnable embedding spliced into the
-// sequence — a transformer-`[CLS]`-style register the model can read/write
-// through. They are inserted at the input boundary of a container (a network's
-// input for [`ClassToken`], width = the input feature width; a layer's working
-// sequence for [`ClassLatent`], width = `d_model`), permanently lengthening the
-// sequence for everything downstream. A container can carry any number; the
-// markers below say *where* each one lands, while a single `Param<Tensor<2>>`
-// of shape `[num_markers, width]` holds the embeddings (row `i` ↔ marker `i`).
-//
-// Insertion order (all relative to the *original* length `L`): every `Start`
-// first (index 0), then `Middle` (index `L/2`, splitting the original
-// sequence), then `End` (index `L`), then `Custom(index)` (explicit index,
-// inserted last). Markers sharing an index keep their `Vec` order.
-//
-// One rule places three of the four kinds: the marker names an index into the
-// *original* sequence and is emitted immediately **before** the user token
-// sitting there — `Start` (0) opens the sequence, `Middle` (`L/2`) splits it,
-// `Custom(k)` precedes token `k`. `End` is the sole exception, having no token
-// to precede: it **closes** the sequence, trailing the last user token.
-//
-// `Custom` is uniform in `k`, so a `Custom(k ≥ L)` simply never lands — there is
-// no token `k` to precede. Should the caller keep feeding tokens past the
-// announced `L`, it lands then, still *before* the next token; it never trails.
-// An open-ended stream (no hint) is likewise never closed — the same reason
-// `End` needs the length hint below.
-//
-// `step` therefore returns the output of the **last** token it emitted (and
-// leaves the state after it): the user token, unless `End` follows it — `End`
-// being then the sequence's latest token. Markers emitted before the user token
-// only leave their mark on the state.
-//
-// `prime` is the call that reads *those* back. It emits the markers waiting for
-// the next user token — without one, so it needs no input data — and returns the
-// last of them (`None` when none were waiting). Being exactly `step`'s opening
-// half, `prime` followed by `step` emits what that `step` alone would have, in
-// the same order: seedless generation is `prime` → sample → `step` → sample → …
-// `End` is never primed — it *closes* the sequence, so it belongs to the call
-// carrying the last user token, which is why it is the one marker `step` (and
-// `forward`) already hands back.
-//
-// Placement is **streamed**, identically for `forward` (a chunk of the
-// sequence) and `step` (a single token): [`ClassCursors`] carries one
-// `full_len` hint — the length of the whole sequence the call is part of — plus
-// one cursor per level, each recording how much of *that* level's output
-// sequence earlier calls already emitted. From those:
-//
-//   * a marker whose output position is behind the cursor was emitted by an
-//     earlier call and is skipped — so `Start` fires only while the cursor is
-//     still at 0, and a resumed stream does not re-insert it;
-//   * `Middle`/`End` resolve only against the whole sequence, so they **panic**
-//     without a `full_len` hint (`Start`/`Custom` are length-independent and
-//     work on an open-ended stream);
-//   * a marker landing exactly at a chunk's end is emitted by that chunk only
-//     if the chunk *closes* the sequence — otherwise it opens the next one, so
-//     splitting a sequence anywhere leaves the placement unchanged.
-//
-// No cursors (`None`) keeps the two calls' historical defaults: `forward` treats
-// its argument as the whole sequence (`full_len` = its length, cursors at 0),
-// `step` injects nothing at all.
-
-/// Position marker for a learnable class **token** inserted into a *network's*
-/// input sequence (embedding width = the network input width / "d_input").
+/// Position marker for a learnable class **token** inserted into the input
+/// sequence of a *network* (embedding width = the network input width /
+/// "d_input").
 #[derive(Config, Debug)]
 pub enum ClassToken {
     /// Prepend before the whole sequence (index 0).
@@ -78,18 +85,19 @@ pub enum ClassToken {
     /// Insert before the middle token of the original sequence (index `L/2`).
     /// Needs a [`ClassCursors::full_len`] hint.
     Middle,
-    /// **Close** the sequence: appended after its last token (index `L`) — the
-    /// only marker that trails one instead of preceding it, and so the token a
-    /// closing `step` returns. Needs a [`ClassCursors::full_len`] hint.
+    /// **Close** the sequence: appended after its last token (index `L`). It
+    /// is the only marker that trails a token, not precedes it. So a closing
+    /// `step` returns it. Needs a [`ClassCursors::full_len`] hint.
     End,
-    /// Insert before the original sequence's token `index` — for any `index`,
-    /// so one at or past the end never lands (no such token), unless the caller
-    /// feeds tokens past the announced length and it precedes the next one.
+    /// Insert before the token `index` of the original sequence, for any
+    /// `index`. So a marker at or past the end never lands (no such token).
+    /// The exception: the caller feeds tokens past the announced length, and
+    /// the marker then precedes the next one.
     Custom(usize),
 }
 
-/// Position marker for a learnable class **latent** inserted into a *layer's*
-/// working sequence (embedding width = `d_model`).
+/// Position marker for a learnable class **latent** inserted into the working
+/// sequence of a *layer* (embedding width = `d_model`).
 #[derive(Config, Debug)]
 pub enum ClassLatent {
     /// Prepend before the whole sequence (index 0).
@@ -97,13 +105,14 @@ pub enum ClassLatent {
     /// Insert before the middle token of the original sequence (index `L/2`).
     /// Needs a [`ClassCursors::full_len`] hint.
     Middle,
-    /// **Close** the sequence: appended after its last token (index `L`) — the
-    /// only marker that trails one instead of preceding it, and so the token a
-    /// closing `step` returns. Needs a [`ClassCursors::full_len`] hint.
+    /// **Close** the sequence: appended after its last token (index `L`). It
+    /// is the only marker that trails a token, not precedes it. So a closing
+    /// `step` returns it. Needs a [`ClassCursors::full_len`] hint.
     End,
-    /// Insert before the original sequence's token `index` — for any `index`,
-    /// so one at or past the end never lands (no such token), unless the caller
-    /// feeds tokens past the announced length and it precedes the next one.
+    /// Insert before the token `index` of the original sequence, for any
+    /// `index`. So a marker at or past the end never lands (no such token).
+    /// The exception: the caller feeds tokens past the announced length, and
+    /// the marker then precedes the next one.
     Custom(usize),
 }
 
@@ -114,11 +123,12 @@ pub trait ClassMarker: Clone {
     fn insert_pos(&self, orig_len: usize) -> usize;
     /// Tie-break rank among markers sharing an index (`Start`<`Middle`<`End`<`Custom`).
     fn group_rank(&self) -> usize;
-    /// Whether this marker's position is only defined against the whole sequence
-    /// (`Middle`/`End`), so placing it requires a [`ClassCursor::full_len`] hint.
+    /// Whether the position of this marker is defined only against the whole
+    /// sequence (`Middle`/`End`). Its placement then needs a
+    /// [`ClassCursor::full_len`] hint.
     fn needs_full_len(&self) -> bool;
-    /// Whether this marker *closes* the sequence — trailing its last token
-    /// rather than preceding one. `End` alone does.
+    /// Whether this marker *closes* the sequence: it trails the last token,
+    /// not precedes one. Only `End` does.
     fn closes_sequence(&self) -> bool;
 }
 
@@ -153,16 +163,16 @@ macro_rules! impl_class_marker {
 impl_class_marker!(ClassToken);
 impl_class_marker!(ClassLatent);
 
-/// Placement state of **one** class-marker level (one container's own markers):
-/// how far into that level's *output* sequence the previous calls got, and the
-/// length that positions are measured against.
+/// Placement state of **one** class-marker level (the markers of one
+/// container): how far into the *output* sequence of that level the previous
+/// calls got, and the length that positions are measured against.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ClassCursor {
-    /// Output-sequence position reached so far — user tokens *and* already
+    /// Output-sequence position reached so far: user tokens *and* already
     /// emitted class markers (0 ⇒ the sequence has not started).
     pub offset: usize,
-    /// Length of the whole sequence this level receives, its own markers
-    /// excluded. `None` ⇒ an open-ended stream: `Start`/`Custom` still place
+    /// Length of the whole sequence that this level receives, without its own
+    /// markers. `None` ⇒ an open-ended stream: `Start`/`Custom` still place
     /// exactly, `Middle`/`End` panic.
     pub full_len: Option<usize>,
 }
@@ -173,8 +183,8 @@ impl ClassCursor {
         Self { offset, full_len }
     }
 
-    /// A fresh cursor for a call that covers the entire sequence of length
-    /// `len` — what `forward` assumes when given no cursors.
+    /// A new cursor for a call that covers the entire sequence of length
+    /// `len`. `forward` assumes this when it gets no cursors.
     pub fn whole(len: usize) -> Self {
         Self {
             offset: 0,
@@ -189,14 +199,14 @@ impl ClassCursor {
     }
 }
 
-/// Everything a `forward` (chunk) or `step` (single token) call needs in order
-/// to place the class tokens / class latents of a whole network: one
-/// full-length hint plus one cursor per class-marker level. Pass the **same**
-/// value to every call of a sequence — each call advances the cursors it uses,
-/// so the next one resumes exactly where this one stopped.
+/// Everything that a `forward` (chunk) or `step` (single token) call needs to
+/// place the class tokens / class latents of a whole network: one full-length
+/// hint, plus one cursor per class-marker level. Pass the **same** value to
+/// every call of a sequence. Each call advances the cursors that it uses, so
+/// the next call resumes exactly where this one stopped.
 ///
-/// The levels nest, and each cursor counts the sequence *its* level sees (which
-/// already includes whatever the levels below it spliced in):
+/// The levels nest. Each cursor counts the sequence that *its* level sees,
+/// which already includes the markers that the levels below it spliced in:
 ///
 /// ```text
 /// network     LatentNetwork's own ClassTokens  (before `in_proj`)
@@ -204,33 +214,38 @@ impl ClassCursor {
 /// per_layer   one cursor per virtual layer, for that Layer's ClassLatents
 /// ```
 ///
-/// [`Self::full_len`] is the length of the user sequence handed to the
-/// outermost call; the inner levels' lengths are derived from it.
+/// [`Self::full_len`] is the length of the user sequence given to the
+/// outermost call. The lengths of the inner levels come from it.
 ///
-/// To read a marker back out of a *chunked* `forward`: its position in the whole
-/// output is the container's `class_*_output_indices(full_len)`; subtracting the
-/// level's cursor as it was *before* that call gives its index inside the
-/// chunk's own output. A `step` returns one token — the last it emitted, which
-/// is the user token unless an `End` marker trails it, `End` being then the
-/// sequence's true last token.
+/// To read a marker back out of a *chunked* `forward`:
+///
+/// 1. Its position in the whole output is `class_*_output_indices(full_len)`
+///    of the container.
+/// 2. Subtract the cursor of the level as it was *before* that call. The
+///    result is its index inside the output of the chunk.
+///
+/// A `step` returns one token: the last token that it emitted. This is the
+/// user token, unless an `End` marker trails it. `End` is then the true last
+/// token of the sequence.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ClassCursors {
-    /// Total length of the user sequence all the calls form together, or `None`
-    /// for an open-ended stream (then `Middle`/`End` markers panic).
+    /// Total length of the user sequence that all the calls form together.
+    /// `None` for an open-ended stream (then `Middle`/`End` markers panic).
     pub full_len: Option<usize>,
-    /// Cursor of a network's own [`ClassToken`]s (unused by a bare layer stack).
+    /// Cursor of the [`ClassToken`]s of a network (not used by a bare layer
+    /// stack).
     pub network: usize,
-    /// Cursor of a layer container's own [`ClassLatent`]s.
+    /// Cursor of the [`ClassLatent`]s of a layer container.
     pub stack: usize,
     /// One cursor per **virtual** layer, for the per-layer [`ClassLatent`]s.
-    /// Left empty it is sized (with zeros) on the first call.
+    /// When it is empty, the first call sizes it (with zeros).
     pub per_layer: Vec<usize>,
 }
 
 impl ClassCursors {
-    /// Cursors at the start of a sequence of known total length — the form that
-    /// enables `Middle`/`End` markers, and what a whole-sequence `forward` uses
-    /// when given none.
+    /// Cursors at the start of a sequence of known total length. This form
+    /// enables `Middle`/`End` markers, and a whole-sequence `forward` uses it
+    /// when it gets no cursors.
     pub fn new(full_len: usize) -> Self {
         Self {
             full_len: Some(full_len),
@@ -256,8 +271,8 @@ impl ClassCursors {
         );
     }
 
-    /// Enter the inner level, whose sequence is longer by the `markers` this
-    /// level splices in — those that land ([`landing_count`]). Returns the
+    /// Enter the inner level. Its sequence is longer by the `markers` that
+    /// this level splices in and that land ([`landing_count`]). Returns the
     /// previous hint, for [`Self::leave`].
     pub(crate) fn enter<M: ClassMarker>(&mut self, markers: &[M]) -> Option<usize> {
         let saved = self.full_len;
@@ -271,10 +286,10 @@ impl ClassCursors {
     }
 }
 
-/// How many of `markers` land in a sequence of `len` tokens — every one but a
+/// How many of `markers` land in a sequence of `len` tokens: all except a
 /// `Custom` at or past its end, which has no token to precede. The level above
-/// sees a sequence this much longer, which is what its own `Middle`/`End` are
-/// placed against.
+/// sees a sequence that is this much longer, and places its own `Middle`/`End`
+/// against it.
 pub fn landing_count<M: ClassMarker>(markers: &[M], len: usize) -> usize {
     markers
         .iter()
@@ -282,8 +297,8 @@ pub fn landing_count<M: ClassMarker>(markers: &[M], len: usize) -> usize {
         .count()
 }
 
-/// Panic if any marker's position needs the whole sequence length while none is
-/// known — `Middle`/`End` cannot be placed from a chunk (or a single token).
+/// Panic if the position of a marker needs the whole sequence length and none
+/// is known. `Middle`/`End` cannot be placed from a chunk (or a single token).
 pub fn assert_full_len_known<M: ClassMarker>(
     markers: &[M],
     full_len: Option<usize>,
@@ -298,8 +313,8 @@ pub fn assert_full_len_known<M: ClassMarker>(
 /// Which of `markers` fall inside the next `chunk_len` user tokens, and where.
 ///
 /// Returns `(at, marker)` pairs in output order: insert `markers[marker]`
-/// *before* the chunk's `at`-th token (`at == chunk_len` ⇒ after the last one).
-/// `cursor` is advanced past the whole chunk, its insertions included.
+/// *before* the `at`-th token of the chunk (`at == chunk_len` ⇒ after the last
+/// one). `cursor` is advanced past the whole chunk, its insertions included.
 pub fn class_chunk_plan<M: ClassMarker>(
     markers: &[M],
     chunk_len: usize,
@@ -309,15 +324,15 @@ pub fn class_chunk_plan<M: ClassMarker>(
     class_plan(markers, chunk_len, cursor, false, who)
 }
 
-/// [`class_chunk_plan`] for a **prime**: the chunk carries no user token of its
-/// own past the `chunk_len` tokens a lower level handed up (`0` at the level the
-/// call enters), and one more user token is still to come.
+/// [`class_chunk_plan`] for a **prime**. The chunk carries no user token of
+/// its own beyond the `chunk_len` tokens that a lower level handed up (`0` at
+/// the level where the call enters). One more user token is still to come.
 ///
-/// It therefore differs on the chunk's trailing edge only: the markers waiting
-/// there for that next token are emitted now (they precede it either way), while
-/// `End` — which trails the last token rather than preceding one — is left to
-/// the call that carries it. A cursor already at the announced end has no next
-/// token to emit anything for, so the plan is then empty.
+/// So it differs only on the trailing edge of the chunk. The markers that wait
+/// there for that next token are emitted now (they precede it either way).
+/// `End` trails the last token, not precedes one, so the call that carries
+/// that token emits it. A cursor already at the announced end has no next
+/// token, so the plan is then empty.
 pub fn class_prime_plan<M: ClassMarker>(
     markers: &[M],
     chunk_len: usize,
@@ -342,19 +357,19 @@ fn class_plan<M: ClassMarker>(
     assert_full_len_known(markers, cursor.full_len, who);
     let positions = class_marker_output_indices(markers, cursor.full_len.unwrap_or(usize::MAX));
 
-    // User tokens consumed once this chunk is done: the output positions behind
-    // the cursor, minus the markers among them, plus this chunk. Feeding more
-    // than an announced `full_len` is allowed — everything is already placed by
-    // then, so the extra tokens simply stream on.
+    // User tokens consumed after this chunk: the output positions behind the
+    // cursor, minus the markers among them, plus this chunk. More tokens than
+    // an announced `full_len` are allowed. Every marker inside that length is
+    // already placed by then, so the extra tokens stream through.
     let start = cursor.offset;
     let consumed = start - positions.iter().filter(|&&p| p < start).count() + chunk_len;
-    // Whether this chunk reaches the announced end, i.e. carries the last user
-    // token — the one and only place an `End` can go. A prime carries no token
-    // of its own, so it never closes anything.
+    // Whether this chunk reaches the announced end, that is, carries the last
+    // user token. This is the only place where an `End` can go. A prime
+    // carries no token of its own, so it never closes anything.
     let closes = !prime && cursor.full_len == Some(consumed);
-    // Whether a prime may flush the markers waiting at the chunk's end: only
-    // while a further user token is announced (or the stream is open-ended) is
-    // there one for them to precede.
+    // Whether a prime can flush the markers that wait at the end of the chunk.
+    // They need a next token to precede: a further announced user token, or an
+    // open-ended stream.
     let flush = prime && cursor.full_len != Some(consumed);
 
     let mut order: Vec<usize> = (0..markers.len()).collect();
@@ -370,13 +385,13 @@ fn class_plan<M: ClassMarker>(
         }
         let need = p - out; // user tokens preceding this marker
         if at + need > chunk_len {
-            break; // the token it precedes is in a later chunk, as is it
+            break; // the token that it precedes is in a later chunk, and so is the marker
         }
         if at + need == chunk_len {
-            // Nothing left in this chunk to precede: only a closing `End` on the
-            // chunk that ends the sequence belongs here — or, on a prime, the
-            // markers the next token is due to be preceded by. A `Custom` waits
-            // for its token — for one at/past the end, forever.
+            // Nothing is left in this chunk to precede. Only two cases belong
+            // here: a closing `End` on the chunk that ends the sequence, or, on
+            // a prime, the markers due before the next token. A `Custom` waits
+            // for its token (for one at or past the end, forever).
             let closing = closes && markers[i].closes_sequence();
             let pending = flush && !markers[i].closes_sequence();
             if !closing && !pending {
@@ -392,8 +407,8 @@ fn class_plan<M: ClassMarker>(
 }
 
 /// Splice the learnable class markers `emb` (`[k, width]`, row `i` ↔
-/// `markers[i]`) that fall inside the chunk `x` (`[batch, chunk_len, width]`),
-/// returning the lengthened chunk and advancing `cursor` past it.
+/// `markers[i]`) that fall inside the chunk `x` (`[batch, chunk_len, width]`).
+/// Returns the longer chunk, and advances `cursor` past it.
 ///
 /// `markers` empty (or none of them landing in this chunk) ⇒ `x` unchanged.
 pub fn insert_class_markers<M: ClassMarker>(
@@ -407,8 +422,8 @@ pub fn insert_class_markers<M: ClassMarker>(
 }
 
 /// [`insert_class_markers`] over a padded batch: the rows are spliced exactly
-/// as there, and `padding` (`None` ⇒ every row real) follows them — see
-/// [`Padding::splice`].
+/// as there, and `padding` (`None` ⇒ every row real) follows them (see
+/// [`Padding::splice`]).
 pub fn insert_class_markers_padded<M: ClassMarker>(
     x: Tensor<3>,
     padding: Option<Padding>,
@@ -450,10 +465,10 @@ pub fn class_emb_table<M: ClassMarker>(
 /// [`class_chunk_plan`] selected into `x` along its **sequence axis 1**,
 /// broadcasting each row over every other axis.
 ///
-/// Rank-generic so the same placement lands in a plain `[batch, sequence,
-/// width]` chunk and in the Multi-Gate residual streams `[batch, sequence,
-/// n_stream, width]` — a class marker must enter *every* stream, that being
-/// where the residual is carried.
+/// It is rank-generic, so the same placement lands in a plain
+/// `[batch, sequence, width]` chunk and in the Multi-Gate residual streams
+/// `[batch, sequence, n_stream, width]`. A class marker must enter *every*
+/// stream, because the streams carry the residual.
 pub fn splice_class_rows<const D: usize>(
     x: Tensor<D>,
     plan: &[(usize, usize)],
@@ -492,8 +507,8 @@ pub fn splice_class_rows<const D: usize>(
     Tensor::cat(segments, 1)
 }
 
-/// Width of the class embeddings (`[num_markers, width]`) — what a `prime`
-/// sizes its rows by, having no token to read the width from. Only ever called
+/// Width of the class embeddings (`[num_markers, width]`). A `prime` sizes its
+/// rows by it, because it has no token to read the width from. Only called
 /// where a marker is about to be emitted, so the param is present.
 pub fn class_emb_width(emb: Option<&Param<Tensor<2>>>) -> usize {
     emb.expect("class-token markers present but no embedding param")
@@ -501,7 +516,7 @@ pub fn class_emb_width(emb: Option<&Param<Tensor<2>>>) -> usize {
         .dims()[1]
 }
 
-/// The embedding row of marker `i` as one broadcast token (`[batch, width]`) —
+/// The embedding row of marker `i` as one broadcast token (`[batch, width]`):
 /// the `step` counterpart of a slice of [`insert_class_markers`].
 pub fn class_row(
     emb: Option<&Param<Tensor<2>>>,
@@ -516,12 +531,14 @@ pub fn class_row(
 }
 
 /// The output-sequence position of each marker (in `Vec` order) for an input of
-/// length `orig_len`, without materialising any tensor. Mirrors the placement in
-/// [`insert_class_markers`] — useful for reading a class token back out.
+/// length `orig_len`, without materialising any tensor. It mirrors the
+/// placement in [`insert_class_markers`], and is useful to read a class token
+/// back out.
 ///
-/// A marker that never lands (a `Custom` at or past the end — it has no token to
-/// precede) reports the position it *would* take, which is then `>= orig_len +
-/// (number of markers that do land)`, i.e. past the emitted sequence.
+/// A marker that never lands (a `Custom` at or past the end, with no token to
+/// precede) reports the position that it *would* take. This is
+/// `>= orig_len + (number of markers that land)`, that is, past the emitted
+/// sequence.
 pub fn class_marker_output_indices<M: ClassMarker>(
     markers: &[M],
     orig_len: usize,
@@ -545,7 +562,7 @@ pub fn class_marker_output_indices<M: ClassMarker>(
 }
 
 /// Build the embedding param for `n` class markers of the given `width`
-/// (`None` when there are none — Burn has no zero-width tensors).
+/// (`None` when there are none: Burn has no zero-width tensors).
 pub fn init_class_emb(n: usize, width: usize, device: &Device) -> Option<Param<Tensor<2>>> {
     (n > 0).then(|| {
         Initializer::Normal {

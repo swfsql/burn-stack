@@ -1,13 +1,15 @@
-//! RMS normalisation fused with a SiLU(z) gate — a gated block's output norm.
+//! RMS normalisation fused with a SiLU(z) gate: the output norm of a gated
+//! block.
 //!
 //! `norm_before_gate` selects the order of the two operations:
-//! - `true`  — normalise, then gate:   `y = (x / rms(x) · γ) · SiLU(z)`
-//! - `false` — gate, then normalise:   `y = rms(x · SiLU(z)) · γ` applied to
+//! - `true`: normalise, then gate: `y = (x / rms(x) · γ) · SiLU(z)`
+//! - `false`: gate, then normalise: `y = rms(x · SiLU(z)) · γ` applied to
 //!   `x · SiLU(z)`
 //!
-//! The numerical-stability epsilon is the per-dtype [`div_eps`](crate::utils::div_eps) (so there is no
-//! configurable epsilon); the fp16 path uses the same `max(|x|)`-rescaling
-//! trick as [`RmsNorm`](crate::modules::norm::rms_norm::RmsNorm).
+//! The numerical-stability epsilon is the per-dtype
+//! [`div_eps`](crate::utils::div_eps), so there is no configurable epsilon.
+//! The fp16 path uses the same `max(|x|)`-rescale as
+//! [`RmsNorm`](crate::modules::norm::rms_norm::RmsNorm).
 
 use crate::modules::Silu;
 use crate::utils::div_eps;
@@ -50,7 +52,7 @@ impl RmsNormGatedConfig {
 /// - `mean` is the mean operation
 /// - `eps` is a small value to avoid division by zero.
 ///
-/// Should be created using the [`RmsNormGatedConfig`] configuration.
+/// Create it with [`RmsNormGatedConfig`].
 #[derive(Module, Debug)]
 #[module(custom_display)]
 pub struct RmsNormGated {
@@ -82,10 +84,10 @@ impl RmsNormGated {
             DType::F64 | DType::F32 | DType::Flex32 | DType::BF16 => {
                 let div_eps = div_eps(x.dtype());
 
-                // eps *inside* the root (as documented): guards both the forward
-                // division and the `sqrt` node's `1/(2√·)` backward, which is
-                // otherwise singular for a zero-norm slice — see
-                // `tests::rms_norm_gated_gradient_finite_on_collapsed_slice`.
+                // eps *inside* the root (as documented). It guards both the
+                // forward division and the `1/(2√·)` backward of the `sqrt`
+                // node, which is otherwise singular for a zero-norm slice (see
+                // `tests::rms_norm_gated_gradient_finite_on_collapsed_slice`).
                 let rms = ((x.clone() * x.clone()).mean_dim(D - 1) + div_eps).sqrt();
                 let normalized = (x / rms) * self.gamma.val().unsqueeze();
                 normalized
@@ -100,7 +102,7 @@ impl RmsNormGated {
                 // eps inside the root (matches the main branch): the `sqrt`
                 // backward is otherwise singular for a zero-norm slice.
                 let rms_partial = ((x.clone() * x_).mean_dim(D - 1) + div_eps).sqrt(); // √(x²/max)
-                // `max` is detached; floor it too so an all-zero tensor
+                // `max` is detached. Floor it too, so an all-zero tensor
                 // (`max = 0`) gives a nonzero denominator, not `0/0`.
                 let normalized =
                     (x / rms_partial) / (max + div_eps).sqrt() * self.gamma.val().unsqueeze();

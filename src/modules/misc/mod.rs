@@ -1,4 +1,4 @@
-/// Group→head expansion of B/C (GQA-style sharing).
+/// Group→head expansion (GQA-style sharing).
 pub mod gqa;
 /// Optional `NaN`/`Inf` guards gated by [`crate::DENY_NAN`] / [`crate::DENY_INF`].
 pub mod sanity;

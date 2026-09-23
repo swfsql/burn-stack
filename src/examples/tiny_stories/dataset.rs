@@ -1,57 +1,60 @@
-//! Character-level [TinyStories-GPT4-clean] corpus: a stream of single-character
-//! tokens over a **case-folded ASCII** alphabet, one *story* per training item.
+//! Character-level [TinyStories-GPT4-clean] corpus: a stream of
+//! single-character tokens over a **case-folded ASCII** alphabet, one *story*
+//! per training item.
 //!
 //! [TinyStories-GPT4-clean]: https://huggingface.co/datasets/karpathy/tinystories-gpt4-clean
 //!
 //! # Alphabet
 //!
-//! The dataset is documented (and verified by its cleaning pipeline) to contain
-//! exactly 74 distinct ASCII characters — the 52 cased letters plus
+//! The dataset documentation states (and its cleaning pipeline verifies) that
+//! it contains exactly 74 distinct ASCII characters: the 52 cased letters plus
 //! ``\n !"$',-.0123456789:;?``. Case-folding the letters leaves [`ALPHABET`]:
-//! 48 tokens, every one of which actually occurs. That is the whole vocabulary;
-//! there is no `<unk>`, no `<bos>`, and no padding class
-//! (`pad_vocab_size_multiple = 1`), so every logit the model emits is a
-//! character it can legitimately produce.
+//! 48 tokens, and every one of them occurs. That is the whole vocabulary. There
+//! is no `<unk>`, no `<bos>`, and no padding class
+//! (`pad_vocab_size_multiple = 1`). So every logit that the model emits is a
+//! character that it can legitimately produce.
 //!
 //! # Download
 //!
-//! The dataset is a single 673 MB parquet file (one column, `text`; one row per
-//! story; 2,669 ZSTD row groups of 1,024 rows). It is downloaded **whole**, once,
-//! exactly the way [`MnistDataset`](super::super::mnist::dataset::MnistDataset)
-//! downloads its IDX files, and cached at
-//! `~/.cache/burn-dataset/tinystories-gpt4-clean/`. Reading it is lazy, so only
-//! the row groups up to the requested rows are ever decompressed.
+//! The dataset is a single 673 MB parquet file (one column, `text`, one row
+//! per story, 2,669 ZSTD row groups of 1,024 rows). It is downloaded
+//! **whole**, once, exactly as
+//! [`MnistDataset`](super::super::mnist::dataset::MnistDataset) downloads its
+//! IDX files, and cached at `~/.cache/burn-dataset/tinystories-gpt4-clean/`.
+//! The read is lazy, so only the row groups up to the requested rows are
+//! decompressed.
 //!
-//! The stories that come out are normalized and cached again, as text, one file
-//! per `(split, story count)`, records divided by [`STORY_SEPARATOR`] — so a
-//! second run reads a few MB of text and never opens (or needs) the parquet at
-//! all. A cache whose record count disagrees with its name was written by an
-//! older separator and is rebuilt in place.
+//! The stories that come out are normalized and cached again, as text: one
+//! file per `(split, story count)`, with the records divided by
+//! [`STORY_SEPARATOR`]. So a second run reads a few MB of text, and never
+//! opens (or needs) the parquet. A cache whose record count disagrees with its
+//! name is rebuilt in place.
 //!
-//! Splits follow the dataset card's suggested row ranges (the rows are
-//! pre-shuffled, so a contiguous range is already a random sample): rows
-//! `0..10k` are test, `10k..20k` validation, and `20k..` training.
+//! The splits follow the row ranges that the dataset card suggests: rows
+//! `0..10k` are test, `10k..20k` validation, and `20k..` training. The rows are
+//! pre-shuffled, so a contiguous range is already a random sample.
 //!
 //! # Items, windows and runs
 //!
-//! One **item is one story**, and nothing is spliced between two of them: a story
-//! is a self-contained example, and no separator character stands in for its
-//! boundary. Leading and trailing whitespace is stripped, so the first token of
-//! an item is always a real symbol. What (if anything) marks the start is the
-//! model's business, not the corpus's — see [`lm_output`](super::lm::lm_output)
-//! for the one hook this side offers.
+//! One **item is one story**, and nothing is spliced between two stories. A
+//! story is a self-contained example, and no separator character stands in for
+//! its boundary. Leading and trailing whitespace is stripped, so the first
+//! token of an item is always a real symbol. The model decides what (if
+//! anything) marks the start, not the corpus. See
+//! [`lm_output`](super::lm::lm_output) for the one hook that this side offers.
 //!
-//! A story (303–4,149 characters, median 724) is longer than one back-propagation
-//! window, so it is walked in **windows** of `seq_len` tokens with the recurrent
-//! state carried across them ([`lm::epoch_train`](super::lm::epoch_train)) — the
-//! *run*. Its length comes from the data, capped by `run_len`; the frontier gate
-//! is what ends it early.
+//! A story (303–4,149 characters, median 724) is longer than one
+//! back-propagation window. So it is walked in **windows** of `seq_len`
+//! tokens, with the recurrent state carried across them
+//! ([`lm::epoch_train`](super::lm::epoch_train)): this is the *run*. Its
+//! length comes from the data, capped by `run_len`. The frontier gate can end
+//! it early.
 //!
-//! Every slot of a batch walks its own story, and stories differ in length, so a
-//! batch is padded to a whole number of windows of its longest one.
-//! [`TinyStoriesBatch::scored`] records how many positions of each slot are real,
-//! and [`lm_output`](super::lm::lm_output) scores only those — padding never
-//! reaches the loss or the accuracy.
+//! Every slot of a batch walks its own story, and stories differ in length. So
+//! a batch is padded to a whole number of windows of its longest story.
+//! [`TinyStoriesBatch::scored`] records how many positions of each slot are
+//! real, and [`lm_output`](super::lm::lm_output) scores only those. Padding
+//! never reaches the loss or the accuracy.
 
 use burn::data::dataloader::batcher::Batcher;
 use burn::prelude::*;
@@ -75,14 +78,15 @@ pub const VOCAB_SIZE: usize = ALPHABET.len();
 /// Token id reserved by [`Vocab`] for "not in the alphabet".
 const NO_TOKEN: u8 = u8::MAX;
 
-/// Record separator of the **text cache**: ASCII `RS` (0x1E), which is outside
-/// [`ALPHABET`] and therefore removed from every story by `normalize` — so a
-/// story *cannot* contain one, and splitting the file on it is exact.
+/// Record separator of the **text cache**: ASCII `RS` (0x1E). It is outside
+/// [`ALPHABET`], so `normalize` removes it from every story. So a story
+/// *cannot* contain one, and a split of the file on it is exact.
 ///
-/// A blank line would be the obvious choice and is the wrong one: the dataset
-/// card allows `\n` as a paragraph separator without forbidding two in a row,
-/// and 5 of the first 32,768 training stories do carry one. It is a property of
-/// the cache file only — never encoded, so the model never sees it.
+/// A blank line would be the obvious choice, and it is the wrong one. The
+/// dataset card allows `\n` as a paragraph separator, and does not forbid two
+/// in a row. 5 of the first 32,768 training stories contain one. The separator
+/// is a property of the cache file only. It is never encoded, so the model
+/// never sees it.
 pub const STORY_SEPARATOR: &str = "\u{1e}";
 
 /// Byte ↔ token-id tables for [`ALPHABET`], with `A-Z` folded onto `a-z`.
@@ -130,8 +134,8 @@ impl Vocab {
         self.to_byte[token as usize] as char
     }
 
-    /// Encode `text`, silently dropping anything outside the alphabet (the
-    /// cached corpus is normalized first, so this only bites on user prompts).
+    /// Encode `text`, and silently drop anything outside the alphabet. The
+    /// cached corpus is normalized first, so this affects only user prompts.
     pub fn encode(&self, text: &str) -> Vec<u8> {
         text.bytes().filter_map(|byte| self.token(byte)).collect()
     }
@@ -179,7 +183,8 @@ impl Split {
         }
     }
 
-    /// Number of rows the split has (unbounded for `Train`).
+    /// Number of rows in the split. For `Train`, these are the rows from its
+    /// offset to the end of the file.
     pub const fn capacity(self) -> usize {
         match self {
             Split::Test | Split::Valid => 10_000,
@@ -208,13 +213,13 @@ fn cache_dir() -> PathBuf {
     dir
 }
 
-/// Case-fold `story`, drop the (vanishingly rare, ~5 per million) characters
-/// outside [`ALPHABET`], and trim the surrounding whitespace — after which the
-/// text is exactly the token stream, opening on a real symbol.
+/// Case-fold `story`, drop the characters outside [`ALPHABET`] (very rare, ~5
+/// per million), and trim the surrounding whitespace. The text is then exactly
+/// the token stream, and it opens on a real symbol.
 ///
-/// Dropping everything outside the alphabet is also what keeps
-/// [`STORY_SEPARATOR`] unambiguous: it is one of those characters. Interior
-/// newlines are left exactly as the corpus has them, blank lines included.
+/// The drop of everything outside the alphabet also keeps [`STORY_SEPARATOR`]
+/// unambiguous, because the separator is one of those characters. Interior
+/// newlines stay exactly as the corpus has them, blank lines included.
 fn normalize(story: &str) -> String {
     story
         .bytes()
@@ -225,7 +230,7 @@ fn normalize(story: &str) -> String {
         .to_owned()
 }
 
-/// The cached parquet file, downloading it (whole, once) if it is not there yet.
+/// The cached parquet file. Downloads it (whole, once) if it is not there.
 fn parquet_file() -> PathBuf {
     let path = cache_dir().join(PARQUET);
     if path.exists() {
@@ -235,7 +240,7 @@ fn parquet_file() -> PathBuf {
     println!("downloading {DATASET} ({PARQUET}, 673MB, cached afterwards)");
     let bytes = download_file_as_bytes(&url, PARQUET);
     // Write beside the target and rename, so an interrupted download cannot
-    // leave a truncated file that later runs would happily try to read.
+    // leave a truncated file that later runs would try to read.
     let partial = path.with_extension("parquet.partial");
     std::fs::write(&partial, &bytes).expect("Failed to write the parquet cache");
     std::fs::rename(&partial, &path).expect("Failed to move the parquet cache into place");
@@ -245,10 +250,11 @@ fn parquet_file() -> PathBuf {
 
 /// Read `n_stories` rows of `split` out of the parquet file and normalize them.
 ///
-/// The reader is lazy — one row group (1,024 rows) at a time — and is dropped at
-/// the last one the request touches, so a request never decompresses past its own
-/// end of the file. The splits' offsets are small (20k rows, i.e. 20 groups) next
-/// to the file's 2,669, so what is skipped costs little.
+/// The reader is lazy: one row group (1,024 rows) at a time. It is dropped at
+/// the last group that the request touches, so a request never decompresses
+/// past its own end. The offsets of the splits are small (20k rows, that is,
+/// 20 groups) next to the 2,669 groups of the file, so the skipped rows cost
+/// little.
 fn read_parquet(split: Split, n_stories: usize) -> Vec<String> {
     assert!(
         n_stories <= split.capacity(),
@@ -282,9 +288,9 @@ fn read_parquet(split: Split, n_stories: usize) -> Vec<String> {
     stories
 }
 
-/// The normalized stories of `split`, downloading and extracting them on the
-/// first call and reading the text cache — `<split>-<n_stories>.txt`, the
-/// stories joined by [`STORY_SEPARATOR`] — afterwards.
+/// The normalized stories of `split`. The first call downloads and extracts
+/// them. Later calls read the text cache: `<split>-<n_stories>.txt`, the
+/// stories joined by [`STORY_SEPARATOR`].
 pub fn stories(split: Split, n_stories: usize) -> Vec<String> {
     let path = cache_dir().join(format!("{}-{n_stories}.txt", split.name()));
     if let Ok(cached) = std::fs::read_to_string(&path) {
@@ -292,20 +298,20 @@ pub fn stories(split: Split, n_stories: usize) -> Vec<String> {
         if stories.len() == n_stories {
             return stories;
         }
-        // Not a corrupt file: a cache written when the separator was a blank
-        // line, which a handful of stories carry inside them and which was
-        // therefore splitting those in two. Rebuilding costs one pass over the
-        // (already downloaded) parquet, so it beats asking for a manual delete.
+        // Not a corrupt file: a cache with a different separator. A blank line
+        // is one, and a few stories contain one, so it split those stories in
+        // two. A rebuild costs one pass over the (already downloaded) parquet,
+        // so it beats a request for a manual delete.
         println!(
             "the text cache {path:?} holds {} records for {n_stories} stories \
-             (an older separator); rebuilding it",
+             (a different separator). Rebuilding it.",
             stories.len(),
         );
     }
     let stories = read_parquet(split, n_stories);
-    // The separator is the cache file's only structure, so a story carrying one
-    // would make the file unreadable. `normalize` drops every byte outside the
-    // alphabet, and the separator is one of them, so this cannot fire.
+    // The separator is the only structure of the cache file, so a story with
+    // one would make the file unreadable. `normalize` drops every byte outside
+    // the alphabet, and the separator is one of them. So this cannot fire.
     assert!(
         !stories.iter().any(|s| s.contains(STORY_SEPARATOR)),
         "a story contains the cache separator",
@@ -328,22 +334,23 @@ pub struct TinyStoriesItem {
 
 /// The split's stories, one per item.
 pub struct TinyStoriesDataset {
-    /// One token-id vector per story (shared, so cloning the dataset is free).
+    /// One token-id vector per story (shared, so a clone of the dataset is
+    /// free).
     stories: Arc<Vec<Vec<u8>>>,
     /// Window length: the BPTT span of one forward.
     seq_len: usize,
 }
 
 impl TinyStoriesDataset {
-    /// Load (downloading once) `n_stories` of `split`.
+    /// Load `n_stories` of `split` (download them once).
     ///
-    /// `run_len` caps how many windows one story may spend: a longer story is
-    /// truncated to that many, which is the only thing the cap does — the run
+    /// `run_len` caps the number of windows that one story can use. A longer
+    /// story is truncated to that many. The cap does nothing else: the run
     /// length itself comes from the story.
     pub fn new(split: Split, n_stories: usize, seq_len: usize, run_len: usize) -> Self {
         assert!(run_len >= 1, "a run holds at least one window");
-        // A story must have at least one token to predict from and one to
-        // predict, i.e. one whole window plus its final target at most.
+        // Keep at most `run_len` whole windows plus the final target. A story
+        // must have at least one token to predict from and one to predict.
         let max_tokens = run_len.saturating_mul(seq_len).saturating_add(1);
         let stories: Vec<Vec<u8>> = stories(split, n_stories)
             .iter()
@@ -370,10 +377,11 @@ impl TinyStoriesDataset {
         self.stories.iter().map(Vec::len).sum()
     }
 
-    /// Windows the split holds if every story were walked alone — the number of
-    /// optimizer steps an epoch takes at `batch_size = 1` when the frontier
-    /// never stalls. A real batch runs the windows of its *longest* story, so it
-    /// takes somewhat fewer steps over somewhat more padding.
+    /// The windows that the split holds if every story is walked alone. This
+    /// is the number of optimizer steps of an epoch at `batch_size = 1` when
+    /// the frontier never stalls. A real batch runs the windows of its
+    /// *longest* story, so it takes somewhat fewer steps over somewhat more
+    /// padding.
     pub fn num_windows(&self) -> usize {
         self.stories
             .iter()
@@ -394,8 +402,8 @@ impl Dataset<TinyStoriesItem> for TinyStoriesDataset {
     }
 }
 
-/// A batch of stories, padded to a whole number of windows of the longest one;
-/// [`window`](Self::window) cuts one window out of it.
+/// A batch of stories, padded to a whole number of windows of the longest
+/// story. [`window`](Self::window) cuts one window out of it.
 #[derive(Clone, Debug)]
 pub struct TinyStoriesBatch {
     /// Input token ids, `[batch_size, num_windows · seq_len]`.
@@ -423,8 +431,9 @@ impl TinyStoriesBatch {
         }
     }
 
-    /// Windows the batch spans — its longest story's, and the length of the run
-    /// [`epoch_train`](super::lm::epoch_train) walks.
+    /// The windows that the batch spans: those of its longest story. This is
+    /// also the length of the run that [`epoch_train`](super::lm::epoch_train)
+    /// walks.
     pub fn num_windows(&self) -> usize {
         self.inputs.dims()[1] / self.seq_len
     }
@@ -434,8 +443,8 @@ impl TinyStoriesBatch {
     /// has left inside it (`0` for a story that ended earlier).
     ///
     /// Every batch slot advances together, so window `w` continues window
-    /// `w - 1` in all of them — which is what makes one carried cache valid for
-    /// the whole batch.
+    /// `w - 1` in all of them. This makes one carried cache valid for the
+    /// whole batch.
     pub fn window(&self, w: usize) -> Self {
         let seq_len = self.seq_len;
         assert!(
@@ -474,10 +483,11 @@ impl TinyStoriesBatcher {
 impl Batcher<TinyStoriesItem, TinyStoriesBatch> for TinyStoriesBatcher {
     fn batch(&self, items: Vec<TinyStoriesItem>, device: &Device) -> TinyStoriesBatch {
         let batch_size = items.len();
-        // One scored position per token but the first, which has no predecessor
-        // to be predicted from. A model that opens the sequence with something of
-        // its own can score that one too, out of the extra output positions
-        // `lm_output` picks up; this side neither knows nor asks.
+        // One scored position per token except the first, which has no
+        // predecessor to predict it from. A model that opens the sequence with
+        // something of its own can also score that token, from the extra
+        // output positions that `lm_output` reads. This side does not know and
+        // does not ask.
         let scored: Vec<usize> = items.iter().map(|item| item.tokens.len() - 1).collect();
         let windows = scored
             .iter()
@@ -489,9 +499,9 @@ impl Batcher<TinyStoriesItem, TinyStoriesBatch> for TinyStoriesBatcher {
         let mut inputs = Vec::with_capacity(batch_size * padded);
         let mut targets = Vec::with_capacity(batch_size * padded);
         for (item, &n) in items.iter().zip(&scored) {
-            // Token 0 pads both sides; every padded position is dropped from the
-            // loss by `scored`, so which token it is only matters for the state
-            // of a slot whose own story is already over.
+            // Token 0 pads both sides. `scored` drops every padded position
+            // from the loss, so the pad token matters only for the state of a
+            // slot whose story is already over.
             inputs.extend(item.tokens[..n].iter().map(|&t| t as i32));
             targets.extend(item.tokens[1..].iter().map(|&t| t as i32));
             inputs.resize(inputs.len() + (padded - n), 0);

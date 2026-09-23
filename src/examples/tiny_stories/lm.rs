@@ -1,47 +1,49 @@
-//! The character-level language-model loop, shared by the consumers'
-//! `tiny-stories` examples.
+//! The character-level language-model loop, shared by the `tiny-stories`
+//! examples of the consumer crates.
 //!
-//! Everything model-specific is behind [`LmModel`]: an example supplies a
-//! wrapper that knows how to train one window from a carried cache, hop to the
-//! inner backend, apply the optimizer, checkpoint itself, and sample text. The
-//! epoch loops, the metric printing (in nats *and* bits per character), the
-//! checkpoint cadence and the periodic story samples are the same either way,
-//! and live here.
+//! [`LmModel`] holds everything model-specific. An example supplies a wrapper
+//! that can train one window from a carried cache, hop to the inner backend,
+//! apply the optimizer, checkpoint itself, and sample text. The epoch loops,
+//! the metric printing (in nats *and* bits per character), the checkpoint
+//! cadence and the periodic story samples are the same for every model, so
+//! they live here.
 //!
-//! The outer `train()` — which reads the configs and builds the model — stays in
-//! the example, since that is where the model config actually is; the corpus
-//! knobs ([`TinyStoriesConfig`], [`Overrides`]) and the dataloaders they decide
+//! The outer `train()` reads the configs and builds the model. It stays in the
+//! example, because the model config is there. The corpus knobs
+//! ([`TinyStoriesConfig`], [`Overrides`]) and the dataloaders that they decide
 //! ([`dataloaders`]) do not depend on the model, so they are here.
 //!
 //! # Runs, carried state, and the frontier
 //!
-//! One dataloader item is one **story** (see [`dataset`](super::dataset)), and
-//! [`epoch_train`] walks it window by window — the *run* — taking one optimizer
-//! step per window and **carrying the final state** into the next one, so a
-//! window is scored from the state its own prefix produced, the way inference
-//! always sees it, instead of from a zero state. The run's length is the story's,
-//! capped by `run_len`.
+//! One dataloader item is one **story** (see [`dataset`](super::dataset)).
+//! [`epoch_train`] walks it window by window: this is the *run*. It takes one
+//! optimizer step per window and **carries the final state** into the next
+//! window. So a window is scored from the state that its own prefix produced,
+//! as inference always sees it, not from a zero state. The length of the run
+//! is that of the story, capped by `run_len`.
 //!
-//! The carry is *earned*: after each window a [`Frontier`] gate scores it and
-//! the run is abandoned when it fails, discarding the rest of the story. Training
-//! the tail of a run on a state the model got lost in is worth less than moving
-//! on. A gate that never opens is not a *wrong* regime — window `0` is the
-//! story's own beginning, so the zero state it starts from is the right one, and
-//! the recurrence still runs the whole window. What a closed gate costs is
-//! **reach**: the model is then only ever trained on the first `seq_len`
-//! characters of an example, which is what `run_len = 1` pins it to.
+//! The carry is *earned*. After each window, a [`Frontier`] gate scores it.
+//! When the window fails, the run stops and the rest of the story is
+//! discarded. To train the tail of a run on a state that the model got lost in
+//! is worth less than a move to the next story.
 //!
-//! A story is an example in its own right, so the state never crosses from one
-//! into the next: a run begins where the story does and ends with it. The
-//! [`ClassCursors`] threaded through a run's windows are the model's opportunity
-//! to open that sequence with something of its own — they place whatever markers
-//! it carries in window `0` and in no other. A model carrying none is unaffected
-//! by all of this, and every loop here runs the same.
+//! A gate that never opens is not a *wrong* regime. Window `0` is the
+//! beginning of the story, so its zero start state is the correct one, and
+//! the recurrence still runs the whole window. A closed gate costs **reach**:
+//! the model then trains only on the first `seq_len` characters of an example.
+//! `run_len = 1` pins it to exactly that.
 //!
-//! The carried cache is cut off the graph ([`LmModel::detach_caches`]), so the
-//! peak memory is one window's activations no matter how deep the run goes;
-//! gradients never cross a window boundary. Backpropagation within the window is
-//! untouched.
+//! A story is an example of its own, so the state never crosses from one story
+//! into the next: a run begins and ends with its story. The [`ClassCursors`]
+//! threaded through the windows of a run let the model open that sequence with
+//! something of its own. They place the markers of the model in window `0` and
+//! in no other window. A model with no markers is unaffected, and every loop
+//! here runs the same for it.
+//!
+//! The carried cache is cut off the graph ([`LmModel::detach_caches`]). So the
+//! peak memory is the activations of one window, however deep the run goes.
+//! Gradients never cross a window boundary. Backpropagation within the window
+//! does not change.
 
 use crate::examples::cli::AppArgs;
 use crate::examples::device::loader_device;
@@ -71,20 +73,20 @@ pub struct TinyStoriesConfig {
     /// Characters per training window (the BPTT length).
     #[config(default = 256)]
     pub seq_len: usize,
-    /// Cap on the windows one story may spend; a longer story is truncated to
-    /// that many. `usize::MAX` (the default) lets every story run to its end and
-    /// leaves the depth entirely to the [`FrontierGate`], which can only ever
-    /// shorten a run. `1` trains each story's opening window only — still its
-    /// true beginning, just never more of it.
+    /// Cap on the windows that one story can use. A longer story is truncated
+    /// to that many. `usize::MAX` (the default) lets every story run to its
+    /// end, and leaves the depth fully to the [`FrontierGate`], which can only
+    /// make a run shorter. `1` trains only the opening window of each story:
+    /// still its true beginning, but never more of it.
     #[config(default = "usize::MAX")]
     pub run_len: usize,
     /// When the final state of a window is worth carrying into the next one.
     #[config(default = "FrontierGate::default()")]
     pub frontier: FrontierGate,
-    /// Stories pulled from the train split (~820 characters each).
+    /// Stories taken from the train split (~820 characters each).
     #[config(default = 4096)]
     pub train_stories: usize,
-    /// Stories pulled from the validation split.
+    /// Stories taken from the validation split.
     #[config(default = 256)]
     pub valid_stories: usize,
     /// Characters generated at each sampling point.
@@ -99,24 +101,24 @@ pub struct TinyStoriesConfig {
 // The frontier gate
 // ===========================================================================
 
-/// When a window's **final state** is worth carrying into the next window (the
-/// *frontier* advances) and when the rest of the run should be discarded.
+/// When the **final state** of a window is worth a carry into the next window
+/// (the *frontier* advances), and when to discard the rest of the run.
 ///
-/// It is part of the trainer, never of the model: it reads one scalar per
-/// window and decides whether a cache is passed on. No gradient goes near it.
+/// It is part of the trainer, never of the model. It reads one scalar per
+/// window and decides whether to pass a cache on. No gradient goes near it.
 #[derive(Config, Debug)]
 pub enum FrontierGate {
-    /// Never stall — carry the state through the whole story. The pure
-    /// stateful-TBPTT baseline; at `run_len = 1` there is nothing to carry into
-    /// and it coincides with every other gate.
+    /// Never stall: carry the state through the whole story. This is the pure
+    /// stateful-TBPTT baseline. At `run_len = 1`, no next window exists, so
+    /// this gate is the same as every other gate.
     Always,
     /// Advance while the window scored at most `max_bits` bits per character.
     ///
-    /// Absolute, so it is a real curriculum, and one that acts from the very
-    /// first window: until the model is that good at all, a run trains its
-    /// story's opening window and no more, and depth grows out of the training
-    /// curve by itself. The price is one number that has to be picked per
-    /// corpus — and picked *above* where the model settles, or the curriculum
+    /// The threshold is absolute, so this is a real curriculum, and it acts
+    /// from the first window. Until the model is that good, a run trains only
+    /// the opening window of its story. The depth then grows out of the
+    /// training curve by itself. The cost is one number to pick per corpus.
+    /// Pick it *above* the loss where the model settles, or the curriculum
     /// never starts.
     Bits {
         /// The threshold, in bits per character.
@@ -130,8 +132,9 @@ impl Default for FrontierGate {
     }
 }
 
-/// The gate's running state: the run-depth statistics [`epoch_train`] reports
-/// (the one number that says whether the curriculum is moving at all).
+/// The running state of the gate: the run-depth statistics that
+/// [`epoch_train`] reports (the one number that shows whether the curriculum
+/// moves at all).
 #[derive(Debug)]
 pub struct Frontier {
     /// The configured criterion.
@@ -143,8 +146,8 @@ pub struct Frontier {
 }
 
 impl Frontier {
-    /// A fresh gate. The statistics are cumulative over the whole run of
-    /// training, not per epoch.
+    /// A new gate. [`epoch_train`] clears its statistics at the start of each
+    /// epoch (see [`reset_stats`](Self::reset_stats)).
     pub fn new(gate: FrontierGate) -> Self {
         Self {
             gate,
@@ -153,10 +156,11 @@ impl Frontier {
         }
     }
 
-    /// Score the window just trained — `w` is its index inside the run, `loss`
-    /// its mean cross-entropy in nats — and report whether the run may advance
-    /// to `w + 1`. A non-finite loss fails the comparison, which closes the gate
-    /// — the safe direction.
+    /// Score the window just trained, and report whether the run can advance
+    /// to `w + 1`. `w` is the index of the window inside the run, and `loss` is
+    /// its mean cross-entropy in nats. Under [`FrontierGate::Bits`], a
+    /// non-finite loss fails the comparison, so it closes the gate: the safe
+    /// direction.
     pub fn admit(&mut self, w: usize, loss: f64) -> bool {
         self.windows += 1;
         if w == 0 {
@@ -168,10 +172,10 @@ impl Frontier {
         }
     }
 
-    /// Mean windows trained per run since the last [`reset_stats`](Self::reset_stats)
-    /// — `1.0` is a frontier that never opens (each story trained to its first
-    /// window and no further), the mean story length in windows a gate that never
-    /// fires.
+    /// The mean number of windows trained per run since the last
+    /// [`reset_stats`](Self::reset_stats). `1.0` is a frontier that never opens
+    /// (each story trained to its first window and no further). A gate that
+    /// never fires gives the mean story length in windows.
     pub fn mean_depth(&self) -> f64 {
         self.windows as f64 / self.runs.max(1) as f64
     }
@@ -184,22 +188,22 @@ impl Frontier {
     }
 }
 
-/// Corpus knobs forwarded after `--`; each applies on top of the loaded/created
-/// [`TinyStoriesConfig`] (and is then persisted with it). The batch size and
-/// the optimizer are [`AppArgs`]'.
+/// Corpus knobs forwarded after `--`. Each one applies on top of the loaded or
+/// created [`TinyStoriesConfig`], and is then saved with it. The batch size and
+/// the optimizer are flags of [`AppArgs`].
 pub struct Overrides {
     /// `--seq-len <usize>`: characters per training window.
     pub seq_len: Option<usize>,
-    /// `--run-len <usize>`: cap on the windows one story may spend
+    /// `--run-len <usize>`: cap on the windows that one story can use
     /// (`1` ⇒ stateless).
     pub run_len: Option<usize>,
     /// `--frontier-bits <f64>`: threshold of the default (absolute) gate.
     pub frontier_bits: Option<f64>,
-    /// `--no-frontier`: carry the state through the whole story, ungated.
+    /// `--no-frontier`: carry the state through the whole story, with no gate.
     pub no_frontier: bool,
-    /// `--train-stories <usize>`: stories pulled from the train split.
+    /// `--train-stories <usize>`: stories taken from the train split.
     pub train_stories: Option<usize>,
-    /// `--valid-stories <usize>`: stories pulled from the validation split.
+    /// `--valid-stories <usize>`: stories taken from the validation split.
     pub valid_stories: Option<usize>,
 }
 
@@ -207,15 +211,16 @@ impl Overrides {
     /// The `--help` lines of these flags, for the example's own help text.
     pub const HELP: &str = concat!(
         "    --seq-len <N>          Characters per training window\n",
-        "    --run-len <N>          Cap on the windows one story may spend (1: stateless)\n",
-        "    --frontier-bits <B>    Carry a window's state on while it scored at most B bits/char\n",
-        "    --no-frontier          Carry the state through the whole story, ungated\n",
-        "    --train-stories <N>    Stories pulled from the train split\n",
-        "    --valid-stories <N>    Stories pulled from the validation split",
+        "    --run-len <N>          Cap on the windows that one story can use (1: stateless)\n",
+        "    --frontier-bits <B>    Carry the state of a window into the next while it scores at most B bits/char\n",
+        "    --no-frontier          Carry the state through the whole story, with no gate\n",
+        "    --train-stories <N>    Stories taken from the train split\n",
+        "    --valid-stories <N>    Stories taken from the validation split",
     );
 
-    /// Take the flags out of the example's parser over the arguments forwarded
-    /// after `--` (see [`AppArgs::extra`]), leaving the rest to it.
+    /// Take these flags out of the parser of the example, over the arguments
+    /// forwarded after `--` (see [`AppArgs::extra`]). The parser keeps the
+    /// other flags.
     pub fn parse(pargs: &mut pico_args::Arguments) -> Self {
         Overrides {
             seq_len: pargs.opt_value_from_str("--seq-len").unwrap(),
@@ -250,30 +255,33 @@ impl Overrides {
     }
 }
 
-/// The seam the shared loops need from an example's language model.
+/// The interface that the shared loops need from the language model of an
+/// example.
 ///
-/// Implemented on the example's own wrapper, which is what holds the network and
-/// knows its forward path — and, since the loops carry state across windows, its
-/// cache type.
+/// The wrapper of the example implements it. The wrapper holds the network
+/// and knows its forward path. Because the loops carry state across windows,
+/// it also knows its cache type.
 pub trait LmModel: Sized {
     /// The inner-backend counterpart used for validation and sampling.
     type Valid;
 
-    /// The network's cache collection, carried from one window of a run to the
-    /// next.
+    /// The cache collection of the network, carried from one window of a run
+    /// to the next.
     type Caches;
 
     /// Move to the inner (non-autodiff) backend.
     fn valid(&self) -> Self::Valid;
 
-    /// Train one window: forward it from `caches` (`None` ⇒ a zero state), score
-    /// every real position against its next character, and back-propagate —
-    /// returning the gradients together with the window's **final** state.
+    /// Train one window: run it forward from `caches` (`None` ⇒ a zero state),
+    /// score every real position against its next character, and
+    /// back-propagate. Returns the gradients and the **final** state of the
+    /// window.
     ///
-    /// `class` is the run's class-marker cursor, threaded through its windows in
-    /// order. It is offered, not imposed: a model that splices markers into the
-    /// sequence gets them placed in window `0` and in no other, and one that
-    /// splices none can pass it straight through (or ignore it).
+    /// `class` is the class-marker cursor of the run, threaded through its
+    /// windows in order. It is an offer, not a requirement. A model that
+    /// splices markers into the sequence gets them in window `0` and in no
+    /// other window. A model that splices none can pass it straight through
+    /// (or ignore it).
     fn train_window(
         &self,
         batch: TinyStoriesBatch,
@@ -281,14 +289,16 @@ pub trait LmModel: Sized {
         class: &mut ClassCursors,
     ) -> (TrainOutput<ClassificationOutput>, Self::Caches);
 
-    /// Cut a carried cache off the autodiff graph, so the next window's backward
-    /// stops at its own first token *and* this window's activations are freed.
+    /// Cut a carried cache off the autodiff graph. Then the backward of the
+    /// next window stops at its own first token, *and* the activations of this
+    /// window are freed.
     ///
-    /// Implement it with [`CacheStack::detach`](crate::modules::CacheStack::detach):
-    /// a plain `Tensor::detach` cuts the gradients but frees nothing (see
-    /// [`detach_params`](crate::utils::detach_params)), which would make the peak
-    /// memory grow with the run length — the one thing the window loop must not
-    /// do.
+    /// Implement it with
+    /// [`CacheStack::detach`](crate::modules::CacheStack::detach). A plain
+    /// `Tensor::detach` cuts the gradients but frees nothing (see
+    /// [`detach_params`](crate::utils::detach_params)). The peak memory would
+    /// then grow with the run length, and the window loop must prevent exactly
+    /// that.
     fn detach_caches(caches: Self::Caches) -> Self::Caches;
 
     /// The [`train_window`](Self::train_window) counterpart on the inner
@@ -300,15 +310,15 @@ pub trait LmModel: Sized {
         class: &mut ClassCursors,
     ) -> (ClassificationOutput, Self::Caches);
 
-    /// Apply one optimizer step, returning the updated model.
+    /// Apply one optimizer step. Returns the updated model.
     fn optim_step(self, optim: &mut ModuleOptimizer, lr: f64, grads: GradientsParams) -> Self;
 
     /// Checkpoint the wrapped network into the artifacts directory.
     fn save(&self, app_args: &AppArgs);
 
-    /// Sample `n_chars` characters, continuing `prompt` or — with `None` —
-    /// opening a story on the model's own terms, whatever those are: this side
-    /// only asks for an unprompted sample and never says how one starts.
+    /// Sample `n_chars` characters. With a `prompt`, continue it. With `None`,
+    /// open a story on the terms of the model. This side only asks for an
+    /// unprompted sample and never says how one starts.
     /// [`sample::generate`](crate::examples::tiny_stories::sample::generate) is
     /// one answer.
     fn generate(
@@ -321,10 +331,11 @@ pub trait LmModel: Sized {
     ) -> String;
 }
 
-/// Load (downloading once) the train and validation splits and window them into
-/// dataloaders. Both build their batches on [`loader_device`]`(training_device)`
-/// (the loops move them to the model's device); the training one is shuffled
-/// from where `progress` resumes (see [`TrainingProgress::shuffle_seed`]).
+/// Load the train and validation splits (download them once), and window them
+/// into dataloaders. Both build their batches on
+/// [`loader_device`]`(training_device)`, and the loops move the batches to the
+/// device of the model. The training dataloader shuffles from where
+/// `progress` resumes (see [`TrainingProgress::shuffle_seed`]).
 pub fn dataloaders(
     config: &TinyStoriesConfig,
     training_device: &Device,
@@ -347,8 +358,8 @@ pub fn dataloaders(
         valid_set.num_windows(),
     );
     // The workers build batches on the host, and the loops move them to the
-    // device: a worker uploading to the GPU from its own thread can invalidate
-    // a graph being captured (see `loader_device`).
+    // device. A worker that uploads to the GPU from its own thread can
+    // invalidate a graph under capture (see `loader_device`).
     let dataloader_train = DataLoaderBuilder::new(batcher.clone())
         .batch_size(config.training.batch_size)
         .shuffle(progress.shuffle_seed(config.training.seed))
@@ -364,26 +375,26 @@ pub fn dataloaders(
     (dataloader_train, dataloader_valid)
 }
 
-/// The cadence the character LMs default to: checkpoint, run a 10-story
-/// validation and sample a story every 300 steps. Held in *steps* rather than
-/// dataloader iterations, since a run's window count is the story's and so
-/// differs from batch to batch.
+/// The default cadence of the character LMs: every 300 steps, checkpoint, run
+/// a 10-batch validation, and sample a story. It counts *steps*, not
+/// dataloader iterations, because the window count of a run is that of its
+/// story, so it differs from batch to batch.
 pub const CADENCE: Cadence = Cadence {
     checkpoint_every: Some(300),
     valid_every: Some(300),
     valid_batches: Some(10),
 };
 
-/// Train for (the rest of) one epoch: walk each story window by window, taking
-/// one optimizer step per window and carrying the state into the next window for
-/// as long as `frontier` admits it; validate, sample and checkpoint at the
-/// `session`'s cadence. Returns the updated model.
+/// Train for (the rest of) one epoch. Walk each story window by window, with
+/// one optimizer step per window. Carry the state into the next window while
+/// `frontier` admits it. Validate, sample and checkpoint at the cadence of the
+/// `session`. Returns the updated model.
 ///
-/// The epoch ends early once the session's budget (the `--max-batches` /
-/// `--max-seconds` caps) runs out; the caller's epoch loop should then stop, seeing
-/// [`Session::is_exhausted`]. The budget is spent per **window** — i.e. per
-/// optimizer step, which is what it meant before runs existed — while the
-/// session's position within the epoch counts stories.
+/// The epoch ends early when the budget of the session (the `--max-batches` /
+/// `--max-seconds` caps) runs out. The epoch loop of the caller should then
+/// stop, because [`Session::is_exhausted`] is true. The budget is spent per
+/// **window**, that is, per optimizer step. The position of the session within
+/// the epoch counts batches of stories.
 #[allow(clippy::too_many_arguments)]
 pub fn epoch_train<W: LmModel>(
     dataloader_train: Dataloader,
@@ -403,9 +414,9 @@ pub fn epoch_train<W: LmModel>(
     let batches = dataloader_train.num_items().div_ceil(config.training.batch_size);
     frontier.reset_stats();
 
-    // training loop: one batch of stories — every slot advancing through its own
-    // story in lockstep, for as many windows as the longest of them spans — per
-    // iteration.
+    // Training loop: one batch of stories per iteration. Every slot advances
+    // through its own story in lockstep, for as many windows as the longest
+    // story spans.
     for run in dataloader_train
         .iter()
         .map(|batch| batch.expect("dataloader batch"))
@@ -417,9 +428,9 @@ pub fn epoch_train<W: LmModel>(
         let [batch_size, _windows_seq_len] = run.inputs.dims();
         let windows = run.num_windows();
         let mut caches: Option<W::Caches> = None;
-        // The run opens here: window 0 gets whatever the model splices in front
-        // of a sequence, and the cursor is what stops every later window from
-        // getting it again. Empty for a model that splices nothing.
+        // The run opens here. Window 0 gets what the model splices in front of
+        // a sequence, and the cursor stops every later window from getting it
+        // again. Empty for a model that splices nothing.
         let mut class = ClassCursors::stream();
         // Windows trained in this run, and the readouts of the last of them.
         let mut depth = 0;
@@ -442,8 +453,8 @@ pub fn epoch_train<W: LmModel>(
             depth = w + 1;
 
             // The gate scores *this* window (`value()` is the last update,
-            // `running_value()` the epoch average) and must be consulted on
-            // every one of them: window 0 is what sets its baseline.
+            // `running_value()` the epoch average). Call it on every window:
+            // window 0 opens the run in its statistics.
             loss = metric_current(loss_metric.value());
             let acc = metric_current(acc_metric.value());
             session.log_train(&[("loss", loss), ("acc", acc), ("window", w as f64)]);
@@ -451,13 +462,13 @@ pub fn epoch_train<W: LmModel>(
             if !admitted || depth == windows || session.is_exhausted() {
                 break;
             }
-            // Advance the frontier: the state's values are kept, the graph that
-            // produced them is dropped.
+            // Advance the frontier: keep the values of the state, and drop the
+            // graph that produced them.
             caches = Some(W::detach_caches(final_caches));
         }
 
-        // Windows the gate dropped are corpus this epoch will not see, so the LR
-        // schedule — sized in windows, not in runs — skips them too; otherwise a
+        // This epoch will not see the windows that the gate dropped. So the LR
+        // schedule (sized in windows, not in runs) skips them too. Otherwise a
         // stalling frontier would leave the cosine unfinished at the last epoch.
         session.skip_steps(windows - depth);
 
@@ -491,10 +502,10 @@ pub fn epoch_train<W: LmModel>(
                 session,
             );
 
-            // Sample a story into a fresh per-step file, to watch the text
-            // sharpen from noise into words into sentences. The sampler is
-            // re-seeded identically every time, so successive samples differ by
-            // the model alone.
+            // Sample a story into a new per-step file, to watch the text
+            // sharpen from noise into words into sentences. The sampler gets
+            // the same seed every time, so successive samples differ only by
+            // the model.
             let sample_path = app_args
                 .artifacts_path
                 .join(format!("sample-epoch-{epoch}-batch-{b}.txt"));
@@ -528,12 +539,13 @@ pub fn epoch_train<W: LmModel>(
     training_model
 }
 
-/// Run validation over (up to `valid_loop_limit`) stories and report the average
-/// loss (also as bits per character) and next-character accuracy, with the state
-/// threaded through each whole story, *ungated* — the one regime that exists,
-/// since a story is scored the way it is generated: opened once and never
-/// restarted part-way through. The averages also go to the `session`'s metrics
-/// log. Each batch is moved to `device`, the model's, here.
+/// Run validation over up to `valid_loop_limit` batches of stories. Report the
+/// average loss (also as bits per character) and the next-character accuracy.
+/// The state is threaded through each whole story, *ungated*. This is the one
+/// regime that exists, because a story is scored as it is generated: opened
+/// once, and never restarted part-way through. The averages also go to the
+/// metrics log of the `session`. This function moves each batch to `device`,
+/// the device of the model.
 #[allow(clippy::too_many_arguments)]
 pub fn epoch_valid<W: LmModel>(
     dataloader_valid: Dataloader,
@@ -598,31 +610,34 @@ pub fn epoch_valid<W: LmModel>(
 ///
 /// Two things separate it from a plain flatten-and-score:
 ///
-/// - **A longer output is read out, not trimmed.** When a forward returns more
-///   positions than it was given (`lead = out_len - seq_len` — the model spliced
-///   something in front of the window), the *last* of those extra positions is
-///   the one standing immediately before the first user token, so it is scored
-///   against **it**: the story's first character. The earlier `lead - 1` are
-///   dropped, having a shorter prefix behind them than the sequence ever has
-///   again. `lead = 0` — a model that splices nothing — is the plain case, and
-///   nothing here fires.
+/// - **A longer output is read out, not trimmed.** A forward can return more
+///   positions than it got: `lead = out_len - seq_len`, when the model spliced
+///   something in front of the window. The *last* of those extra positions
+///   stands immediately before the first user token. So it is scored against
+///   **that token**: the first character of the story. The earlier `lead - 1`
+///   positions are dropped, because their prefix is shorter than any prefix
+///   that the sequence has later. `lead = 0` (a model that splices nothing) is
+///   the plain case, and nothing here applies.
 ///
-///   Whether that position exists, and what the model puts there, is entirely the
-///   model's business; this only makes sure that if it *is* the sequence's
-///   opening, it is trained as one. Otherwise the corpus's first character would
-///   be the one character never scored — and, for a model that opens sequences
-///   that way, the exact position an unprompted sample starts from.
+///   The model alone decides whether that position exists and what it puts
+///   there. This function only makes sure that, if it *is* the opening of the
+///   sequence, it trains as one. Otherwise the first character of each story
+///   would be the one character that is never scored. For a model that opens
+///   sequences that way, it is also the exact position where an unprompted
+///   sample starts.
 /// - **Padding never reaches the loss.** Stories differ in length, so `scored`
-///   says how many leading positions of each batch slot are real; the rest are
-///   masked out of the cross-entropy, whose mean is normalized by the real count,
-///   and carry [`PAD_TARGET`] so the accuracy stays per real character too.
+///   gives the number of leading real positions in each batch slot. The other
+///   positions are masked out of the cross-entropy, whose mean is normalized
+///   by the real count. They carry [`PAD_TARGET`], so the accuracy is also per
+///   real character.
 ///
-/// Every shape here is the window's, whatever its stories' lengths: a gather of
-/// the real positions would give each window its own row count, and every
-/// distinct shape a launch sees costs a cached metadata buffer on cubecl
-/// backends, slowing every later allocation (tracel-ai/burn#5751). For the same
-/// reason the real count is summed on the device rather than passed as a host
-/// scalar — kernel scalars are part of that cache's key too.
+/// Every shape here is that of the window, whatever the lengths of its
+/// stories. A gather of the real positions would give each window its own row
+/// count. On cubecl backends, every distinct shape that a launch sees costs a
+/// cached metadata buffer, which slows every later allocation
+/// (tracel-ai/burn#5751). For the same reason, the real count is summed on the
+/// device, not passed as a host scalar: kernel scalars are also part of the
+/// key of that cache.
 pub fn lm_output(
     logits: Tensor<3>,
     inputs: Tensor<2, Int>,
@@ -653,8 +668,9 @@ pub fn lm_output(
         "a scored window holds at least one token"
     );
 
-    // Padding, as a flat mask over the `[batch · positions]` axis: a slot's real
-    // positions are its first `scored` ones, the padding being appended.
+    // Padding, as a flat mask over the `[batch · positions]` axis. The real
+    // positions of a slot are its first `scored` positions, and the padding
+    // comes after them.
     let scored: Vec<i32> = scored.iter().map(|&n| n as i32).collect();
     let scored_bp = Tensor::<1, Int>::from_ints(scored.as_slice(), &device)
         .reshape([batch_size, 1])
@@ -679,16 +695,17 @@ pub fn lm_output(
     ClassificationOutput::new(loss, logits, targets)
 }
 
-/// The target a padded position carries in [`lm_output`]'s
-/// [`ClassificationOutput`]: one past the vocabulary, so no prediction matches
-/// it and `AccuracyMetric::with_pad_token(PAD_TARGET)` leaves it out.
+/// The target of a padded position in the [`ClassificationOutput`] of
+/// [`lm_output`]. It is one past the vocabulary, so no prediction matches it,
+/// and `AccuracyMetric::with_pad_token(PAD_TARGET)` leaves it out.
 pub const PAD_TARGET: usize = VOCAB_SIZE;
 
-/// Validation's mean loss per **character**: each window's (already per-real-
-/// character) mean weighted by its real positions, so a late window holding a
-/// few characters of one long story weighs by those characters rather than as a
-/// whole window — Burn's `LossMetric` weights by the loss tensor's length, which
-/// [`lm_output`]'s fixed shapes no longer tie to the real count.
+/// The mean validation loss per **character**. The mean of each window
+/// (already per real character) is weighted by its real positions. So a late
+/// window with a few characters of one long story weighs as those characters,
+/// not as a whole window. Burn's `LossMetric` weights by the length of the
+/// loss tensor, and the fixed shapes of [`lm_output`] do not tie that length
+/// to the real count.
 #[derive(Default)]
 struct PerCharLoss {
     sum: f64,

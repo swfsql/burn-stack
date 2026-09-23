@@ -1,11 +1,12 @@
-//! A captured step is the eager step: same outputs, same final caches, for a
-//! host-fed (token ids) and a device-fed (latent) input, and a state set in
-//! place is continued from; a stateless forward (caches `()`) is the eager one.
+//! A captured step is the eager step: the same outputs and the same final
+//! caches, for a host-fed (token ids) and a device-fed (latent) input. A step
+//! continues from a state set in place. A stateless forward (caches `()`) is
+//! the eager one.
 //!
-//! Off a hardware-graph build (flex, the default) the captured step falls back
-//! to stepping eagerly, which still runs `capture`'s closure and so pins the
-//! snapshot/restore around it; under `backend-cuda` the same suite replays a
-//! real graph, which [`expects_graph`] asserts it got.
+//! Off a hardware-graph build (flex, the default), the captured step runs
+//! eager steps. These still run the closure of `capture`, so the tests pin the
+//! snapshot/restore around it. Under `backend-cuda`, the same suite replays a
+//! real graph, and [`expects_graph`] asserts that it got one.
 
 use super::CapturedStep;
 use crate::modules::{Layers, LayersBuilder, VocabNetwork, VocabNetworkBuilder};
@@ -165,9 +166,9 @@ fn captured_forward_is_the_eager_forward() {
     }
 }
 
-/// A captured SGD training step is Burn's eager `Sgd`, bit for bit — the loss
-/// at every step and the final weights — under a learning rate that moves every
-/// step, with weight decay and gradient clipping on.
+/// A captured SGD training step is the eager `Sgd` of Burn, bit for bit: the
+/// loss at every step and the final weights. The learning rate changes at
+/// every step, and weight decay and gradient clipping are on.
 #[cfg(feature = "optim")]
 #[test]
 fn captured_sgd_training_is_the_eager_training() {
