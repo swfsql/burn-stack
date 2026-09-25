@@ -6,7 +6,7 @@ use crate::utils::class::{
     class_marker_output_indices, class_prime_plan, class_row, init_class_emb,
     insert_class_markers_padded, landing_count, splice_class_rows,
 };
-use crate::utils::{ClassCursor, ClassCursors, ClassLatent, Padding};
+use crate::utils::{ClassCursor, ClassCursors, ClassLatent, Packed, Padding};
 use burn::module::Param;
 use burn::prelude::*;
 
@@ -297,6 +297,38 @@ where
         self.forward_padded(x, caches, options, class, pad.map(Padding::new))
     }
 
+    /// [`Self::forward`] over packed rows (see [`crate::utils::packing`]). At
+    /// each reset of `packed`, every layer restarts from a zero cache. The
+    /// rows before the first reset of a slot continue from `caches`.
+    ///
+    /// The stack puts its class latents into the opening slots of each
+    /// sequence, in place of the input rows. So the output has the shape of
+    /// `x`. Every class latent of the stack must be a `Start`. A layer cannot
+    /// have class latents of its own, because a splice would move the resets.
+    /// The returned caches are those of the last sequence of each slot.
+    pub fn forward_packed(
+        &self,
+        x: Tensor<3>,
+        caches: Option<M::Caches>,
+        options: M::Options,
+        packed: &Packed,
+    ) -> (Tensor<3>, M::Caches) {
+        assert!(
+            self.class_latents.iter().all(|m| matches!(m, ClassLatent::Start)),
+            "a packed stack takes only `Start` class latents"
+        );
+        assert!(
+            self.real_layers.iter().all(|l| l.class_latents.is_empty()),
+            "a packed stack takes no class latents of a layer"
+        );
+        let packed = packed.inner();
+        let x = match &self.class_latents_emb {
+            Some(emb) if !self.class_latents.is_empty() => packed.place(x, emb.val()),
+            _ => x,
+        };
+        self.forward_rows(x, caches, options, None, None, Some(&packed))
+    }
+
     /// [`Self::forward`] with the padding already tracked. A container that
     /// splices its own markers below this stack calls this.
     pub(crate) fn forward_padded(
@@ -307,13 +339,49 @@ where
         class: Option<&mut ClassCursors>,
         padding: Option<Padding>,
     ) -> (Tensor<3>, M::Caches) {
+        self.forward_rows(x, caches, options, class, padding, None)
+    }
+
+    /// One layer of the stack, over padded rows or over packed rows.
+    fn run_layer(
+        layer: &Layer<M>,
+        x: Tensor<3>,
+        cache: M::Cache,
+        options: M::Options,
+        padding: Option<&Padding>,
+        packed: Option<&Packed>,
+    ) -> (Tensor<3>, M::Cache) {
+        match packed {
+            None => layer.forward(x, Some(cache), options, padding),
+            Some(packed) => layer.forward_packed(x, Some(cache), options, packed),
+        }
+    }
+
+    /// The loop of [`Self::forward_padded`] and [`Self::forward_packed`].
+    /// `packed` rows take no padding, and their class latents are already in
+    /// their opening slots.
+    fn forward_rows(
+        &self,
+        x: Tensor<3>,
+        caches: Option<M::Caches>,
+        options: M::Options,
+        class: Option<&mut ClassCursors>,
+        padding: Option<Padding>,
+        packed: Option<&Packed>,
+    ) -> (Tensor<3>, M::Caches) {
         let n = self.n_virtual_count();
         // No cursors ⇒ this one call covers the whole sequence.
         let mut whole = ClassCursors::new(x.dims()[1]);
         let class = class.unwrap_or(&mut whole);
         class.fit(n);
 
-        let (mut x, mut padding) = self.insert_latents(x, padding, class);
+        let (mut x, mut padding) = match packed {
+            None => self.insert_latents(x, padding, class),
+            Some(_) => {
+                assert!(padding.is_none(), "packed rows take no padding");
+                (x, None)
+            }
+        };
         // The latents of the stack make the sequence of the layers longer.
         // Each layer then makes it longer for the layers above it.
         let mut full = class
@@ -475,17 +543,24 @@ where
                     // suppressed, move the input straight in (no clone, no add).
                     let x_l = x;
                     let (out, c_) = if first || last {
-                        layer.forward(x_l, Some(cache), options.clone(), padding.as_ref())
+                        Self::run_layer(&layer, x_l, cache, options.clone(), padding.as_ref(), packed)
                     } else {
-                        let (out, c_) =
-                            layer.forward(x_l.clone(), Some(cache), options.clone(), padding.as_ref());
+                        let (out, c_) = Self::run_layer(
+                            &layer,
+                            x_l.clone(),
+                            cache,
+                            options.clone(),
+                            padding.as_ref(),
+                            packed,
+                        );
                         (out + x_l, c_)
                     };
                     x = out;
                     slots[i] = Some(c_);
                 }
                 Residuals::MultiGate(mg) => {
-                    let (out, c_) = layer.forward(x, Some(cache), options.clone(), padding.as_ref());
+                    let (out, c_) =
+                        Self::run_layer(&layer, x, cache, options.clone(), padding.as_ref(), packed);
                     slots[i] = Some(c_);
                     let s = streams.take().unwrap();
                     // A skipped residual here drops every carried stream. The

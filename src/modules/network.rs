@@ -5,7 +5,7 @@ use crate::utils::class::{
     assert_full_len_known, class_chunk_plan, class_emb_width, class_marker_output_indices,
     class_prime_plan, class_row, init_class_emb, insert_class_markers_padded,
 };
-use crate::utils::{ClassCursor, ClassCursors, Padding};
+use crate::utils::{ClassCursor, ClassCursors, Packed, Padding};
 use burn::module::Param;
 use burn::nn::{Embedding, EmbeddingConfig, Linear, LinearConfig};
 use burn::prelude::*;
@@ -336,6 +336,23 @@ where
     ) -> (Tensor<3>, M::Caches) {
         let x = self.embedding.forward(x);
         let (x, caches) = self.layers.forward(x, caches, options, class, pad);
+        let x = self.norm_f.forward(x);
+        (self.apply_lm_head(x), caches)
+    }
+
+    /// [`Self::forward`] over packed rows: token IDs `[batch, rows]` → logits
+    /// `[batch, rows, padded_vocab]`, with every sequence of a slot restarted
+    /// at its reset (see [`Layers::forward_packed`]). The token of an opening
+    /// slot is not read: the stack puts its class latent there.
+    pub fn forward_packed(
+        &self,
+        x: Tensor<2, Int>,
+        caches: Option<M::Caches>,
+        options: M::Options,
+        packed: &Packed,
+    ) -> (Tensor<3>, M::Caches) {
+        let x = self.embedding.forward(x);
+        let (x, caches) = self.layers.forward_packed(x, caches, options, packed);
         let x = self.norm_f.forward(x);
         (self.apply_lm_head(x), caches)
     }

@@ -109,6 +109,29 @@ pub trait Block: Module + burn::module::ModuleDisplay {
         pad: Option<Tensor<2, Bool>>,
     ) -> (Tensor<3>, Self::Cache);
 
+    /// [`Self::block_forward`] over **packed** rows: in each slot, several
+    /// sequences one after another (see [`crate::utils::packing`]).
+    ///
+    /// `reset` (`[batch, sequence]`) is `true` at the first row of each
+    /// sequence. At that row, the block restarts from a zero cache. The rows
+    /// before the first reset of a slot continue from `cache`. The output of
+    /// each sequence is that of the sequence run alone from a zero cache. The
+    /// returned cache is that of the last sequence of each slot.
+    ///
+    /// A block can accept a reset only at some rows (for example, at a chunk
+    /// start). The caller places the resets there. The default panics: a
+    /// block that does not override it takes no packed rows.
+    fn block_forward_packed(
+        &self,
+        x: Tensor<3>,
+        cache: Option<Self::Cache>,
+        options: Self::Options,
+        reset: Tensor<2, Bool>,
+    ) -> (Tensor<3>, Self::Cache) {
+        let _ = (x, cache, options, reset);
+        panic!("this block takes no packed rows (it does not implement `block_forward_packed`)");
+    }
+
     /// Single-token recurrent step — decoding.
     fn block_step(&self, x: Tensor<2>, cache: Option<Self::Cache>) -> (Tensor<2>, Self::Cache);
 

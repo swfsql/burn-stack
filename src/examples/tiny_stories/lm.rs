@@ -44,11 +44,21 @@
 //! peak memory is the activations of one window, however deep the run goes.
 //! Gradients never cross a window boundary. Backpropagation within the window
 //! does not change.
+//!
+//! # Packed training
+//!
+//! With [`TinyStoriesConfig::pack`], one train item is a **packed row** of
+//! whole stories instead (see [`dataset`](super::dataset)), and a batch is one
+//! window. A story then trains whole, from a fresh state, with no carry and no
+//! frontier. The model reads the layout from [`TinyStoriesBatch::packed`], and
+//! scores with [`lm_output_packed`]. The validation is never packed, so its
+//! bits per character do not change with the packing.
 
 use crate::examples::cli::AppArgs;
 use crate::examples::device::loader_device;
 use crate::examples::tiny_stories::dataset::{
-    Split, TinyStoriesBatch, TinyStoriesBatcher, TinyStoriesDataset, VOCAB_SIZE,
+    PackLayout, PackedStoriesBatcher, PackedStoriesDataset, Split, TinyStoriesBatch,
+    TinyStoriesBatcher, TinyStoriesDataset, VOCAB_SIZE,
 };
 use crate::examples::session::{Cadence, Session, TrainingProgress};
 use crate::examples::training::{TrainingConfig, metric_current};
@@ -95,6 +105,40 @@ pub struct TinyStoriesConfig {
     /// Softmax temperature for those samples.
     #[config(default = 0.8)]
     pub sample_temperature: f64,
+    /// Train on packed rows (see [`Pack`]). `None`: one story per batch slot.
+    /// The validation always takes one story per slot, with `seq_len`,
+    /// `run_len` and the batch size of [`Self::training`].
+    #[config(default = "None")]
+    pub pack: Option<Pack>,
+}
+
+impl TinyStoriesConfig {
+    /// Items per train batch: rows when packed, else stories.
+    pub fn train_batch_size(&self) -> usize {
+        match &self.pack {
+            Some(pack) => pack.rows,
+            None => self.training.batch_size,
+        }
+    }
+}
+
+/// The geometry of packed training (see [`dataset`](super::dataset)).
+#[derive(Config, Debug)]
+pub struct Pack {
+    /// Positions per row (the window). A story longer than a row is
+    /// truncated to fit. So a width of at least the longest story (4,149
+    /// characters) plus the opening slots of the model keeps every story
+    /// whole.
+    pub width: usize,
+    /// Rows per batch.
+    pub rows: usize,
+    /// Open rows of the first-fit packer ([`pack_rows`]). `1` keeps the
+    /// shuffled order of the stories exactly. More rows fill the rows better,
+    /// and move a story ahead by at most this many rows.
+    ///
+    /// [`pack_rows`]: super::dataset::pack_rows
+    #[config(default = 8)]
+    pub open_rows: usize,
 }
 
 // ===========================================================================
@@ -205,6 +249,14 @@ pub struct Overrides {
     pub train_stories: Option<usize>,
     /// `--valid-stories <usize>`: stories taken from the validation split.
     pub valid_stories: Option<usize>,
+    /// `--pack <usize>`: train on packed rows of this width.
+    pub pack: Option<usize>,
+    /// `--pack-rows <usize>`: rows per packed batch.
+    pub pack_rows: Option<usize>,
+    /// `--pack-open <usize>`: open rows of the packer.
+    pub pack_open: Option<usize>,
+    /// `--no-pack`: train on one story per batch slot.
+    pub no_pack: bool,
 }
 
 impl Overrides {
@@ -215,7 +267,11 @@ impl Overrides {
         "    --frontier-bits <B>    Carry the state of a window into the next while it scores at most B bits/char\n",
         "    --no-frontier          Carry the state through the whole story, with no gate\n",
         "    --train-stories <N>    Stories taken from the train split\n",
-        "    --valid-stories <N>    Stories taken from the validation split",
+        "    --valid-stories <N>    Stories taken from the validation split\n",
+        "    --pack <W>             Train on packed rows of W positions, each row whole stories (needs --pack-rows once)\n",
+        "    --pack-rows <N>        Rows per packed batch\n",
+        "    --pack-open <K>        Open rows of the packer (default 8; 1 keeps the shuffled order)\n",
+        "    --no-pack              Train on one story per batch slot",
     );
 
     /// Take these flags out of the parser of the example, over the arguments
@@ -229,6 +285,10 @@ impl Overrides {
             no_frontier: pargs.contains("--no-frontier"),
             train_stories: pargs.opt_value_from_str("--train-stories").unwrap(),
             valid_stories: pargs.opt_value_from_str("--valid-stories").unwrap(),
+            pack: pargs.opt_value_from_str("--pack").unwrap(),
+            pack_rows: pargs.opt_value_from_str("--pack-rows").unwrap(),
+            pack_open: pargs.opt_value_from_str("--pack-open").unwrap(),
+            no_pack: pargs.contains("--no-pack"),
         }
     }
 
@@ -251,6 +311,35 @@ impl Overrides {
         }
         if let Some(valid_stories) = self.valid_stories {
             config.valid_stories = valid_stories;
+        }
+        assert!(
+            !(self.no_pack && self.pack.is_some()),
+            "--pack and --no-pack contradict each other"
+        );
+        if self.no_pack {
+            config.pack = None;
+        }
+        if let Some(width) = self.pack {
+            let rows = self
+                .pack_rows
+                .or(config.pack.as_ref().map(|pack| pack.rows))
+                .expect("--pack needs --pack-rows (rows per batch)");
+            let open_rows = config.pack.as_ref().map_or(8, |pack| pack.open_rows);
+            config.pack = Some(Pack::new(width, rows).with_open_rows(open_rows));
+        }
+        match config.pack.as_mut() {
+            Some(pack) => {
+                if let Some(rows) = self.pack_rows {
+                    pack.rows = rows;
+                }
+                if let Some(open_rows) = self.pack_open {
+                    pack.open_rows = open_rows;
+                }
+            }
+            None => assert!(
+                self.pack_rows.is_none() && self.pack_open.is_none(),
+                "--pack-rows and --pack-open need packed training (--pack)"
+            ),
         }
     }
 }
@@ -331,41 +420,94 @@ pub trait LmModel: Sized {
     ) -> String;
 }
 
-/// Load the train and validation splits (download them once), and window them
-/// into dataloaders. Both build their batches on
-/// [`loader_device`]`(training_device)`, and the loops move the batches to the
-/// device of the model. The training dataloader shuffles from where
-/// `progress` resumes (see [`TrainingProgress::shuffle_seed`]).
+/// [`dataloaders_for`] a model that places no constraint on packed rows
+/// ([`PackLayout::default`]).
 pub fn dataloaders(
     config: &TinyStoriesConfig,
     training_device: &Device,
     progress: &TrainingProgress,
 ) -> (Dataloader, Dataloader) {
+    dataloaders_for(config, training_device, progress, PackLayout::default())
+}
+
+/// Load the train and validation splits (download them once), and window them
+/// into dataloaders. Both build their batches on
+/// [`loader_device`]`(training_device)`, and the loops move the batches to the
+/// device of the model. The training dataloader shuffles from where
+/// `progress` resumes (see [`TrainingProgress::shuffle_seed`]).
+///
+/// With [`TinyStoriesConfig::pack`], the train split is packed into rows with
+/// the `layout` of the model, in the order of that same shuffle. The
+/// validation split is never packed.
+pub fn dataloaders_for(
+    config: &TinyStoriesConfig,
+    training_device: &Device,
+    progress: &TrainingProgress,
+    layout: PackLayout,
+) -> (Dataloader, Dataloader) {
     let (seq_len, run_len) = (config.seq_len, config.run_len);
     let batcher = TinyStoriesBatcher::new(seq_len);
-    let train_set = TinyStoriesDataset::new(Split::Train, config.train_stories, seq_len, run_len);
     let valid_set = TinyStoriesDataset::new(Split::Valid, config.valid_stories, seq_len, run_len);
     let cap = match run_len {
         usize::MAX => "uncapped".to_owned(),
         _ => format!("capped at {run_len}"),
     };
-    println!(
-        "corpus: {} train / {} valid characters ({} / {} windows of {seq_len}, \
-         one run per story, {cap})",
-        train_set.num_tokens(),
-        valid_set.num_tokens(),
-        train_set.num_windows(),
-        valid_set.num_windows(),
-    );
+    let seed = progress.shuffle_seed(config.training.seed);
     // The workers build batches on the host, and the loops move them to the
     // device. A worker that uploads to the GPU from its own thread can
     // invalidate a graph under capture (see `loader_device`).
-    let dataloader_train = DataLoaderBuilder::new(batcher.clone())
-        .batch_size(config.training.batch_size)
-        .shuffle(progress.shuffle_seed(config.training.seed))
-        .num_workers(config.training.num_workers)
-        .set_device(loader_device(training_device))
-        .build(train_set);
+    let dataloader_train: Dataloader = match &config.pack {
+        None => {
+            let train_set =
+                TinyStoriesDataset::new(Split::Train, config.train_stories, seq_len, run_len);
+            println!(
+                "corpus: {} train / {} valid characters ({} / {} windows of {seq_len}, \
+                 one run per story, {cap})",
+                train_set.num_tokens(),
+                valid_set.num_tokens(),
+                train_set.num_windows(),
+                valid_set.num_windows(),
+            );
+            DataLoaderBuilder::new(batcher.clone())
+                .batch_size(config.training.batch_size)
+                .shuffle(seed)
+                .num_workers(config.training.num_workers)
+                .set_device(loader_device(training_device))
+                .build(train_set)
+        }
+        Some(pack) => {
+            let train_set = PackedStoriesDataset::new(
+                Split::Train,
+                config.train_stories,
+                pack.width,
+                layout,
+                pack.open_rows,
+                seed,
+            );
+            let (chars, rows) = (train_set.num_tokens(), train_set.num_rows());
+            println!(
+                "corpus: {chars} train characters in {rows} packed rows of {} \
+                 ({:.3} of the positions, {} open rows, stories at multiples of {}, \
+                 {} opening slots)",
+                pack.width,
+                chars as f64 / (rows * pack.width) as f64,
+                pack.open_rows,
+                layout.align,
+                layout.lead,
+            );
+            println!(
+                "corpus: {} valid characters ({} windows of {seq_len}, one run per story, {cap})",
+                valid_set.num_tokens(),
+                valid_set.num_windows(),
+            );
+            DataLoaderBuilder::new(PackedStoriesBatcher::new(pack.width, layout))
+                .batch_size(pack.rows)
+                .shuffle(seed)
+                .num_workers(config.training.num_workers)
+                .set_device(loader_device(training_device))
+                .build(train_set)
+        }
+    };
     let dataloader_valid = DataLoaderBuilder::new(batcher)
         .batch_size(config.training.batch_size)
         .shuffle(config.training.seed)
@@ -411,7 +553,7 @@ pub fn epoch_train<W: LmModel>(
     let mut loss_metric = burn::train::metric::LossMetric::new();
     let mut acc_metric = burn::train::metric::AccuracyMetric::new().with_pad_token(PAD_TARGET);
     let mut iteration_speed_metric = burn::train::metric::IterationSpeedMetric::new();
-    let batches = dataloader_train.num_items().div_ceil(config.training.batch_size);
+    let batches = dataloader_train.num_items().div_ceil(config.train_batch_size());
     frontier.reset_stats();
 
     // Training loop: one batch of stories per iteration. Every slot advances
@@ -680,9 +822,30 @@ pub fn lm_output(
         .expand([batch_size, positions])
         .greater_equal(scored_bp)
         .reshape([rows]);
+    masked_output(logits.reshape([rows, VOCAB_SIZE]), targets.reshape([rows]), pad)
+}
 
-    let logits = logits.reshape([rows, VOCAB_SIZE]);
-    let targets = targets.reshape([rows]);
+/// [`lm_output`] for a batch of packed rows ([`TinyStoriesBatch::packed`]).
+/// The forward keeps the shape of the rows (the opening slots are in them),
+/// and `score_bs` marks the scored positions.
+pub fn lm_output_packed(
+    logits: Tensor<3>,
+    targets: Tensor<2, Int>,
+    score_bs: Tensor<2, Bool>,
+) -> ClassificationOutput {
+    let [batch_size, width] = targets.dims();
+    assert_eq!([batch_size, width, VOCAB_SIZE], logits.dims());
+    assert_eq!([batch_size, width], score_bs.dims());
+    let rows = batch_size * width;
+    let pad = score_bs.bool_not().reshape([rows]);
+    masked_output(logits.reshape([rows, VOCAB_SIZE]), targets.reshape([rows]), pad)
+}
+
+/// The cross-entropy of `logits` (`[rows, VOCAB_SIZE]`) against `targets`
+/// (`[rows]`), with the rows of `pad` (`true`) left out: the mean over the
+/// other rows. Their targets become [`PAD_TARGET`].
+fn masked_output(logits: Tensor<2>, targets: Tensor<1, Int>, pad: Tensor<1, Bool>) -> ClassificationOutput {
+    let [rows] = targets.dims();
     let nll = burn::tensor::activation::log_softmax(logits.clone(), 1)
         .gather(1, targets.clone().reshape([rows, 1]))
         .reshape([rows])

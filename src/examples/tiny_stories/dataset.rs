@@ -55,7 +55,23 @@
 //! [`TinyStoriesBatch::scored`] records how many positions of each slot are
 //! real, and [`lm_output`](super::lm::lm_output) scores only those. Padding
 //! never reaches the loss or the accuracy.
+//!
+//! # Packed rows
+//!
+//! The padding of a batch of stories grows with the window. So a long window
+//! wastes most of a batch on its short stories. A packed batch
+//! ([`PackedStoriesDataset`], [`PackedStoriesBatcher`]) is one window of
+//! `rows` rows. Each row holds whole stories, one after another, and each
+//! story starts from a fresh state (see [`crate::utils::packing`]). The model
+//! says where a story can start and how many opening slots it reserves
+//! ([`PackLayout`]). The packer fills the rows first-fit, over a few open rows
+//! ([`pack_rows`]). No state goes from one packed batch to the next. Only the
+//! train split is packed.
 
+#[cfg(test)]
+mod tests;
+
+use crate::utils::Packed;
 use burn::data::dataloader::batcher::Batcher;
 use burn::prelude::*;
 use burn_dataset::{Dataset, DatasetError, network::downloader::download_file_as_bytes};
@@ -416,6 +432,21 @@ pub struct TinyStoriesBatch {
     pub scored: Vec<usize>,
     /// Window length this batch was padded against.
     pub seq_len: usize,
+    /// `Some` for a batch of packed rows (see [`PackedStoriesBatcher`]). Then
+    /// the batch is one window, and a slot holds several stories.
+    pub packed: Option<PackedRows>,
+}
+
+/// The layout of a batch of packed rows: where each story starts, and which
+/// positions are scored.
+#[derive(Clone, Debug)]
+pub struct PackedRows {
+    /// The resets and the opening slots of the stories, for the model.
+    pub layout: Packed,
+    /// `[batch_size, width]`: `true` at a scored position. These are the
+    /// characters of each story after its first, plus its last opening slot
+    /// (scored against its first character).
+    pub score_bs: Tensor<2, Bool>,
 }
 
 impl TinyStoriesBatch {
@@ -427,6 +458,10 @@ impl TinyStoriesBatch {
         Self {
             inputs: batch_int(self.inputs, device),
             targets: batch_int(self.targets, device),
+            packed: self.packed.map(|packed| PackedRows {
+                layout: packed.layout.to_device(device),
+                score_bs: crate::utils::packing::bool_to_device(packed.score_bs, device),
+            }),
             ..self
         }
     }
@@ -452,6 +487,10 @@ impl TinyStoriesBatch {
             "window {w} is past the batch ({} windows)",
             self.num_windows(),
         );
+        // A packed batch is one window.
+        if self.packed.is_some() {
+            return self.clone();
+        }
         Self {
             inputs: self.inputs.clone().narrow(1, w * seq_len, seq_len),
             targets: self.targets.clone().narrow(1, w * seq_len, seq_len),
@@ -461,6 +500,7 @@ impl TinyStoriesBatch {
                 .map(|&n| n.saturating_sub(w * seq_len).min(seq_len))
                 .collect(),
             seq_len,
+            packed: None,
         }
     }
 }
@@ -513,6 +553,229 @@ impl Batcher<TinyStoriesItem, TinyStoriesBatch> for TinyStoriesBatcher {
             targets: Tensor::<1, Int>::from_ints(targets.as_slice(), device).reshape(shape),
             scored,
             seq_len: self.seq_len,
+            packed: None,
+        }
+    }
+}
+
+// ===========================================================================
+// Packed rows
+// ===========================================================================
+
+/// What the model asks of a packed row. The data side does not know why.
+#[derive(Clone, Copy, Debug)]
+pub struct PackLayout {
+    /// A story starts only at a multiple of this position (the positions
+    /// where the model accepts a reset, for example its chunk starts).
+    pub align: usize,
+    /// Opening slots in front of each story (the model puts its class latents
+    /// there).
+    pub lead: usize,
+}
+
+impl Default for PackLayout {
+    /// A model with no constraint: a story can start anywhere, with no
+    /// opening slots.
+    fn default() -> Self {
+        Self { align: 1, lead: 0 }
+    }
+}
+
+impl PackLayout {
+    /// Positions that a story of `len` tokens takes in a row: its opening
+    /// slots, then every token but the last (the inputs).
+    pub fn positions(&self, len: usize) -> usize {
+        self.lead + len - 1
+    }
+}
+
+/// Pack stories into rows of `width` positions, first-fit over `open_rows`
+/// open rows. Returns the stories of each row, in row order.
+///
+/// `lens` holds the token count of each story, and `order` the order in which
+/// to place them (a shuffle). A story goes into the first open row that has
+/// room for it after the last story of that row (rounded up to
+/// `layout.align`). When no open row has room, the oldest open row closes,
+/// and a new row opens with the story. So a story moves ahead of its place in
+/// `order` by at most `open_rows` rows. `open_rows = 1` keeps the order
+/// exactly.
+///
+/// # Panics
+/// If a story does not fit into an empty row.
+pub fn pack_rows(
+    lens: &[usize],
+    order: &[usize],
+    width: usize,
+    layout: PackLayout,
+    open_rows: usize,
+) -> Vec<Vec<usize>> {
+    assert!(open_rows >= 1, "the packer keeps at least one open row");
+    assert!(layout.align >= 1, "a story starts at a multiple of at least 1");
+    let mut rows = Vec::new();
+    // Each open row: its stories and its first free (aligned) position.
+    let mut open: std::collections::VecDeque<(Vec<usize>, usize)> = Default::default();
+    for &story in order {
+        let need = layout.positions(lens[story]);
+        assert!(need <= width, "story {story} takes {need} positions, more than a row of {width}");
+        let next = |used: usize| (used + need).next_multiple_of(layout.align);
+        match open.iter_mut().find(|(_, used)| used + need <= width) {
+            Some((stories, used)) => {
+                stories.push(story);
+                *used = next(*used);
+            }
+            None => {
+                if open.len() == open_rows {
+                    rows.push(open.pop_front().expect("an open row").0);
+                }
+                open.push_back((vec![story], next(0)));
+            }
+        }
+    }
+    rows.extend(open.into_iter().map(|(stories, _)| stories));
+    rows
+}
+
+/// One packed row: the token ids of its stories, in row order.
+#[derive(Clone, Debug)]
+pub struct PackedItem {
+    /// The stories of the row.
+    pub stories: Vec<Vec<u8>>,
+}
+
+/// The train split as packed rows (see [`pack_rows`]). One item is one row.
+pub struct PackedStoriesDataset {
+    /// The stories, each truncated to fit into one row.
+    stories: Arc<Vec<Vec<u8>>>,
+    /// The stories of each row.
+    rows: Vec<Vec<usize>>,
+}
+
+impl PackedStoriesDataset {
+    /// Pack `n_stories` of `split` into rows of `width` positions, in the
+    /// order of a shuffle with `seed`. A story too long for a row is
+    /// truncated to fit.
+    pub fn new(
+        split: Split,
+        n_stories: usize,
+        width: usize,
+        layout: PackLayout,
+        open_rows: usize,
+        seed: u64,
+    ) -> Self {
+        use rand::SeedableRng;
+        use rand::seq::SliceRandom;
+        assert!(width > layout.lead, "a row holds the opening slots and at least one token");
+        // The inputs of a story are all its tokens but the last.
+        let max_tokens = width - layout.lead + 1;
+        let stories: Vec<Vec<u8>> = stories(split, n_stories)
+            .iter()
+            .map(|story| {
+                let mut tokens = VOCAB.encode(story);
+                tokens.truncate(max_tokens);
+                tokens
+            })
+            .filter(|tokens| tokens.len() >= 2)
+            .collect();
+        let lens: Vec<usize> = stories.iter().map(Vec::len).collect();
+        let mut order: Vec<usize> = (0..stories.len()).collect();
+        order.shuffle(&mut rand_chacha::ChaCha8Rng::seed_from_u64(seed));
+        let rows = pack_rows(&lens, &order, width, layout, open_rows);
+        Self {
+            stories: Arc::new(stories),
+            rows,
+        }
+    }
+
+    /// Total number of characters in the packed stories.
+    pub fn num_tokens(&self) -> usize {
+        self.stories.iter().map(Vec::len).sum()
+    }
+
+    /// The packed rows: the items of the dataset.
+    pub fn num_rows(&self) -> usize {
+        self.rows.len()
+    }
+}
+
+impl Dataset<PackedItem> for PackedStoriesDataset {
+    fn get(&self, index: usize) -> Result<PackedItem, DatasetError> {
+        Ok(PackedItem {
+            stories: self.rows[index].iter().map(|&s| self.stories[s].clone()).collect(),
+        })
+    }
+
+    fn len(&self) -> usize {
+        self.rows.len()
+    }
+}
+
+/// Stacks [`PackedItem`]s into a one-window [`TinyStoriesBatch`] of
+/// `[rows, width]`, with its [`PackedRows`].
+///
+/// A story takes `lead` opening slots, then its tokens but the last as
+/// inputs. The next token is the target of each input. The last opening slot
+/// is scored against the first token. The next story starts at the next
+/// multiple of `align`. Token 0 fills the slots and the gaps, which are not
+/// scored.
+#[derive(Clone)]
+pub struct PackedStoriesBatcher {
+    /// Positions per row.
+    width: usize,
+    /// The constraints of the model.
+    layout: PackLayout,
+}
+
+impl PackedStoriesBatcher {
+    /// A batcher of rows of `width` positions.
+    pub fn new(width: usize, layout: PackLayout) -> Self {
+        Self { width, layout }
+    }
+}
+
+impl Batcher<PackedItem, TinyStoriesBatch> for PackedStoriesBatcher {
+    fn batch(&self, items: Vec<PackedItem>, device: &Device) -> TinyStoriesBatch {
+        let (width, PackLayout { align, lead }) = (self.width, self.layout);
+        let rows = items.len();
+        let mut inputs = vec![0i32; rows * width];
+        let mut targets = vec![0i32; rows * width];
+        let mut score = vec![false; rows * width];
+        let mut starts = vec![Vec::new(); rows];
+        let mut scored = vec![0usize; rows];
+        for (b, item) in items.iter().enumerate() {
+            let row = b * width;
+            let mut start = 0;
+            for tokens in &item.stories {
+                let n = tokens.len() - 1;
+                assert!(start + lead + n <= width, "a packed row overflows its width");
+                starts[b].push(start);
+                let first = start + lead;
+                if lead > 0 {
+                    targets[row + first - 1] = tokens[0] as i32;
+                    score[row + first - 1] = true;
+                }
+                for j in 0..n {
+                    inputs[row + first + j] = tokens[j] as i32;
+                    targets[row + first + j] = tokens[j + 1] as i32;
+                    score[row + first + j] = true;
+                }
+                scored[b] += n + usize::from(lead > 0);
+                start = (first + n).next_multiple_of(align);
+            }
+        }
+        let shape = [rows, width];
+        TinyStoriesBatch {
+            inputs: Tensor::<1, Int>::from_ints(inputs.as_slice(), device).reshape(shape),
+            targets: Tensor::<1, Int>::from_ints(targets.as_slice(), device).reshape(shape),
+            scored,
+            seq_len: width,
+            packed: Some(PackedRows {
+                layout: Packed::from_starts(&starts, lead, width, device),
+                score_bs: Tensor::<1, Bool>::from_bool(
+                    burn::tensor::TensorData::new(score, [rows * width]),
+                    device,
+                )
+                .reshape(shape),
+            }),
         }
     }
 }

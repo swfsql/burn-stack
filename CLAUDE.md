@@ -99,7 +99,8 @@ src/
 │                    `reference/tests.rs` is the container contract suite
 │                    (feature `test-helpers`)
 ├─ modules/          composition + shared NN modules
-│  ├─ mod.rs         Block / BlockConfig traits (the whole plug-in surface)
+│  ├─ mod.rs         Block / BlockConfig traits (the whole plug-in surface).
+│  │                 block_forward_packed defaults to a panic (no packed rows)
 │  ├─ layer.rs       Layer<M>: Pre-LN block M(RMSNorm(·)) + optional norm2/mlp.
 │  │                 Returns the total delta of the layer (Layers adds the outer
 │  │                 residual). application(k): the view that application k runs
@@ -107,7 +108,8 @@ src/
 │  ├─ layers.rs      Layers<M>: virtual-layer stack over real weight sets.
 │  │                 grad_horizon truncates BPTT to a tracked-layer mask
 │  │                 (forward/step/prime cut alike). only_start_latents (the
-│  │                 capture gate)
+│  │                 capture gate). forward_packed shares the loop of forward
+│  │                 (forward_rows): the Start latents go into the opening slots
 │  ├─ mlp.rs         GatedMlp: SwiGLU feed-forward interleaved with the mixer.
 │  │                 from_hidden_ratio = the Llama ⅔·ratio·d_model sizing rule
 │  ├─ model_config.rs ModelConfigExt: config → module + its Muon plan. The seam
@@ -116,6 +118,7 @@ src/
 │  ├─ multi_gate.rs  Multi-Gate Residuals (Standard | MultiGate): accumulate,
 │  │                 then mix
 │  ├─ network.rs     LatentNetwork (optional final norm) / VocabNetwork
+│  │                 (+ forward_packed)
 │  ├─ shape.rs       NetworkShape (+ LatentShape/VocabShape/BidiShape): the
 │  │                 serialisable, block-free half of a model config. The
 │  │                 builders carry `C` and cannot derive Config, so the config
@@ -161,8 +164,14 @@ src/
 │  │                 distribution, as text or PNG)
 │  └─ tiny_stories/  dataset.rs: character corpus (alphabet, whole-parquet
 │                    download + text cache, one story per item, batches padded
-│                    to whole windows with a per-slot `scored` count).
-│                    lm.rs: TinyStoriesConfig + its corpus-flag Overrides, the
+│                    to whole windows with a per-slot `scored` count). Packed
+│                    train rows: pack_rows (first-fit over open rows, at the
+│                    PackLayout of the model), PackedStoriesDataset/Batcher,
+│                    TinyStoriesBatch::packed.
+│                    lm.rs: TinyStoriesConfig (+ `pack`) + its corpus-flag
+│                    Overrides (--pack/--pack-rows/--pack-open/--no-pack),
+│                    dataloaders_for (the validation is never packed),
+│                    lm_output_packed, the
 │                    FrontierGate, the epoch loops + the cache-carrying LmModel
 │                    seam. lm_output scores any extra output positions that the
 │                    model spliced in against the first character of the story,
@@ -195,6 +204,9 @@ src/
    ├─ class/         ClassToken / ClassLatent placement (CLS-style registers) +
    │                 ClassCursor(s): offsets + full-length hint, shared by
    │                 forward/step/prime
+   ├─ packing.rs     Packed: packed rows (reset mask + opening slots for the
+   │                 Start latents), from_starts, place. bool_to_device (as ints:
+   │                 cubecl loads no Bool(Native) data)
    ├─ padding.rs     Padding: the mask of a right-padded batch + the place of
    │                 each row in the sequence of its slot. splice (class
    │                 markers), in_slot_order (the rows of a block into slot
@@ -304,6 +316,12 @@ the containers keep it so (`utils/padding.rs`):
 - The reversed pass of bidi reads the real rows of each slot backwards.
 
 `Middle` + mask needs the whole sequence in one call. `End` works chunked.
+
+**Packed rows** (`utils/packing.rs`) are the other layout: whole sequences one
+after another in each slot. `forward_packed` (`Layers`, `VocabNetwork`) takes a
+reset mask. Each block restarts at a reset (`Block::block_forward_packed`), and
+the stack puts its `Start` latents into reserved opening slots, so the shapes
+do not change. The packer places the resets where the block accepts them.
 `RefBlock` skips padded rows and asserts the contract.
 
 ### Virtual layers, bidirectional, class tokens

@@ -4,7 +4,7 @@ use crate::utils::class::{
     assert_full_len_known, class_chunk_plan, class_emb_width, class_prime_plan, class_row,
     insert_class_markers,
 };
-use crate::utils::{ClassCursor, ClassLatent, Padding, UntiedParam};
+use crate::utils::{ClassCursor, ClassLatent, Packed, Padding, UntiedParam};
 use burn::module::Param;
 use burn::prelude::*;
 use std::borrow::Cow;
@@ -254,6 +254,24 @@ impl<M: Block> Layer<M> {
                 self.block.block_forward(normed, cache, options, Some(pad_bs))
             }),
         };
+        (self.add_mlp_delta(residual, h1), cache)
+    }
+
+    /// [`Self::forward`] over packed rows (see [`crate::utils::packing`]). The
+    /// block restarts at each reset of `packed`. Everything else here is per
+    /// row.
+    pub fn forward_packed(
+        &self,
+        x: Tensor<3>,
+        cache: Option<M::Cache>,
+        options: M::Options,
+        packed: &Packed,
+    ) -> (Tensor<3>, M::Cache) {
+        let residual = self.mlp_residual(&x);
+        let normed = self.norm.forward(x);
+        let (h1, cache) =
+            self.block
+                .block_forward_packed(normed, cache, options, packed.reset_bs.clone());
         (self.add_mlp_delta(residual, h1), cache)
     }
 

@@ -3,7 +3,8 @@
 //! The lower-level plumbing under the composition modules:
 //!
 //! - virtual-layer scheduling (`schedule`) and untied parameters (`untied`),
-//! - class tokens (`class`) and right-padded batches (`padding`),
+//! - class tokens (`class`), right-padded batches (`padding`) and packed rows
+//!   (`packing`),
 //! - the custom-backward helpers that a block family needs to register its own
 //!   memory-efficient kernels (`backend_macros` / `combined_grad` / `fprim`),
 //! - no-grad regions (`detach`) and graph capture of a recurrent step
@@ -32,6 +33,9 @@ pub mod fprim;
 pub mod graph;
 /// A whole-model init policy, applied to a module after its build.
 pub mod init;
+/// Packed rows: several sequences one after another in each slot, each from a
+/// reset, with reserved opening slots for the class latents.
+pub mod packing;
 /// Right-padded batches: which rows are padding, and each row's place in its
 /// own slot's sequence once class markers are spliced.
 pub mod padding;
@@ -51,6 +55,7 @@ pub use graph::{CapturedStep, StepInput};
 #[cfg(feature = "autodiff")]
 pub use graph::Weights;
 pub use init::InitPolicy;
+pub use packing::Packed;
 pub use padding::Padding;
 pub use schedule::{Applications, BidiSchedule, GradHorizon, Schedule};
 pub use untied::UntiedParam;
