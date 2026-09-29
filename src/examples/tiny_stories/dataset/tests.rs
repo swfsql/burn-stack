@@ -8,6 +8,7 @@
 use super::{PackLayout, PackedItem, PackedStoriesBatcher, pack_rows};
 use burn::data::dataloader::batcher::Batcher;
 use burn::prelude::*;
+use crate::utils::test_helpers::test_device;
 
 /// Story lengths (tokens) from a fixed linear congruential sequence.
 fn lens(n: usize, max: usize) -> Vec<usize> {
@@ -62,7 +63,7 @@ fn packed_batcher_lays_out_each_story() {
             stories: vec![vec![30, 31]],
         },
     ];
-    let device = Device::default();
+    let device = test_device();
     let batch = PackedStoriesBatcher::new(width, layout).batch(items, &device);
     let packed = batch.packed.expect("a packed batch");
     let ints = |t: Tensor<2, Int>| t.into_data().convert::<i64>().try_to_vec::<i64>().unwrap();

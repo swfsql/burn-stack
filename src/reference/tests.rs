@@ -25,6 +25,7 @@ use crate::utils::test_helpers::max_abs_diff;
 use crate::utils::{BidiSchedule, ClassLatent, ClassToken, GradHorizon, Schedule};
 use burn::module::{ModuleMapper, Param};
 use burn::tensor::Distribution;
+use crate::utils::test_helpers::test_device;
 
 const D_MODEL: usize = 8;
 const TOL: f32 = 1e-4;
@@ -53,7 +54,7 @@ fn randn3(batch: usize, sequence: usize, device: &Device) -> Tensor<3> {
 /// same cache. Everything downstream is built on this.
 #[test]
 fn block_forward_equals_step_unrolled() {
-    let device: Device = Default::default();
+    let device = test_device();
     let block = block_config().init(&device);
     let x = randn3(2, 6, &device);
 
@@ -77,7 +78,7 @@ fn block_forward_equals_step_unrolled() {
 /// over the whole sequence. This is what prefill-then-decode relies on.
 #[test]
 fn block_forward_is_chunkable_through_the_cache() {
-    let device: Device = Default::default();
+    let device = test_device();
     let block = block_config().init(&device);
     let x = randn3(2, 6, &device);
 
@@ -96,7 +97,7 @@ fn block_forward_is_chunkable_through_the_cache() {
 /// caches per (virtual) layer, and does not reorder or drop any.
 #[test]
 fn layers_forward_equals_step_unrolled() {
-    let device: Device = Default::default();
+    let device = test_device();
     let layers = layers(3, &device);
     let x = randn3(2, 5, &device);
 
@@ -121,7 +122,7 @@ fn layers_forward_equals_step_unrolled() {
 fn layer_mlp_reproduces_two_separate_residuals() {
     use crate::modules::GatedMlpConfig;
 
-    let device: Device = Default::default();
+    let device = test_device();
     let layers = LayersBuilder {
         mlp: Some(GatedMlpConfig::new(D_MODEL, D_MODEL * 2)),
         ..layers_builder(1)
@@ -147,7 +148,7 @@ fn layer_mlp_reproduces_two_separate_residuals() {
 /// real layer.
 #[test]
 fn virtual_layers_share_weights_and_keep_one_cache_each() {
-    let device = Device::default().autodiff();
+    let device = test_device().autodiff();
     let layers = LayersBuilder {
         n_virtual_layers: Some((6, Schedule::Cyclic)),
         ..layers_builder(2)
@@ -175,7 +176,7 @@ fn virtual_layers_share_weights_and_keep_one_cache_each() {
 /// re-attachment).
 #[test]
 fn grad_horizon_cuts_the_prefix_but_not_the_input() {
-    let device = Device::default().autodiff();
+    let device = test_device().autodiff();
     let x = Tensor::random([2, 4, D_MODEL], Distribution::Normal(0.0, 1.0), &device)
         .require_grad();
 
@@ -217,7 +218,7 @@ fn grad_horizon_cuts_the_prefix_but_not_the_input() {
 /// layer except the topmost with no gradient.
 #[test]
 fn grad_horizon_stretched_trains_every_real_layer() {
-    let device = Device::default().autodiff();
+    let device = test_device().autodiff();
     let x = Tensor::random([2, 4, D_MODEL], Distribution::Normal(0.0, 1.0), &device)
         .require_grad();
 
@@ -267,7 +268,7 @@ fn grad_horizon_stretched_trains_every_real_layer() {
 /// Multi-Gate streams make the same hop as the tokens.
 #[test]
 fn grad_horizon_mask_alternates_and_keeps_forward_step_parity() {
-    let device = Device::default().autodiff();
+    let device = test_device().autodiff();
     let x = Tensor::random([2, 3, D_MODEL], Distribution::Normal(0.0, 1.0), &device)
         .require_grad();
 
@@ -333,7 +334,7 @@ fn grad_horizon_mask_alternates_and_keeps_forward_step_parity() {
 /// `forward` and in `step`.
 #[test]
 fn grad_horizon_keeps_the_checkpointing_strategy() {
-    let device = Device::default().autodiff().gradient_checkpointing();
+    let device = test_device().autodiff().gradient_checkpointing();
     let x = randn3(2, 3, &device).require_grad();
     let mut layers = layers(4, &device);
     layers.grad_horizon = Some(GradHorizon::Mask(vec![true, false, true, false]));
@@ -354,7 +355,7 @@ fn grad_horizon_keeps_the_checkpointing_strategy() {
 /// device.
 #[test]
 fn detach_keeps_the_device_of_each_slot() {
-    for device in [Device::default(), Device::default().autodiff().gradient_checkpointing()] {
+    for device in [test_device(), test_device().autodiff().gradient_checkpointing()] {
         let (_, caches) = layers(2, &device).forward(randn3(1, 3, &device), None, (), None, None);
         for slot in caches.detach().into_slots().into_iter().flatten() {
             let state = slot.state_bd;
@@ -373,7 +374,7 @@ fn detach_keeps_the_device_of_each_slot() {
 /// untracked, so the stack lifts its output at the very top.
 #[test]
 fn grad_horizon_ghosts_an_untracked_layers_class_latent() {
-    let device = Device::default().autodiff();
+    let device = test_device().autodiff();
     let mut layers = layers_builder(3).init(&device);
     layers.real_layers[0].class_latents = vec![ClassLatent::Start];
     layers.real_layers[0].class_latents_emb = init_class_emb(1, D_MODEL, &device);
@@ -406,7 +407,7 @@ fn grad_horizon_ghosts_an_untracked_layers_class_latent() {
 /// modes must still satisfy forward/step parity.
 #[test]
 fn multi_gate_forward_equals_step_and_stays_bounded() {
-    let device: Device = Default::default();
+    let device = test_device();
     let layers = LayersBuilder {
         residuals: ResidualsConfig::MultiGate {
             n_stream: 3,
@@ -441,7 +442,7 @@ fn multi_gate_forward_equals_step_and_stays_bounded() {
 /// real pairs, the per-pair merge must be indexed by the **real** pair.
 #[test]
 fn bidi_virtual_pairs_share_the_real_pair_merge() {
-    let device = Device::default().autodiff();
+    let device = test_device().autodiff();
     let layers = BidiLayersBuilder {
         n_real_layers: 4,
         n_virtual_layers: Some((10, Default::default())),
@@ -480,7 +481,7 @@ fn bidi_virtual_pairs_share_the_real_pair_merge() {
 /// through `forward` or one token at a time.
 #[test]
 fn class_token_placement_is_the_same_for_forward_and_step() {
-    let device: Device = Default::default();
+    let device = test_device();
     let net = LatentNetworkBuilder {
         input_size: 3,
         layers: layers_builder(2),
@@ -517,7 +518,7 @@ fn class_token_placement_is_the_same_for_forward_and_step() {
 /// A per-layer class latent is a learnable input row: it must train.
 #[test]
 fn class_latents_receive_gradients() {
-    let device = Device::default().autodiff();
+    let device = test_device().autodiff();
     let layers = LayersBuilder {
         class_latents: vec![ClassLatent::Start],
         ..layers_builder(2)
@@ -577,7 +578,7 @@ impl ModuleMapper for Jitter {
 /// copy shows.
 #[test]
 fn an_untied_stack_is_the_unshared_stack_of_its_application_views() {
-    let device: Device = Default::default();
+    let device = test_device();
     let layers = untied_builder().init(&device).map(&mut Jitter);
     let n = layers.n_virtual_count();
     let apps = Schedule::Cyclic.applications(n, 2);
@@ -632,7 +633,7 @@ fn assert_copies_split<const D: usize>(g: Tensor<D>, g_tied: Tensor<D>, axis: us
 /// the gradients of its copies. Only training makes the copies differ.
 #[test]
 fn untied_copies_start_tied_and_split_the_tied_gradient() {
-    let device = Device::default().autodiff();
+    let device = test_device().autodiff();
     let layers = untied_builder().init(&device);
     let tied = tied_view(&layers);
     let x = randn3(2, 4, &device);
@@ -668,7 +669,7 @@ fn untied_copies_start_tied_and_split_the_tied_gradient() {
 #[test]
 #[should_panic(expected = "unties parameters across its applications")]
 fn grad_horizon_refuses_to_cut_an_untied_layer() {
-    let device = Device::default().autodiff();
+    let device = test_device().autodiff();
     let layers = LayersBuilder {
         grad_horizon: Some(GradHorizon::Depth(1)),
         ..untied_builder()
@@ -685,7 +686,7 @@ fn an_init_policy_keeps_untied_copies_tied() {
     use crate::modules::NetworkShape;
     use crate::utils::InitPolicy;
 
-    let device: Device = Default::default();
+    let device = test_device();
     let layers = NetworkShape::new(1)
         .with_n_virtual_layers(Some((3, Schedule::Cyclic)))
         .with_init(Some(InitPolicy::new()))
@@ -707,7 +708,7 @@ fn untied_copies_stay_plain_on_a_plain_device() {
     use crate::modules::NetworkShape;
     use crate::utils::InitPolicy;
 
-    let device: Device = Default::default();
+    let device = test_device();
     assert!(!device.is_autodiff());
     let layers = untied_builder().init(&device);
     for layer in &layers.real_layers {
@@ -730,7 +731,7 @@ fn untied_copies_stay_plain_on_a_plain_device() {
 /// trains.
 #[test]
 fn bidi_untied_copies_each_train() {
-    let device = Device::default().autodiff();
+    let device = test_device().autodiff();
     let layers = BidiLayersBuilder {
         n_real_layers: 2,
         n_virtual_layers: Some((6, BidiSchedule::SymmetricCyclic)),
@@ -771,7 +772,7 @@ fn bidi_untied_copies_each_train() {
 fn muon_plan_matches_only_existing_rank_2_weights() {
     use crate::optim::MuonPlan;
 
-    let device: Device = Default::default();
+    let device = test_device();
     let layers = layers(2, &device);
     let plan = MuonPlan::new(BlockConfig::muon_projections(&block_config()));
 
@@ -802,7 +803,7 @@ fn muon_steps_an_untied_projection_one_copy_at_a_time() {
     use crate::optim::{MuonPlan, ProjSpec, Segmented, muon_config};
     use burn::optim::{AdamWConfig, Optimizer};
 
-    let device: Device = Default::default();
+    let device = test_device();
     let n = 3;
     let spec = ProjSpec::block_whole("gate_proj.weight", D_MODEL).tiled();
     let muon = muon_config(0.0).build();

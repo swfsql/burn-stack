@@ -1,8 +1,7 @@
 use super::*;
 use burn::module::Param;
 use burn::tensor::Distribution;
-
-type Device = burn::prelude::Device;
+use crate::utils::test_helpers::test_device;
 
 /// The backward of gated RMSNorm must stay finite when the normalised input
 /// (the output `y` of a mixer) collapses to zero norm on a slice. This is the
@@ -12,7 +11,7 @@ type Device = burn::prelude::Device;
 /// division, but not the `1/(2√·)` backward of the `sqrt` node.
 #[test]
 fn rms_norm_gated_gradient_finite_on_collapsed_slice() {
-    let device: Device = Default::default();
+    let device = test_device();
     let (batch, seq, d_model) = (2, 3, 8);
     let norm = RmsNormGatedConfig::new(d_model).init(&device.clone().autodiff());
 

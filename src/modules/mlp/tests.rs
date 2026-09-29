@@ -2,8 +2,7 @@ use super::*;
 use crate::utils::test_helpers::max_abs_diff;
 use burn::module::Param;
 use burn::tensor::Distribution;
-
-type Device = burn::prelude::Device;
+use crate::utils::test_helpers::test_device;
 
 /// `hidden` rounds `d_intermediate` **up** to `multiple_of`, so the realised
 /// `fc1`/`fc2` shapes can differ from the configured figure. Pinned because
@@ -11,7 +10,7 @@ type Device = burn::prelude::Device;
 /// and an `fc1.weight` of `[2·1280, 768]` on disk.
 #[test]
 fn hidden_rounds_up_to_multiple_of() {
-    let device: Device = Default::default();
+    let device = test_device();
     for (d_intermediate, expected) in [(1264, 1280), (1536, 1536), (1, 128), (129, 256)] {
         let config = GatedMlpConfig::new(768, d_intermediate);
         assert_eq!(config.hidden(), expected, "d_intermediate {d_intermediate}");
@@ -29,7 +28,7 @@ fn hidden_rounds_up_to_multiple_of() {
 /// done by hand.
 #[test]
 fn value_half_precedes_gate_half() {
-    let device: Device = Default::default();
+    let device = test_device();
     let (d_model, d_intermediate, batch, seq) = (16, 128, 2, 3);
     let mlp = GatedMlpConfig::new(d_model, d_intermediate).init(&device);
     let hidden = mlp.hidden();
@@ -53,7 +52,7 @@ fn value_half_precedes_gate_half() {
 /// what lets [`Layer`](crate::modules::Layer) reuse one module for both modes.
 #[test]
 fn step_matches_the_matching_forward_row() {
-    let device: Device = Default::default();
+    let device = test_device();
     let (d_model, d_intermediate, batch, seq) = (16, 128, 2, 4);
     let mlp = GatedMlpConfig::new(d_model, d_intermediate).init(&device);
 
@@ -79,7 +78,7 @@ fn step_matches_the_matching_forward_row() {
 /// tests above cannot catch it.
 #[test]
 fn gradients_reach_both_projections() {
-    let device: Device = Default::default();
+    let device = test_device();
     let (d_model, d_intermediate) = (16, 128);
     let mlp = GatedMlpConfig::new(d_model, d_intermediate).init(&device.clone().autodiff());
 

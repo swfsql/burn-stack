@@ -16,6 +16,7 @@ use crate::utils::test_helpers::max_abs_diff;
 use burn::grad_clipping::GradientClippingConfig;
 use burn::prelude::*;
 use burn::tensor::Distribution;
+use crate::utils::test_helpers::test_device;
 
 const D_MODEL: usize = 8;
 const LEN: usize = 5;
@@ -38,7 +39,7 @@ fn loss(layers: &Layers<RefBlock>, (x, y): (Tensor<3>, Tensor<3>)) -> (Tensor<1>
 
 #[test]
 fn captured_sgd_steps_are_the_eager_steps() {
-    let device = Device::default();
+    let device = test_device();
     let autodiff = device.clone().autodiff();
     let sgd = SgdConfig::new()
         .with_weight_decay(Some(1e-2))

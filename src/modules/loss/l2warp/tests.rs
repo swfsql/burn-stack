@@ -2,6 +2,7 @@
 
 use super::*;
 use burn::module::Param;
+use crate::utils::test_helpers::test_device;
 
 type Device = burn::prelude::Device;
 
@@ -20,7 +21,7 @@ fn logits(device: &Device) -> Tensor<3> {
 /// (and to the reference, whose hand-written backward does the same).
 #[test]
 fn the_reported_loss_is_unchanged() {
-    let device: Device = Default::default();
+    let device = test_device();
     let loss = Tensor::<1>::from_data(burn::tensor::TensorData::new(vec![3.5f32], [1]), &device);
 
     let wrapped = l2_warp(loss.clone(), logits(&device), FACTOR);
@@ -35,7 +36,7 @@ fn the_reported_loss_is_unchanged() {
 /// reference scatters.
 #[test]
 fn only_the_max_logit_is_pulled_and_by_the_right_amount() {
-    let device = Device::default().autodiff();
+    let device = test_device().autodiff();
     let z = Param::from_tensor(logits(&device));
     let loss = Tensor::<1>::zeros([1], &device);
 

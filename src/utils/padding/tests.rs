@@ -13,6 +13,7 @@ use crate::utils::{ClassCursor, ClassCursors, ClassLatent, ClassToken, GradHoriz
 use burn::module::{ModuleVisitor, Param};
 use burn::prelude::*;
 use burn::tensor::{Distribution, Gradients};
+use crate::utils::test_helpers::test_device;
 
 const D_MODEL: usize = 8;
 const TOL: f32 = 1e-4;
@@ -133,7 +134,7 @@ fn check_each_slot_alone<M: Module>(
     rows: impl Fn(usize) -> Vec<Row>,
     forward: impl Fn(Tensor<3>, Option<Tensor<2, Bool>>) -> (Tensor<3>, RefCaches),
 ) {
-    let device = Device::default().autodiff();
+    let device = test_device().autodiff();
     let padded = *lens.iter().max().unwrap();
     let batch = lens.len();
     let x = Tensor::<3>::random([batch, padded, input_width], Distribution::Normal(0.0, 1.0), &device);
@@ -200,7 +201,7 @@ const LENS: [usize; 4] = [7, 3, 5, 1];
 
 #[test]
 fn padded_layers_are_each_slot_alone() {
-    let device = Device::default().autodiff();
+    let device = test_device().autodiff();
     let layers = marked_layers(ResidualsConfig::Standard, &device);
     check_each_slot_alone(
         &layers,
@@ -213,7 +214,7 @@ fn padded_layers_are_each_slot_alone() {
 
 #[test]
 fn padded_multi_gate_layers_are_each_slot_alone() {
-    let device = Device::default().autodiff();
+    let device = test_device().autodiff();
     let residuals = ResidualsConfig::MultiGate {
         n_stream: 2,
         init_bias: 1.0,
@@ -234,7 +235,7 @@ fn padded_multi_gate_layers_are_each_slot_alone() {
 /// them.
 #[test]
 fn padded_layers_under_a_grad_horizon_are_each_slot_alone() {
-    let device = Device::default().autodiff();
+    let device = test_device().autodiff();
     let mut layers = marked_layers(ResidualsConfig::Standard, &device);
     layers.grad_horizon = Some(GradHorizon::Mask(vec![false, true, false]));
     check_each_slot_alone(
@@ -250,7 +251,7 @@ fn padded_layers_under_a_grad_horizon_are_each_slot_alone() {
 /// stack's latents.
 #[test]
 fn padded_latent_network_is_each_slot_alone() {
-    let device = Device::default().autodiff();
+    let device = test_device().autodiff();
     let net = LatentNetworkBuilder {
         input_size: 3,
         layers: LayersBuilder {
@@ -275,7 +276,7 @@ fn padded_latent_network_is_each_slot_alone() {
 /// batch's, whose padding would then lead.
 #[test]
 fn padded_bidi_layers_are_each_slot_alone() {
-    let device = Device::default().autodiff();
+    let device = test_device().autodiff();
     let layers = BidiLayersBuilder {
         n_real_layers: 4,
         n_virtual_layers: None,
@@ -302,7 +303,7 @@ fn padded_bidi_layers_are_each_slot_alone() {
 /// untouched. Its `End` lands there, in the chunk that closes the batch.
 #[test]
 fn chunked_padded_layers_are_each_slot_alone() {
-    let device = Device::default().autodiff();
+    let device = test_device().autodiff();
     let mut layers = LayersBuilder {
         class_latents: vec![ClassLatent::Start, ClassLatent::End, ClassLatent::Custom(4)],
         ..LayersBuilder::new(2, RefBlockConfig::new(D_MODEL))
@@ -346,7 +347,7 @@ fn chunked_padded_layers_are_each_slot_alone() {
 #[test]
 #[should_panic(expected = "needs the whole padded sequence")]
 fn a_middle_marker_needs_the_whole_padded_sequence() {
-    let device = Device::default();
+    let device = test_device();
     let layers = LayersBuilder {
         class_latents: vec![ClassLatent::Middle],
         ..LayersBuilder::new(1, RefBlockConfig::new(D_MODEL))

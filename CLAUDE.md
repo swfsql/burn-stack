@@ -41,6 +41,9 @@ cargo doc --no-deps         # build docs
   `BackendExt` impls that the macros emit. `check-nan`/`check-inf` enable the
   `DENY_NAN`/`DENY_INF` guards. `dev-f16`/`dev-simd`/`dev-autotune` are
   example/test conveniences.
+- A test takes its device from `utils::test_helpers::test_device()` (fp16
+  under `dev-f16`), never from `Device::default()`: the dtype defaults are
+  global, and the first tensor fixes them for the process.
 - `test-helpers` exposes `utils::test_helpers` and `reference` to the
   dev-dependencies of a downstream crate.
 - `examples-common` exposes `examples`. It pulls `burn/train` +
@@ -237,7 +240,8 @@ src/
    │                     Stateless = caches `()`. WARMUP_STEPS.
    │                     graph/weights.rs: Weights<M>, the params of a module as
    │                     the caches of a training step
-   ├─ test_helpers.rs    max_abs_diff + grad-comparison macros
+   ├─ test_helpers.rs    test_device (fp16 under `dev-f16`), max_abs_diff +
+   │                     grad-comparison macros
    └─ untied.rs          UntiedParam + tile/view/retie: a parameter held once per
                          application, copies side by side along an existing axis
 ```

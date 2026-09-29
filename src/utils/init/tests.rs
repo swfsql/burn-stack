@@ -4,6 +4,7 @@ use super::*;
 use crate::modules::{GatedMlpConfig, LatentNetwork, LatentNetworkBuilder, LayersBuilder};
 use crate::reference::{RefBlock, RefBlockConfig};
 use burn::module::{ModuleVisitor, ParamId};
+use crate::utils::test_helpers::test_device;
 
 const D_MODEL: usize = 16;
 const STD: f64 = 0.5;
@@ -47,7 +48,7 @@ fn std_of(values: &[f32]) -> f32 {
 /// global rule fixes.
 #[test]
 fn weights_are_redrawn_and_biases_zeroed() {
-    let device: Device = Default::default();
+    let device = test_device();
     let net = policy().apply(net(&device));
 
     let block = &net.layers.real_layers[0].block;
@@ -67,7 +68,7 @@ fn weights_are_redrawn_and_biases_zeroed() {
 /// stream at depth, so it cannot be a per-module decision.
 #[test]
 fn residual_weights_are_rescaled_by_depth() {
-    let device: Device = Default::default();
+    let device = test_device();
     let net = policy().apply(net(&device));
     let layer = &net.layers.real_layers[0];
 
@@ -95,7 +96,7 @@ fn residual_weights_are_rescaled_by_depth() {
 /// matrix stored as `weight` and a 1-D `bias`.
 #[test]
 fn bespoke_parameters_are_left_alone() {
-    let device: Device = Default::default();
+    let device = test_device();
     let net = policy().apply(net(&device));
     let layer = &net.layers.real_layers[0];
 
@@ -121,7 +122,7 @@ fn parameter_ids_survive_the_redraw() {
         }
     }
 
-    let device: Device = Default::default();
+    let device = test_device();
     let net = net(&device);
     let mut before = Ids::default();
     net.visit(&mut before);
@@ -139,7 +140,7 @@ fn parameter_ids_survive_the_redraw() {
 /// value stays correct.
 #[test]
 fn redrawn_weights_still_receive_gradient() {
-    let device = Device::default().autodiff();
+    let device = test_device().autodiff();
     let net = policy().apply(net(&device));
 
     let x = Tensor::<3>::random([2, 3, 4], burn::tensor::Distribution::Normal(0.0, 1.0), &device);

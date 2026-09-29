@@ -8,10 +8,39 @@
 //! per-input gradient struct differs per family, so only the small generic
 //! primitives are shared here.
 //!
+//! Every test takes its device from [`test_device`], so `dev-f16` runs the
+//! whole suite in fp16.
+//!
 //! The `test-helpers` feature enables it (the tests of this crate also have
 //! it), so a downstream crate can reuse the macro from its dev-dependencies.
 
 use burn::prelude::*;
+
+/// The device of the tests: [`Device::default`], with fp16 (and i32) as its
+/// dtype defaults under `dev-f16`. Without the feature, the dtype defaults of
+/// the backend apply.
+///
+/// The dtype defaults of a device are global to the process, and the first
+/// tensor on the device fixes them. So a test that takes its device from
+/// [`Device::default`] can fix fp32 for all tests. Under `dev-f16`, this
+/// function panics if that occurred.
+pub fn test_device() -> Device {
+    #[allow(unused_mut)]
+    let mut device = Device::default();
+    #[cfg(feature = "dev-f16")]
+    {
+        use burn::tensor::{FloatDType, IntDType};
+        // Only the first call can install the defaults. Each later call gets
+        // `AlreadyInitialized`, and the assert below checks the result.
+        let _ = device.configure((FloatDType::F16, IntDType::I32));
+        assert_eq!(
+            device.settings().float_dtype,
+            FloatDType::F16,
+            "the test device is not fp16: a tensor was on it before `test_device`",
+        );
+    }
+    device
+}
 
 /// Element-wise max absolute difference between two same-shape tensors,
 /// returned as `f32` (already pulled to host via `into_scalar()`).

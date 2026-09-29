@@ -15,6 +15,7 @@ use crate::utils::test_helpers::max_abs_diff;
 use crate::utils::{ClassCursors, ClassLatent};
 use burn::prelude::*;
 use burn::tensor::{Distribution, TensorData};
+use crate::utils::test_helpers::test_device;
 
 const D_MODEL: usize = 8;
 const VOCAB: usize = 11;
@@ -73,7 +74,7 @@ fn eager_run(net: &VocabNetwork<RefBlock>, device: &Device) -> (Vec<Tensor<2>>, 
 
 #[test]
 fn captured_token_steps_are_the_eager_steps() {
-    let device = Device::default();
+    let device = test_device();
     let net = vocab_net(&device);
     assert!(net.layers.only_start_latents());
     let (eager, eager_caches) = eager_run(&net, &device);
@@ -113,7 +114,7 @@ fn captured_token_steps_are_the_eager_steps() {
 
 #[test]
 fn captured_latent_steps_are_the_eager_steps() {
-    let device = Device::default();
+    let device = test_device();
     let layers: Layers<RefBlock> = LayersBuilder::new(2, RefBlockConfig::new(D_MODEL)).init(&device);
     let xs: Vec<Tensor<2>> = (0..STEPS)
         .map(|_| Tensor::random([BATCH, D_MODEL], Distribution::Normal(0.0, 1.0), &device))
@@ -147,7 +148,7 @@ fn captured_latent_steps_are_the_eager_steps() {
 #[test]
 fn captured_forward_is_the_eager_forward() {
     const LEN: usize = 5;
-    let device = Device::default();
+    let device = test_device();
     let layers: Layers<RefBlock> = LayersBuilder::new(2, RefBlockConfig::new(D_MODEL)).init(&device);
     let forward = |x| layers.forward(x, None, (), None, None).0;
     let xs: Vec<Tensor<3>> = (0..STEPS)
@@ -180,7 +181,7 @@ fn captured_sgd_training_is_the_eager_training() {
     use burn::optim::GradientsParams;
 
     const LEN: usize = 5;
-    let device = Device::default();
+    let device = test_device();
     let autodiff = device.clone().autodiff();
     let sgd = SgdConfig::new()
         .with_weight_decay(Some(1e-2))
@@ -240,7 +241,7 @@ fn captured_sgd_training_is_the_eager_training() {
 
 #[test]
 fn only_start_latents_sees_both_levels() {
-    let device = Device::default();
+    let device = test_device();
     let mut net = vocab_net(&device);
     assert!(net.layers.only_start_latents());
     net.layers.real_layers[1].class_latents = vec![ClassLatent::Custom(4)];

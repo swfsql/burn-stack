@@ -1,8 +1,7 @@
 use super::*;
 use burn::module::Param;
 use burn::tensor::Distribution;
-
-type Device = burn::prelude::Device;
+use crate::utils::test_helpers::test_device;
 
 /// The backward of RMSNorm must stay finite when a normalised slice collapses
 /// to zero norm (`mean(x²) = 0`): a dead token/channel, or a subnormal flushed
@@ -13,7 +12,7 @@ type Device = burn::prelude::Device;
 /// backward).
 #[test]
 fn rms_norm_gradient_finite_on_collapsed_slice() {
-    let device: Device = Default::default();
+    let device = test_device();
     let (batch, seq, d_model) = (2, 3, 8);
     let norm = RmsNormConfig::new(d_model).init(&device.clone().autodiff());
 

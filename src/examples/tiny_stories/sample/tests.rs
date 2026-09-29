@@ -23,6 +23,7 @@ use burn::tensor::Distribution;
 use burn::tensor::activation::softmax;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
+use crate::utils::test_helpers::test_device;
 
 /// Inverse-CDF sampling on the host: the first token whose running total of
 /// `probs` reaches `threshold`, the last one if rounding leaves it short.
@@ -53,7 +54,7 @@ fn device_draw(logits: Tensor<2>, temperature: f64, threshold: f32, device: &Dev
 
 #[test]
 fn device_draw_is_the_host_draw() {
-    let device = Device::default();
+    let device = test_device();
     let mut rng = ChaCha8Rng::seed_from_u64(0);
     for temperature in [0.5, 1.0, 2.0] {
         let logits = Tensor::<2>::random([1, VOCAB_SIZE], Distribution::Normal(0.0, 3.0), &device);
@@ -129,7 +130,7 @@ fn host_story(
 
 #[test]
 fn a_story_is_the_same_captured_eager_and_host_sampled() {
-    let device = Device::default();
+    let device = test_device();
     let net = story_net(&device);
     for (seed, temperature) in [(0, 0.8), (1, 1.0), (2, 0.0)] {
         let host = host_story(&net, &device, 40, temperature, seed);
@@ -170,7 +171,7 @@ fn opening(net: &VocabNetwork<RefBlock>) -> (RefCaches, ClassCursors) {
 
 #[test]
 fn a_prefill_is_the_same_captured_and_eager_and_is_the_prompt_in_one_pass() {
-    let device = Device::default();
+    let device = test_device();
     let net = story_net(&device);
     let mut eager = prefill_of(&net, &device, false);
     // One capture, reused by every prompt after the first.
@@ -204,7 +205,7 @@ fn a_prefill_is_the_same_captured_and_eager_and_is_the_prompt_in_one_pass() {
 
 #[test]
 fn a_prompted_story_is_the_same_captured_and_eager() {
-    let device = Device::default();
+    let device = test_device();
     let net = story_net(&device);
     let mut eager = prefill_of(&net, &device, false);
     let mut captured = prefill_of(&net, &device, true);
