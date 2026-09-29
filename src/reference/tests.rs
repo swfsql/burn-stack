@@ -699,8 +699,9 @@ fn an_init_policy_keeps_untied_copies_tied() {
 }
 
 /// On a plain device, the untied copies stay plain (`tile` and `retie`). A
-/// copy with autodiff makes each pass record a graph. A decode never frees
-/// that graph, because its state depends on all the earlier steps.
+/// copy with autodiff makes each pass record a graph that keeps the saved
+/// state of its ops. Only a backward that reaches the copy frees that graph,
+/// and a pass without autodiff (a decode, an evaluation) never runs one.
 #[test]
 fn untied_copies_stay_plain_on_a_plain_device() {
     use crate::modules::NetworkShape;
