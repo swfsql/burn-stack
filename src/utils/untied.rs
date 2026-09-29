@@ -62,10 +62,11 @@ pub fn tile<const D: usize>(
     if n_applications == 1 {
         return param;
     }
-    // Built from the inner value, so the copies are one new leaf, not a graph
-    // that hangs off the draw (`detach` keeps the `require_grad` of a leaf).
-    let tiled = param.val().inner().repeat_dim(axis, n_applications);
-    Param::from_tensor(Tensor::from_inner(tiled))
+    // Detached after the copy, so the copies are one new leaf, not a graph that
+    // hangs off the draw. `detach` keeps the backend of the tensor.
+    // (`Tensor::from_inner` enables autodiff also on a plain tensor.)
+    let tiled = param.val().repeat_dim(axis, n_applications).detach();
+    Param::from_tensor(tiled)
 }
 
 /// `module` as its `application`-th application sees it: a clone whose
@@ -151,12 +152,12 @@ impl ModuleMapper for Retie<'_> {
         let n = self.n_applications;
         param.map(|tensor| {
             // `Param::map` reads the flag again from the tensor that it gets.
-            // So the new leaf built from the inner value (see `tile`) must get
-            // the flag explicitly, as in `InitPolicy`.
+            // So the new detached leaf (see `tile`) must get the flag
+            // explicitly, as in `InitPolicy`.
             let require_grad = tensor.is_require_grad();
             let len = copy_len(&tensor.dims(), axis, n);
-            let first = tensor.inner().narrow(axis, 0, len);
-            Tensor::from_inner(first.repeat_dim(axis, n)).set_require_grad(require_grad)
+            let first = tensor.narrow(axis, 0, len);
+            first.repeat_dim(axis, n).detach().set_require_grad(require_grad)
         })
     }
 }

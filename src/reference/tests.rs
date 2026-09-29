@@ -656,6 +656,32 @@ fn an_init_policy_keeps_untied_copies_tied() {
     }
 }
 
+/// On a plain device, the untied copies stay plain (`tile` and `retie`). A
+/// copy with autodiff makes each pass record a graph. A decode never frees
+/// that graph, because its state depends on all the earlier steps.
+#[test]
+fn untied_copies_stay_plain_on_a_plain_device() {
+    use crate::modules::NetworkShape;
+    use crate::utils::InitPolicy;
+
+    let device: Device = Default::default();
+    assert!(!device.is_autodiff());
+    let layers = untied_builder().init(&device);
+    for layer in &layers.real_layers {
+        let norm2 = layer.norm2.as_ref().expect("the builder sets an mlp");
+        assert!(!layer.norm.gamma.val().is_autodiff());
+        assert!(!norm2.gamma.val().is_autodiff());
+        assert!(!layer.block.decay_raw.val().is_autodiff());
+        assert!(!layer.block.gate_proj.weight.val().is_autodiff());
+    }
+
+    let layers = NetworkShape::new(1)
+        .with_n_virtual_layers(Some((3, Schedule::Cyclic)))
+        .with_init(Some(InitPolicy::new()))
+        .init(block_config().with_untied(vec![RefUntied::GateProj]), &device);
+    assert!(!layers.real_layers[0].block.gate_proj.weight.val().is_autodiff());
+}
+
 /// Both directions of a bidirectional pair are applications of the real layer
 /// that they index. Every copy that an untied bidi stack holds is read, and
 /// trains.
