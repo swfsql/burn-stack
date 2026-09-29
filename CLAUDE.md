@@ -125,8 +125,10 @@ src/
 │  │                 of a consumer is the pair `{ shape, block }`. init/muon_plan
 │  │                 over any BlockConfig
 │  ├─ bidi.rs        BidiLayers<M> + BidiLayerPair<M> + OutputMerge
-│  ├─ cache.rs       CacheStack trait (+ per-slot inner/from_inner, whole-stack
-│  │                 detach() to carry state across a gradient boundary).
+│  ├─ cache.rs       CacheStack trait (+ per-slot inner/from_inner/device,
+│  │                 whole-stack detach() to carry state across a gradient
+│  │                 boundary). lift: the way back from `inner`, onto a device
+│  │                 with its checkpointing strategy.
 │  │                 CacheTensors: a pairwise TensorZip traversal per cache type
 │  │                 (into_owned_buffers, assign_in_place). Impls: `()` = no
 │  │                 cache, `Vec`, `Tensor<D>`, a pair = state beside a cache
@@ -413,8 +415,11 @@ do not change. The packer places the resets where the block accepts them.
   **retains every activation** (measured: 2765 MB vs 550 MB at 64 virtual
   layers, see `utils/detach.rs`). `grad_horizon` runs its untracked segments
   on `Module::valid(self)`. Three consequences:
-  - `.inner()`/`.valid()` are idempotent off autodiff. So the `is_autodiff`
-    guard only skips a round-trip that saves nothing.
+  - Lift back with `modules::lift`, never a bare `Tensor::from_inner`
+    (= `Tensor::autodiff`). `from_inner` enables autodiff also on a plain
+    tensor, and it resets the checkpointing strategy to `Disabled`. `inner`
+    and `lift` do nothing off autodiff. `.valid()` also turns off training
+    flags (dropout, …).
   - Caches convert by hand: `Module::map` does nothing on plain `Tensor`
     fields, which is all a cache holds.
   - `is_require_grad` reports only `Requirement::Grad` leaves. So tests

@@ -28,7 +28,7 @@
 //! The `test-helpers` feature enables it (the tests of this crate also have
 //! it).
 
-use crate::modules::{Block, BlockConfig, CacheStack, CacheTensors, Silu, TensorZip};
+use crate::modules::{Block, BlockConfig, CacheStack, CacheTensors, Silu, TensorZip, lift};
 use crate::utils::untied::{self, UntiedParam};
 use burn::config::Config;
 use burn::module::Param;
@@ -69,8 +69,12 @@ impl CacheStack for RefCaches {
         RefCache { state_bd: c.state_bd.inner() }
     }
 
-    fn cache_from_inner(c: RefCache) -> RefCache {
-        RefCache { state_bd: Tensor::from_inner(c.state_bd) }
+    fn cache_from_inner(c: RefCache, device: &Device) -> RefCache {
+        RefCache { state_bd: lift(c.state_bd, device) }
+    }
+
+    fn cache_device(c: &RefCache) -> Device {
+        c.state_bd.device()
     }
 }
 

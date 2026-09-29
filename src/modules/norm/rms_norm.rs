@@ -66,13 +66,14 @@ impl RmsNorm {
                 use burn::tensor::ElementConversion;
                 let div_eps: f16 = f16::from_elem(div_eps(x.dtype())) * f16::from_f32(2.);
                 // avoid calculating x² directly (due to overflow e.g. on 256 * 256)
-                let max = x.clone().no_grad().detach().abs().max().expand(x.shape());
+                let max = x.clone().without_autodiff().abs().max().expand(x.shape());
                 let x_ = x.clone() / (max.clone() + div_eps); // x_.abs() <= 1
                 // eps inside the root (matches the main branch): the `sqrt`
                 // backward is otherwise singular for a zero-norm slice.
                 let rms_partial = ((x.clone() * x_).mean_dim(D - 1) + div_eps).sqrt(); // √(x²/max)
-                // `max` is detached. Floor it too, so an all-zero tensor
-                // (`max = 0`) gives a nonzero denominator, not `0/0`.
+                // `max` is a constant (off autodiff). Floor it too, so an
+                // all-zero tensor (`max = 0`) gives a nonzero denominator, not
+                // `0/0`.
                 let normalized =
                     (x / rms_partial) / (max + div_eps).sqrt() * self.gamma.val().unsqueeze();
                 normalized

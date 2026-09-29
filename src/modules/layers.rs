@@ -1,4 +1,4 @@
-use crate::modules::{GatedMlpConfig, LayerUntied, Residuals, ResidualsConfig};
+use crate::modules::{GatedMlpConfig, LayerUntied, Residuals, ResidualsConfig, lift};
 use crate::prelude::*;
 use crate::utils::{Applications, GradHorizon, Schedule};
 use crate::utils::class::{
@@ -198,6 +198,13 @@ where
         stack_applications(&self.n_virtual_layers, self.n_real_layers)
     }
 
+    /// The device of the stack (that of its parameters), with its autodiff
+    /// context. A cut lifts what it took down back onto this device ([`lift`]),
+    /// so the lifted tensors get its checkpointing strategy.
+    fn stack_device(&self) -> Device {
+        self.real_layers[0].norm.gamma.val().device()
+    }
+
     /// Which of the `n` virtual layers back-propagate, per
     /// [`Self::grad_horizon`]. A `false` layer runs on the inner backend, and a
     /// `true` layer builds the graph. `None` ⇒ no cut anywhere.
@@ -207,19 +214,13 @@ where
     /// [`Schedule::Stretched`] stack, and arbitrarily for a
     /// [`GradHorizon::Mask`].
     ///
-    /// Returns `None` off the autodiff backend. `Tensor::inner` and
-    /// `Module::valid` are idempotent there, so a cut would buy nothing but its
-    /// own round-trip. A horizon left set in a config thus falls through to
-    /// the untouched path at inference. The device of the module decides,
-    /// because [`Self::prime`] has no input tensor to ask.
+    /// Returns `None` off the autodiff backend. A cut there would buy nothing:
+    /// `Tensor::inner` and [`lift`] do nothing off it. A horizon left set in a
+    /// config thus falls through to the untouched path at inference. The
+    /// device of the module decides ([`Self::stack_device`]), because
+    /// [`Self::prime`] has no input tensor to ask.
     fn grad_tracked(&self, n: usize) -> Option<Vec<bool>> {
-        let on_autodiff = self.real_layers[0]
-            .norm
-            .gamma
-            .val()
-            .device()
-            .is_autodiff();
-        if !on_autodiff {
+        if !self.stack_device().is_autodiff() {
             return None;
         }
         let schedule = self.n_virtual_layers.as_ref().map(|(_, s)| s);
@@ -403,10 +404,14 @@ where
         // An inner-backend prefix was flat. A peak-memory probe against a real
         // block reproduces both curves.
         //
-        // `Tensor::inner`/`Module::valid` are idempotent off the autodiff
-        // backend, so a cut there would cost a round-trip and save nothing. The
-        // stack takes a cut only on an autodiff backend. At inference,
-        // `grad_horizon` does nothing.
+        // The stack takes a cut only on an autodiff backend (`grad_tracked`
+        // returns `None` elsewhere). At inference, `grad_horizon` does nothing.
+        // Every lift below goes through `lift` onto the device of the stack,
+        // never through a bare `Tensor::from_inner`. `from_inner` would enable
+        // autodiff also on a plain tensor, and would reset the checkpointing
+        // strategy (see `lift`). `Module::valid` also turns off the training
+        // flags (dropout, …) of a block that has them. So an untracked segment
+        // runs such a block in eval mode.
         //
         // The mask is not a single boundary. It can turn off and on again any
         // number of times (once per real layer under `Schedule::Stretched`, see
@@ -414,6 +419,7 @@ where
         // loop carries.
         let tracked = self.grad_tracked(n);
         let inner_stack = tracked.is_some().then(|| Module::valid(self));
+        let device = self.stack_device();
         let mut slots = caches.into_slots();
         // Straight-through carry (see `grad_horizon`): a value-**zero** tracked
         // tensor that stands in for what entered the current untracked
@@ -453,8 +459,8 @@ where
                 // Leaving one: lift what it produced back onto the autodiff
                 // backend, as fresh graph roots, and re-attach the carry.
                 (true, true) => {
-                    x = Tensor::from_inner(x);
-                    streams = streams.map(Tensor::from_inner);
+                    x = lift(x, &device);
+                    streams = streams.map(|s| lift(s, &device));
                     let st = st.take().expect("inside an untracked segment");
                     // Under MultiGate, the residual lives in the streams, not
                     // in the token. So *every* carrier gets the identity path:
@@ -593,14 +599,14 @@ where
                 }
             }
             if !track {
-                slots[i] = slots[i].take().map(M::Caches::cache_from_inner);
+                slots[i] = slots[i].take().map(|c| M::Caches::cache_from_inner(c, &device));
             }
         }
         // The stack ended inside an untracked segment (its top layers were cut):
         // lift the output and re-attach the carry, exactly as the in-loop
         // boundary does. The streams are not returned, so they stay below.
         if let Some(st) = st.take() {
-            x = Tensor::from_inner(x) + st;
+            x = lift(x, &device) + st;
         }
         (x, M::Caches::from_slots(slots))
     }
@@ -741,9 +747,12 @@ where
         // graph (see `grad_horizon`). Everything that crosses into an untracked
         // segment goes down with it: the token stream, its MultiGate stream
         // sets, and the cache slots of those layers. The loop lifts them back
-        // where the graph resumes, as many times as the mask alternates.
+        // where the graph resumes, as many times as the mask alternates. As in
+        // `forward`, the mask exists only on an autodiff backend, and every lift
+        // goes through `lift` onto the device of the stack.
         let tracked = self.grad_tracked(n);
         let inner_stack = tracked.is_some().then(|| Module::valid(self));
+        let device = self.stack_device();
         // The straight-through carry of `forward`, one entry per token of the
         // stream that enters the current untracked segment (see
         // `grad_horizon`). It is `Some` exactly while inside such a segment.
@@ -801,8 +810,8 @@ where
                 // Leaving one: lift what it produced back onto the autodiff
                 // backend, as fresh graph roots, and re-attach the carry.
                 (true, true) => {
-                    stream = stream.into_iter().map(Tensor::from_inner).collect();
-                    carried = carried.into_iter().map(Tensor::from_inner).collect();
+                    stream = stream.into_iter().map(|t| lift(t, &device)).collect();
+                    carried = carried.into_iter().map(|t| lift(t, &device)).collect();
                     let st = st.take().expect("inside an untracked segment");
                     debug_assert_eq!(st.len(), stream.len(), "carry tracks the stream");
                     // Every carrier, as in `forward`. Under MultiGate, each
@@ -978,7 +987,7 @@ where
             }
             slots[pos] = match track {
                 true => cache,
-                false => cache.map(M::Caches::cache_from_inner),
+                false => cache.map(|c| M::Caches::cache_from_inner(c, &device)),
             };
             stream = next;
             carried = next_carried;
@@ -990,7 +999,7 @@ where
             debug_assert_eq!(st.len(), stream.len(), "carry tracks the stream");
             stream = stream
                 .into_iter()
-                .map(Tensor::from_inner)
+                .map(|t| lift(t, &device))
                 .zip(st)
                 .map(|(t, s)| t + s)
                 .collect();

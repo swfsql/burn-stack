@@ -40,11 +40,11 @@ pub fn rms_denom<const D: usize>(x: Tensor<D>) -> Tensor<D> {
             let eps: f16 = f16::from_elem(div_eps(x.dtype())) * f16::from_f32(2.);
             // Single global scalar `max`, reshaped to `[1; D]` so it
             // broadcasts against the `[‥, 1]` partial RMS.
-            let max = x.clone().no_grad().detach().abs().max().reshape([1; D]);
+            let max = x.clone().without_autodiff().abs().max().reshape([1; D]);
             let x_ = x.clone() / (max.clone() + eps); // x_.abs() <= 1
             // eps inside the root (matches `RmsNorm`'s F16 branch).
             let rms_partial = ((x.clone() * x_).mean_dim(D - 1) + eps).sqrt();
-            // `max` is detached (no backward), but floor it too, so an
+            // `max` is off autodiff (no backward), but floor it too, so an
             // all-zero tensor (`max = 0`) gives a nonzero denominator, not
             // `0/0` in the caller. This matches the F32 branch.
             rms_partial * (max + eps).sqrt()

@@ -10,6 +10,26 @@
 
 use burn::prelude::*;
 
+/// `tensor` lifted onto the autodiff backend of `device`, as a new graph root
+/// with the gradient-checkpointing strategy of `device`. On a device without
+/// autodiff, `tensor` unchanged. This is the way back from `Tensor::inner`,
+/// and like `inner`, it does nothing off the autodiff backend.
+///
+/// Use it, not a bare `Tensor::from_inner` (an alias of `Tensor::autodiff`).
+/// `from_inner` enables autodiff also on a plain tensor, and it always sets
+/// the `Disabled` strategy. An op on two tensors with different strategies
+/// panics. So on a device with gradient checkpointing, the first op that mixes
+/// such a tensor with the other tensors of the pass fails.
+pub fn lift<const D: usize>(tensor: Tensor<D>, device: &Device) -> Tensor<D> {
+    #[cfg(feature = "autodiff")]
+    if let Some(strategy) = device.gradient_checkpointing_strategy() {
+        return Tensor::from_inner(tensor).with_gradient_checkpointing_strategy(strategy);
+    }
+    #[cfg(not(feature = "autodiff"))]
+    let _ = device;
+    tensor
+}
+
 /// The uniform interface of a per-network cache collection for the generic
 /// [`Layers`](crate::modules::Layers) loop: `slot_count`, plus move-in and
 /// move-out of the per-layer slots.
@@ -36,15 +56,23 @@ pub trait CacheStack: Sized {
     /// `Param`s. So a `Module`-based conversion would silently skip every one
     /// of them.
     ///
-    /// `Tensor::inner` returns a tensor that is already off the autodiff
-    /// backend unchanged. So this does nothing there, and is not an error. A
-    /// caller that wants to skip the round-trip asks
-    /// [`Device::is_autodiff`](burn::prelude::Device::is_autodiff) itself.
+    /// `Tensor::inner` (an alias of `Tensor::without_autodiff`) returns a
+    /// tensor that is already off the autodiff backend unchanged. So this does
+    /// nothing there, and is not an error. [`Self::cache_from_inner`] also does
+    /// nothing there.
     fn cache_to_inner(cache: Self::Cache) -> Self::Cache;
 
-    /// Lift one cache slot back **from** the inner backend, as a new graph
-    /// root. The inverse of [`Self::cache_to_inner`] (see its notes).
-    fn cache_from_inner(cache: Self::Cache) -> Self::Cache;
+    /// Lift one cache slot back **from** the inner backend onto the autodiff
+    /// backend of `device`, as a new graph root: the inverse of
+    /// [`Self::cache_to_inner`]. Lift each tensor with [`lift`], not with a
+    /// bare `Tensor::from_inner` (see [`lift`]). So the slot gets the
+    /// checkpointing strategy of `device`, and on a device without autodiff,
+    /// the slot stays unchanged.
+    fn cache_from_inner(cache: Self::Cache, device: &Device) -> Self::Cache;
+
+    /// The device of one cache slot: the device of any of its tensors, with
+    /// its autodiff context. [`Self::detach`] lifts the slot back onto it.
+    fn cache_device(cache: &Self::Cache) -> Device;
 
     /// Round-trip **every** slot through the inner backend. The cache keeps
     /// its values and loses the graph that produced it. So a caller can carry
@@ -56,12 +84,19 @@ pub trait CacheStack: Sized {
     /// [`detach_params`](crate::utils::detach_params)). The backend hop drops
     /// the graph.
     ///
-    /// Does nothing off the autodiff backend (see [`Self::cache_to_inner`]).
+    /// Each slot goes back onto its own device ([`Self::cache_device`]), with
+    /// the checkpointing strategy of that device. On a device without
+    /// autodiff, this does nothing.
     fn detach(self) -> Self {
         let slots = self
             .into_slots()
             .into_iter()
-            .map(|slot| slot.map(|cache| Self::cache_from_inner(Self::cache_to_inner(cache))))
+            .map(|slot| {
+                slot.map(|cache| {
+                    let device = Self::cache_device(&cache);
+                    Self::cache_from_inner(Self::cache_to_inner(cache), &device)
+                })
+            })
             .collect();
         Self::from_slots(slots)
     }

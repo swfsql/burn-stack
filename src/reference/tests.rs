@@ -325,6 +325,48 @@ fn grad_horizon_mask_alternates_and_keeps_forward_step_parity() {
     }
 }
 
+/// On a device with gradient checkpointing, a cut lifts what it took down
+/// with the strategy of the device ([`lift`](crate::modules::lift)). A bare
+/// `Tensor::from_inner` sets the `Disabled` strategy, and the next op that
+/// mixes the lifted tensor with a tensor of the device panics. The mask ends
+/// untracked, so the in-loop lift and the lift at the top both run, in
+/// `forward` and in `step`.
+#[test]
+fn grad_horizon_keeps_the_checkpointing_strategy() {
+    let device = Device::default().autodiff().gradient_checkpointing();
+    let x = randn3(2, 3, &device).require_grad();
+    let mut layers = layers(4, &device);
+    layers.grad_horizon = Some(GradHorizon::Mask(vec![true, false, true, false]));
+
+    let (y, caches) = layers.forward(x.clone(), None, (), None, None);
+    let grads = y.sum().backward();
+    assert!(x.grad(&grads).is_some(), "the input crosses every cut");
+
+    // The backward above consumed the graph of the caches, so they carry on
+    // detached (Burn has no `retain_graph`).
+    let x_t = x.narrow(1, 0, 1).squeeze_dim::<2>(1);
+    let (y_t, _) = layers.step(x_t, Some(caches.detach()), None);
+    let _ = y_t.sum().backward();
+}
+
+/// `CacheStack::detach` puts each slot back on its own device: a plain slot
+/// stays plain, and an autodiff slot keeps the checkpointing strategy of its
+/// device.
+#[test]
+fn detach_keeps_the_device_of_each_slot() {
+    for device in [Device::default(), Device::default().autodiff().gradient_checkpointing()] {
+        let (_, caches) = layers(2, &device).forward(randn3(1, 3, &device), None, (), None, None);
+        for slot in caches.detach().into_slots().into_iter().flatten() {
+            let state = slot.state_bd;
+            assert_eq!(state.is_autodiff(), device.is_autodiff());
+            assert_eq!(
+                state.gradient_checkpointing_strategy(),
+                device.gradient_checkpointing_strategy(),
+            );
+        }
+    }
+}
+
 /// A class latent of an **untracked** layer still trains. It is a learnable
 /// *input row*, not part of the transform of that layer. So it rides the
 /// straight-through carry as a value-zero ghost row. The mask here also ends

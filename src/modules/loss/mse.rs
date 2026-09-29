@@ -52,7 +52,7 @@ impl MseLoss {
                 let div_eps: f16 = f16::from_elem(div_eps(logits.dtype())) * f16::from_f32(2.);
                 // avoid calculating sub² directly (due to overflow e.g. on 256 * 256)
                 let sub = logits.sub(targets);
-                let max = sub.clone().no_grad().detach().abs().max();
+                let max = sub.clone().without_autodiff().abs().max();
                 let sub_ = sub.clone() / (max.clone().expand(sub.shape()) + div_eps); // sub_.abs() <= 1
                 let partial = sub * sub_; // sub² = partial * max
                 let reduced_partial = match reduction {
