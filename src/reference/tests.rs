@@ -21,7 +21,7 @@ use crate::modules::{
     GatedMlpConfig, LatentNetworkBuilder, LayerUntied, Layers, LayersBuilder, ResidualsConfig,
 };
 use crate::utils::class::init_class_emb;
-use crate::utils::test_helpers::max_abs_diff;
+use crate::utils::test_helpers::{dtype_tol, max_abs_diff, max_rel_diff};
 use crate::utils::{BidiSchedule, ClassLatent, ClassToken, GradHorizon, Schedule};
 use burn::module::{ModuleMapper, Param};
 use burn::tensor::Distribution;
@@ -70,8 +70,8 @@ fn block_forward_equals_step_unrolled() {
     }
     let y_step = Tensor::cat(ys, 1);
 
-    assert!(max_abs_diff(y_fwd, y_step) < TOL);
-    assert!(max_abs_diff(cache_fwd.state_bd, cache.unwrap().state_bd) < TOL);
+    assert!(max_abs_diff(y_fwd, y_step) < dtype_tol(TOL));
+    assert!(max_abs_diff(cache_fwd.state_bd, cache.unwrap().state_bd) < dtype_tol(TOL));
 }
 
 /// A `forward` split into two chunks, threading the cache, equals one `forward`
@@ -86,7 +86,7 @@ fn block_forward_is_chunkable_through_the_cache() {
     let (y_a, cache) = block.block_forward(x.clone().narrow(1, 0, 4), None, (), None);
     let (y_b, _) = block.block_forward(x.narrow(1, 4, 2), Some(cache), (), None);
 
-    assert!(max_abs_diff(y_all, Tensor::cat(vec![y_a, y_b], 1)) < TOL);
+    assert!(max_abs_diff(y_all, Tensor::cat(vec![y_a, y_b], 1)) < dtype_tol(TOL));
 }
 
 // ---------------------------------------------------------------------------
@@ -112,7 +112,7 @@ fn layers_forward_equals_step_unrolled() {
         ys.push(y_t.unsqueeze_dim::<3>(1));
     }
 
-    assert!(max_abs_diff(y_fwd, Tensor::cat(ys, 1)) < TOL);
+    assert!(max_abs_diff(y_fwd, Tensor::cat(ys, 1)) < dtype_tol(TOL));
 }
 
 /// An `mlp` on the layer adds a second, *inner* residual. The layer returns its
@@ -140,7 +140,7 @@ fn layer_mlp_reproduces_two_separate_residuals() {
     let mlp = layer.mlp.as_ref().expect("mlp present");
     let want = residual.clone() + mlp.forward(norm2.forward(residual));
 
-    assert!(max_abs_diff(got, want) < TOL);
+    assert!(max_abs_diff(got, want) < dtype_tol(TOL));
 }
 
 /// Virtual layers reuse one real weight set. 6 virtual over 2 real must hold
@@ -188,7 +188,7 @@ fn grad_horizon_cuts_the_prefix_but_not_the_input() {
     uncut.grad_horizon = Some(GradHorizon::last(4, 4));
     let (y_uncut, _) = uncut.forward(x.clone(), None, (), None, None);
     assert!(
-        max_abs_diff(y_full, y_uncut) < TOL,
+        max_abs_diff(y_full, y_uncut) < dtype_tol(TOL),
         "a horizon tracking everything must reproduce the untouched stack exactly",
     );
 
@@ -239,12 +239,12 @@ fn grad_horizon_stretched_trains_every_real_layer() {
     let (y_cut, caches_cut) = cut.forward(x.clone(), None, (), None, None);
 
     assert!(
-        max_abs_diff(y_uncut, y_cut.clone()) < TOL,
+        max_abs_diff(y_uncut, y_cut.clone()) < dtype_tol(TOL),
         "a horizon changes the graph, never the values",
     );
     for (a, b) in caches_uncut.caches.into_iter().zip(caches_cut.caches) {
         assert!(
-            max_abs_diff(a.state_bd, b.state_bd) < TOL,
+            max_abs_diff(a.state_bd, b.state_bd) < dtype_tol(TOL),
             "nor the caches it hands back",
         );
     }
@@ -297,7 +297,7 @@ fn grad_horizon_mask_alternates_and_keeps_forward_step_parity() {
         cut.grad_horizon = Some(GradHorizon::Mask(mask.clone()));
         let (y_cut, _) = cut.forward(x.clone(), None, (), None, None);
         assert!(
-            max_abs_diff(y_uncut, y_cut.clone()) < TOL,
+            max_abs_diff(y_uncut, y_cut.clone()) < dtype_tol(TOL),
             "an alternating mask changes the graph, never the values",
         );
 
@@ -311,7 +311,7 @@ fn grad_horizon_mask_alternates_and_keeps_forward_step_parity() {
             caches = Some(c);
             ys.push(y_t.unsqueeze_dim::<3>(1));
         }
-        assert!(max_abs_diff(y_cut.clone(), Tensor::cat(ys, 1)) < TOL);
+        assert!(max_rel_diff(y_cut.clone(), Tensor::cat(ys, 1)) < dtype_tol(TOL));
 
         let grads = y_cut.sum().backward();
         assert!(x.grad(&grads).is_some(), "the input crosses every cut");
@@ -431,7 +431,7 @@ fn multi_gate_forward_equals_step_and_stays_bounded() {
         ys.push(y_t.unsqueeze_dim::<3>(1));
     }
 
-    assert!(max_abs_diff(y_fwd, Tensor::cat(ys, 1)) < TOL);
+    assert!(max_abs_diff(y_fwd, Tensor::cat(ys, 1)) < dtype_tol(TOL));
 }
 
 // ---------------------------------------------------------------------------
@@ -597,7 +597,7 @@ fn an_untied_stack_is_the_unshared_stack_of_its_application_views() {
 
     let (y, _) = layers.forward(x.clone(), None, (), None, None);
     let (want, _) = unshared.forward(x.clone(), None, (), None, None);
-    assert!(max_abs_diff(y.clone(), want) < TOL);
+    assert!(max_abs_diff(y.clone(), want) < dtype_tol(TOL));
 
     let mut caches = None;
     let mut ys = Vec::new();
@@ -607,11 +607,11 @@ fn an_untied_stack_is_the_unshared_stack_of_its_application_views() {
         caches = Some(c);
         ys.push(y_t.unsqueeze_dim::<3>(1));
     }
-    assert!(max_abs_diff(y.clone(), Tensor::cat(ys, 1)) < TOL);
+    assert!(max_rel_diff(y.clone(), Tensor::cat(ys, 1)) < dtype_tol(TOL));
 
     // Both comparisons prove nothing unless the copies really differ.
     let (y_tied, _) = tied_view(&layers).forward(x, None, (), None, None);
-    assert!(max_abs_diff(y, y_tied) > TOL);
+    assert!(max_abs_diff(y, y_tied) > dtype_tol(TOL));
 }
 
 /// Every copy of `g` (the untied gradient, copies along `axis`) is non-zero.
@@ -625,7 +625,7 @@ fn assert_copies_split<const D: usize>(g: Tensor<D>, g_tied: Tensor<D>, axis: us
     }
     let sum = copies.into_iter().reduce(|a, b| a + b).expect("n >= 1");
     let len = sum.dims()[axis];
-    assert!(max_abs_diff(sum, g_tied.narrow(axis, 0, len)) < TOL);
+    assert!(max_abs_diff(sum, g_tied.narrow(axis, 0, len)) < dtype_tol(TOL));
 }
 
 /// Untied copies start as the tied weight. The untied stack computes exactly
@@ -640,7 +640,7 @@ fn untied_copies_start_tied_and_split_the_tied_gradient() {
 
     let (y, _) = layers.forward(x.clone(), None, (), None, None);
     let (y_tied, _) = tied.forward(x, None, (), None, None);
-    assert!(max_abs_diff(y.clone(), y_tied.clone()) < TOL);
+    assert!(max_abs_diff(y.clone(), y_tied.clone()) < dtype_tol(TOL));
 
     // A view reads the stored parameters, so both gradients land on them.
     let grads = y.sum().backward();
@@ -813,7 +813,7 @@ fn muon_steps_an_untied_projection_one_copy_at_a_time() {
     let (stepped, _) = segmented.step(1e-2, w.clone(), g.clone(), None);
     for ((got, w), g) in stepped.chunk(n, 1).into_iter().zip(w.chunk(n, 1)).zip(g.chunk(n, 1)) {
         let (want, _) = muon.step(1e-2, w, g, None);
-        assert!(max_abs_diff(got, want) < TOL);
+        assert!(max_abs_diff(got, want) < dtype_tol(TOL));
     }
 
     let config = block_config().with_untied(vec![RefUntied::GateProj]);

@@ -43,7 +43,10 @@ cargo doc --no-deps         # build docs
   example/test conveniences.
 - A test takes its device from `utils::test_helpers::test_device()` (fp16
   under `dev-f16`), never from `Device::default()`: the dtype defaults are
-  global, and the first tensor fixes them for the process.
+  global, and the first tensor fixes them for the process. A tolerance goes
+  through `dtype_tol` (the fp32 value is unchanged), a check on values that
+  can be large compares with `max_rel_diff`, and a host read-back converts
+  (`try_into_vec_as`, not `try_to_vec`).
 - `test-helpers` exposes `utils::test_helpers` and `reference` to the
   dev-dependencies of a downstream crate.
 - `examples-common` exposes `examples`. It pulls `burn/train` +
@@ -240,8 +243,8 @@ src/
    │                     Stateless = caches `()`. WARMUP_STEPS.
    │                     graph/weights.rs: Weights<M>, the params of a module as
    │                     the caches of a training step
-   ├─ test_helpers.rs    test_device (fp16 under `dev-f16`), max_abs_diff +
-   │                     grad-comparison macros
+   ├─ test_helpers.rs    test_device (fp16 under `dev-f16`), dtype_tol,
+   │                     max_abs_diff / max_rel_diff + grad-comparison macros
    └─ untied.rs          UntiedParam + tile/view/retie: a parameter held once per
                          application, copies side by side along an existing axis
 ```

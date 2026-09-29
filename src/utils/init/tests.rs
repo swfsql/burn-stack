@@ -34,7 +34,7 @@ fn policy() -> InitPolicy {
 }
 
 fn values<const D: usize>(t: &burn::module::Param<Tensor<D>>) -> Vec<f32> {
-    t.val().into_data().try_to_vec::<f32>().unwrap()
+    t.val().into_data().try_into_vec_as::<f32>().unwrap()
 }
 
 fn std_of(values: &[f32]) -> f32 {

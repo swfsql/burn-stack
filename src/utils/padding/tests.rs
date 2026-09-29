@@ -8,7 +8,7 @@ use crate::modules::bidi::{BidiLayersBuilder, OutputMergeConfig};
 use crate::modules::{LatentNetworkBuilder, Layers, LayersBuilder, ResidualsConfig};
 use crate::reference::{RefBlock, RefBlockConfig, RefCaches};
 use crate::utils::class::{ClassMarker, class_chunk_plan, init_class_emb};
-use crate::utils::test_helpers::max_abs_diff;
+use crate::utils::test_helpers::{dtype_tol, max_abs_diff, max_rel_diff};
 use crate::utils::{ClassCursor, ClassCursors, ClassLatent, ClassToken, GradHorizon};
 use burn::module::{ModuleVisitor, Param};
 use burn::prelude::*;
@@ -111,7 +111,7 @@ fn assert_grads_match(padded: Vec<Option<Tensor<1>>>, solo: Vec<Option<Tensor<1>
         match (p, s) {
             (Some(p), Some(s)) => {
                 let diff = max_abs_diff(p, s);
-                assert!(diff < TOL, "parameter {i}: gradient differs by {diff}");
+                assert!(diff < dtype_tol(TOL), "parameter {i}: gradient differs by {diff}");
             }
             (None, None) => {}
             (p, s) => panic!(
@@ -152,11 +152,11 @@ fn check_each_slot_alone<M: Module>(
         let owned = rows(len);
         let idx = indices(&padded_rows, &owned, &device);
         let y_owned = y.clone().narrow(0, b, 1).select(1, idx.clone());
-        let diff = max_abs_diff(y_owned.clone(), y_solo.clone());
-        assert!(diff < TOL, "slot {b} (length {len}): its rows differ by {diff}");
+        let diff = max_rel_diff(y_owned.clone(), y_solo.clone());
+        assert!(diff < dtype_tol(TOL), "slot {b} (length {len}): its rows differ by {diff}");
         for (l, (c, c_solo)) in caches.caches.iter().zip(&caches_solo.caches).enumerate() {
-            let diff = max_abs_diff(c.state_bd.clone().narrow(0, b, 1), c_solo.state_bd.clone());
-            assert!(diff < TOL, "slot {b} (length {len}): cache {l} differs by {diff}");
+            let diff = max_rel_diff(c.state_bd.clone().narrow(0, b, 1), c_solo.state_bd.clone());
+            assert!(diff < dtype_tol(TOL), "slot {b} (length {len}): cache {l} differs by {diff}");
         }
         let weight = weight.clone().select(0, idx).unsqueeze::<3>();
         loss_padded = loss_padded + (y_owned * weight.clone()).sum();

@@ -43,7 +43,8 @@ pub mod padding;
 pub mod schedule;
 /// Learning-rate schedulers (cosine-annealing + warmup, constant).
 pub mod scheduler;
-/// `max_abs_diff` + gradient-comparison macros used across the test suites.
+/// The test device, dtype-aware tolerances and comparisons, and the
+/// gradient-comparison macros used across the test suites.
 #[cfg(any(test, feature = "test-helpers"))]
 pub mod test_helpers;
 /// Parameters held once per application of a real layer instead of tied.

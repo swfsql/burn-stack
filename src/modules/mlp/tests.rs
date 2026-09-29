@@ -1,5 +1,5 @@
 use super::*;
-use crate::utils::test_helpers::max_abs_diff;
+use crate::utils::test_helpers::{dtype_tol, max_abs_diff};
 use burn::module::Param;
 use burn::tensor::Distribution;
 use crate::utils::test_helpers::test_device;
@@ -44,7 +44,7 @@ fn value_half_precedes_gate_half() {
     let gate = fused.narrow(2, hidden, hidden);
     let expected = mlp.fc2.forward(value * Silu::new().forward(gate));
 
-    assert!(max_abs_diff(mlp.forward(x), expected) < 1e-5);
+    assert!(max_abs_diff(mlp.forward(x), expected) < dtype_tol(1e-5));
 }
 
 /// The block is point-wise in the sequence, so a `[batch, d_model]` step and the
@@ -67,7 +67,7 @@ fn step_matches_the_matching_forward_row() {
         let row: Tensor<2> = x.clone().narrow(1, t, 1).squeeze_dim::<2>(1);
         let expected: Tensor<2> = full.clone().narrow(1, t, 1).squeeze_dim::<2>(1);
         assert!(
-            max_abs_diff(mlp.forward(row), expected) < 1e-5,
+            max_abs_diff(mlp.forward(row), expected) < dtype_tol(1e-5),
             "row {t} disagrees"
         );
     }
@@ -87,7 +87,7 @@ fn gradients_reach_both_projections() {
     let grads = mlp.forward(x.val()).sum().backward();
 
     let g = x.val().grad(&grads).expect("input grad exists");
-    let gvec = g.into_data().try_to_vec::<f32>().unwrap();
+    let gvec = g.into_data().try_into_vec_as::<f32>().unwrap();
     assert!(gvec.iter().all(|v| v.is_finite()));
     assert!(
         gvec.iter().any(|v| v.abs() > 0.),

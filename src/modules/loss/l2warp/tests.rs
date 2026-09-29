@@ -2,7 +2,7 @@
 
 use super::*;
 use burn::module::Param;
-use crate::utils::test_helpers::test_device;
+use crate::utils::test_helpers::{dtype_tol, test_device};
 
 type Device = burn::prelude::Device;
 
@@ -26,9 +26,9 @@ fn the_reported_loss_is_unchanged() {
 
     let wrapped = l2_warp(loss.clone(), logits(&device), FACTOR);
 
-    let before = loss.into_data().try_to_vec::<f32>().unwrap();
-    let after = wrapped.into_data().try_to_vec::<f32>().unwrap();
-    assert!((before[0] - after[0]).abs() < 1e-6, "{before:?} vs {after:?}");
+    let before = loss.into_data().try_into_vec_as::<f32>().unwrap();
+    let after = wrapped.into_data().try_into_vec_as::<f32>().unwrap();
+    assert!((before[0] - after[0]).abs() < dtype_tol(1e-6), "{before:?} vs {after:?}");
 }
 
 /// Only the winning logit is pulled, and by exactly `factor/(B·T) · z_max`:
@@ -46,13 +46,13 @@ fn only_the_max_logit_is_pulled_and_by_the_right_amount() {
         .grad(&grads)
         .expect("the penalty reaches the logits")
         .into_data()
-        .try_to_vec::<f32>()
+        .try_into_vec_as::<f32>()
         .unwrap();
 
     // Two positions, so the mean divides by 2. The winners are 4.0 and 5.0.
     let scale = FACTOR as f32 / 2.0;
     let expected = [0.0, 4.0 * scale, 0.0, 5.0 * scale, 0.0, 0.0];
     for (i, (got, want)) in g.iter().zip(expected).enumerate() {
-        assert!((got - want).abs() < 1e-7, "position {i}: {got} vs {want}");
+        assert!((got - want).abs() < dtype_tol(1e-7), "position {i}: {got} vs {want}");
     }
 }

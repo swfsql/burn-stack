@@ -16,7 +16,7 @@ use super::{Prefill, generate, sample_token};
 use crate::examples::tiny_stories::dataset::{VOCAB, VOCAB_SIZE};
 use crate::modules::{LayersBuilder, VocabNetwork, VocabNetworkBuilder};
 use crate::reference::{RefBlock, RefBlockConfig, RefCaches};
-use crate::utils::test_helpers::max_abs_diff;
+use crate::utils::test_helpers::{dtype_tol, max_abs_diff, max_rel_diff};
 use crate::utils::{ClassCursors, ClassLatent};
 use burn::prelude::*;
 use burn::tensor::Distribution;
@@ -194,11 +194,11 @@ fn a_prefill_is_the_same_captured_and_eager_and_is_the_prompt_in_one_pass() {
         let x = Tensor::<1, Int>::from_ints(ids.as_slice(), &device).reshape([1, len]);
         let (whole, whole_caches) = net.forward(x, None, (), Some(&mut ClassCursors::stream()), None);
         let rows = whole.dims()[1];
-        let d = max_abs_diff(logits, whole.narrow(1, rows - 1, 1).squeeze_dim(1));
-        assert!(d < 1e-4, "length {len}: logits differ from one pass by {d}");
+        let d = max_rel_diff(logits, whole.narrow(1, rows - 1, 1).squeeze_dim(1));
+        assert!(d < dtype_tol(1e-4), "length {len}: logits differ from one pass by {d}");
         for (a, b) in prefilled.caches.iter().zip(&whole_caches.caches) {
             let d = max_abs_diff(a.state_bd.clone(), b.state_bd.clone());
-            assert!(d < 1e-4, "length {len}: cache differs from one pass by {d}");
+            assert!(d < dtype_tol(1e-4), "length {len}: cache differs from one pass by {d}");
         }
     }
 }
