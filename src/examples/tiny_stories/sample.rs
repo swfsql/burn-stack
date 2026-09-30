@@ -40,8 +40,8 @@ use crate::modules::{Block, CacheTensors, VocabNetwork};
 use crate::utils::ClassCursors;
 use crate::utils::graph::{CapturedStep, WARMUP_STEPS};
 use burn::prelude::*;
-use burn::tensor::TensorData;
 use burn::tensor::activation::softmax;
+use burn::tensor::{DType, FloatDType, TensorData};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use std::cell::RefCell;
@@ -203,7 +203,8 @@ pub unsafe fn decode<C: CacheTensors>(
     let draws: Vec<f32> = (0..n_chars)
         .map(|_| if temperature > 0.0 { rng.random_range(0.0..1.0) } else { 0.0 })
         .collect();
-    let draw = |i: usize| Tensor::<1>::from_floats([draws[i]], device);
+    // In f32 whatever the dtype of the model (see `sample_token`).
+    let draw = |i: usize| Tensor::<1>::from_data([draws[i]], (device, DType::F32));
 
     // One decode step, from the last token to the next. The token travels as a
     // float id (exact), the kind that a captured state holds.
@@ -427,13 +428,19 @@ fn read_back(tokens: &mut Vec<Tensor<1, Int>>, ids: &mut Vec<i64>) {
 /// totals below `draw`. The count is clamped, because rounding can leave the
 /// last total short of 1. The last token then takes the remainder. Nothing is
 /// read back.
+///
+/// The draw is in f32, whatever the dtype of the model. In f16, the step of
+/// the running total below 1 is `4.9·10⁻⁴`, so a token with a smaller
+/// probability near the end of the total could get no interval, and the f16
+/// `draw` has the same step.
 pub fn sample_token(logits: Tensor<2>, temperature: f64, draw: Tensor<1>) -> Tensor<1, Int> {
     assert_eq!([1, VOCAB_SIZE], logits.dims());
     if temperature <= 0.0 {
         return logits.argmax(1).reshape([1]);
     }
+    let logits = logits.cast(FloatDType::F32);
     let cumulative = softmax(logits / temperature, 1).cumsum(1);
-    let draw = draw.reshape([1, 1]).expand([1, VOCAB_SIZE]);
+    let draw = draw.cast(FloatDType::F32).reshape([1, 1]).expand([1, VOCAB_SIZE]);
     let below = cumulative.lower(draw).int().sum_dim(1);
     below.clamp_max(VOCAB_SIZE as i64 - 1).reshape([1])
 }

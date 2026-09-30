@@ -14,7 +14,7 @@ use crate::reference::{RefBlock, RefBlockConfig, RefCaches};
 use crate::utils::test_helpers::max_abs_diff;
 use crate::utils::{ClassCursors, ClassLatent};
 use burn::prelude::*;
-use burn::tensor::{Distribution, TensorData};
+use burn::tensor::{DType, Distribution, FloatDType, TensorData};
 use crate::utils::test_helpers::test_device;
 
 const D_MODEL: usize = 8;
@@ -165,6 +165,24 @@ fn captured_forward_is_the_eager_forward() {
         let d = max_abs_diff(y, forward(x.clone()));
         assert_eq!(d, 0.0, "call {k} differs by {d}");
     }
+}
+
+/// Host data goes in with the dtype of the captured input, not with the
+/// default of the device, also on the eager path. The sampler of tiny-stories
+/// feeds its f32 draws to an f16 model this way. The input here has the dtype
+/// that is not the default of the test device.
+#[test]
+fn host_data_keeps_the_dtype_of_the_input() {
+    let device = test_device();
+    let dtype = match device.settings().float_dtype {
+        FloatDType::F32 => FloatDType::F16,
+        _ => FloatDType::F32,
+    };
+    let x = Tensor::<1>::zeros([1], &device).cast(dtype);
+    // Safety: the step reads nothing but its arguments.
+    let mut captured = unsafe { CapturedStep::capture(&device, x, (), |x, ()| (x * 2.0, ())) };
+    let y = captured.step_data(TensorData::from([1.0f32 / 3.0])).clone();
+    assert_eq!(y.dtype(), DType::from(dtype), "the step ran in the default dtype of the device");
 }
 
 /// A captured SGD training step is the eager `Sgd` of Burn, bit for bit: the

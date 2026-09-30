@@ -16,34 +16,20 @@
 //! never materialises the full-width normalised tensor, and computes exactly
 //! `Σ_feat(rms_norm(x) · w) · scale`.
 
-use super::rescaled_rms_f16;
-use crate::utils::div_eps;
+use super::{downcast, rms, upcast};
 use burn::prelude::*;
-use burn::tensor::DType;
+use burn::tensor::FloatDType;
 
 /// The parameter-free RMS denominator `d(x) ∈ [‥, 1]` such that the RMSNorm
 /// (matching [`RmsNorm`] math with `γ ≡ 1`) is `x / d(x)`, shape `[‥, 1]`.
 ///
-/// The fp16 path keeps the same overflow-safe per-row max-rescale as
-/// [`RmsNorm`], folded into the same scalar denominator.
+/// As in [`RmsNorm`], an f16 or bf16 input computes in f32. The result is in
+/// the dtype of `x`.
 ///
 /// [`RmsNorm`]: crate::modules::RmsNorm
 pub fn rms_denom<const D: usize>(x: Tensor<D>) -> Tensor<D> {
-    match x.dtype() {
-        DType::F64 | DType::F32 | DType::Flex32 | DType::BF16 => {
-            let eps = div_eps(x.dtype());
-            // eps *inside* the root (matches `RmsNorm`): the `sqrt` backward
-            // is otherwise singular for a zero-norm slice.
-            ((x.clone() * x).mean_dim(D - 1) + eps).sqrt()
-        }
-        DType::F16 => {
-            // `m · rms_ = √(mean(x²) + eps)`, with `m` the `max(|x|)` of each
-            // row.
-            let (_, rms_, m) = rescaled_rms_f16(x, div_eps(DType::F16));
-            rms_ * m
-        }
-        _ => unreachable!("rms_denom expects a float dtype"),
-    }
+    let (x, half) = upcast(x);
+    downcast(rms(x), half)
 }
 
 /// The RMSNorm-then-dot score `scale · Σ_feat(x · w) / (rms(x)+eps)`, shape
@@ -51,9 +37,15 @@ pub fn rms_denom<const D: usize>(x: Tensor<D>) -> Tensor<D> {
 ///
 /// `w` broadcasts against `x` on every axis but the feature one (`D-1`), where
 /// it must be full width. `scale` is the `1/√width` temperature of the query.
+/// An f16 or bf16 input computes in f32, the dot product included.
 pub fn normed_score<const D: usize>(x: Tensor<D>, w: Tensor<D>, scale: f64) -> Tensor<D> {
+    let (x, half) = upcast(x);
+    let w = match half {
+        Some(_) => w.cast(FloatDType::F32),
+        None => w,
+    };
     let dot = (x.clone() * w).sum_dim(D - 1);
-    dot * scale / rms_denom(x)
+    downcast(dot * scale / rms(x), half)
 }
 
 /// `1/√width`: the temperature that keeps a `width`-wide dot product `O(1)`.

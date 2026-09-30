@@ -6,18 +6,17 @@
 //! - `false`: gate, then normalise: `y = rms(x · SiLU(z)) · γ` applied to
 //!   `x · SiLU(z)`
 //!
-//! The numerical-stability epsilon is the per-dtype
-//! [`div_eps`](crate::utils::div_eps), so there is no configurable epsilon.
-//! The fp16 path uses the same per-row `max(|x|)`-rescale as
-//! [`RmsNorm`](crate::modules::norm::rms_norm::RmsNorm).
+//! The epsilon is `norm::norm_eps`, one value for every dtype, so there is no
+//! configurable epsilon. As in
+//! [`RmsNorm`](crate::modules::norm::rms_norm::RmsNorm), an f16 or bf16 input
+//! computes in f32, the gate included.
 
-use super::rescaled_rms_f16;
+use super::{downcast, rms, upcast};
 use crate::modules::Silu;
-use crate::utils::div_eps;
 use burn::module::{Content, DisplaySettings, ModuleDisplay, Param};
 use burn::nn::Initializer;
 use burn::prelude::*;
-use burn::tensor::DType;
+use burn::tensor::FloatDType;
 
 /// Configuration to create a [`RmsNormGated`] layer.
 #[derive(Config, Debug)]
@@ -72,6 +71,11 @@ impl RmsNormGated {
     /// - output: `[..., any, d_model]`
     pub fn forward<const D: usize>(&self, x: Tensor<D>, z: Tensor<D>) -> Tensor<D> {
         let silu = Silu::new();
+        let (x, half) = upcast(x);
+        let (z, gamma) = match half {
+            Some(_) => (z.cast(FloatDType::F32), self.gamma.val().cast(FloatDType::F32)),
+            None => (z, self.gamma.val()),
+        };
 
         let x = if self.norm_before_gate {
             // gate will be applied later
@@ -81,50 +85,16 @@ impl RmsNormGated {
             x * silu.forward(z.clone())
         };
 
-        let normalized = match x.dtype() {
-            DType::F64 | DType::F32 | DType::Flex32 | DType::BF16 => {
-                let div_eps = div_eps(x.dtype());
+        let normalized = x.clone() / rms(x) * gamma.unsqueeze();
 
-                // eps *inside* the root (as documented). It guards both the
-                // forward division and the `1/(2√·)` backward of the `sqrt`
-                // node, which is otherwise singular for a zero-norm slice (see
-                // `tests::rms_norm_gated_gradient_finite_on_collapsed_slice`).
-                let rms = ((x.clone() * x.clone()).mean_dim(D - 1) + div_eps).sqrt();
-                let normalized = (x / rms) * self.gamma.val().unsqueeze();
-                normalized
-            }
-            DType::F16 => {
-                // The same formula as the main branch, on each row rescaled
-                // by its own `max(|x|)` (a direct `x²` overflows, e.g. at
-                // 256 · 256).
-                let (x_, rms_, _) = rescaled_rms_f16(x, div_eps(DType::F16));
-                x_ / rms_ * self.gamma.val().unsqueeze()
-            }
-            DType::I64
-            | DType::I32
-            | DType::I16
-            | DType::I8
-            | DType::U64
-            | DType::U32
-            | DType::U16
-            | DType::U8 => {
-                unreachable!()
-            }
-            DType::Bool(_) => {
-                unreachable!()
-            }
-            DType::QFloat(_) => {
-                unimplemented!()
-            }
-        };
-
-        if self.norm_before_gate {
+        let y = if self.norm_before_gate {
             // gate gets applied late (now)
             normalized * silu.forward(z)
         } else {
             // gate already got applied before
             normalized
-        }
+        };
+        downcast(y, half)
     }
 }
 

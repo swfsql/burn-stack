@@ -19,8 +19,8 @@ use crate::reference::{RefBlock, RefBlockConfig, RefCaches};
 use crate::utils::test_helpers::{dtype_tol, max_abs_diff, max_rel_diff};
 use crate::utils::{ClassCursors, ClassLatent};
 use burn::prelude::*;
-use burn::tensor::Distribution;
 use burn::tensor::activation::softmax;
+use burn::tensor::{DType, Distribution, FloatDType};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use crate::utils::test_helpers::test_device;
@@ -38,8 +38,9 @@ fn host_draw(probs: &[f32], threshold: f32) -> u8 {
     (VOCAB_SIZE - 1) as u8
 }
 
+/// In f32, as [`sample_token`] computes them, whatever the dtype of `logits`.
 fn host_probs(logits: Tensor<2>, temperature: f64) -> Vec<f32> {
-    softmax(logits / temperature, 1).into_data().iter::<f32>().collect()
+    softmax(logits.cast(FloatDType::F32) / temperature, 1).into_data().iter::<f32>().collect()
 }
 
 fn host_argmax(logits: Tensor<2>) -> u8 {
@@ -47,7 +48,7 @@ fn host_argmax(logits: Tensor<2>) -> u8 {
 }
 
 fn device_draw(logits: Tensor<2>, temperature: f64, threshold: f32, device: &Device) -> u8 {
-    let draw = Tensor::<1>::from_floats([threshold], device);
+    let draw = Tensor::<1>::from_data([threshold], (device, DType::F32));
     let token = sample_token(logits, temperature, draw).into_data();
     token.iter::<i64>().next().unwrap() as u8
 }

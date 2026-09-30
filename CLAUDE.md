@@ -140,8 +140,8 @@ src/
 │  │                 cache, `Vec`, `Tensor<D>`, a pair = state beside a cache
 │  ├─ activation/    silu, softplus, log_sigmoid (dtype-aware)
 │  ├─ norm/          rms_norm (also usable as QK-Norm), rms_norm_gated, rms_score.
-│  │                 fp16: rescaled_rms_f16 divides each row by its own max(|x|),
-│  │                 so a row reads only itself
+│  │                 f16/bf16 compute in f32 (upcast/downcast); ε = norm_eps
+│  │                 (the div_eps of f32) in every dtype
 │  ├─ loss/          bce, cross_entropy, mse, l2warp (max-logit penalty, added
 │  │                 to the gradient only)
 │  └─ misc/          gqa, segsum, split, sanity
@@ -191,7 +191,7 @@ src/
 │                    never assumed.
 │                    sample.rs: one prime/prefill/decode sampler over
 │                    VocabNetwork<M>. `decode`, the shared loop, draws on the
-│                    device (the token is step state) and replays a
+│                    device in f32 (the token is step state) and replays a
 │                    CapturedStep. A `Prefill`, held across prompts, feeds
 │                    right-padded fixed-shape chunks after a kept opening, with
 │                    one captured chunk for all
@@ -210,7 +210,7 @@ src/
 │  │                 that a captured step can replay
 │  └─ report.rs      MuonPlan::describe(&module): per-param optimizer assignment
 └─ utils/            lower-level plumbing
-   ├─ mod.rs         div_eps (per-dtype epsilon)
+   ├─ mod.rs         div_eps (per-dtype epsilon; the norms use norm_eps)
    ├─ class/         ClassToken / ClassLatent placement (CLS-style registers) +
    │                 ClassCursor(s): offsets + full-length hint, shared by
    │                 forward/step/prime

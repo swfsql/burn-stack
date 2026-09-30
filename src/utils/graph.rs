@@ -423,7 +423,8 @@ impl<'a, const D: usize, K: InputKind + 'a, Y: 'a, C: CacheTensors + 'a>
         let dtype = self.input.borrow().as_ref().expect("the input is always present").dtype();
         let data = data.convert_dtype(dtype);
         if self.graph.is_none() {
-            let x = Tensor::from_data(data, &self.device);
+            // The dtype of the input, not the default of the device.
+            let x = Tensor::from_data(data, (&self.device, dtype));
             return self.eager(x);
         }
         #[cfg(all(feature = "cubecl", not(feature = "fusion")))]

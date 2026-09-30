@@ -56,8 +56,8 @@ impl MseLoss {
                 // `sub`). `mean(sub · sub/s) · s = mean(sub²)` for each `s > 0`,
                 // so the division and the product use the same `s`. The max is
                 // global because the loss is one sum over all elements: `s`
-                // changes only the rounding. An output per row (a norm) needs
-                // the max of each row (see `norm::rescaled_rms_f16`).
+                // changes only the rounding. An output per row would need the
+                // max of each row.
                 let scale = sub.clone().without_autodiff().abs().max() + div_eps;
                 let sub_ = sub.clone() / scale.clone().expand(sub.shape()); // sub_.abs() <= 1
                 let partial = sub * sub_; // sub² = partial * s
