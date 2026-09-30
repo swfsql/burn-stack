@@ -6,17 +6,19 @@
 //! **QK-Norm** on the key/query-like projections of a block.
 //!
 //! The fp16 path does not form `x²` directly (it overflows for moderately
-//! large activations, e.g. 256·256). It first normalises against `max(|x|)`,
-//! so the squared values stay `≤ 1`, then rescales. See [`rms_norm_gated`] for
-//! the SiLU-gated variant.
+//! large activations, e.g. 256·256). It first divides each row by its own
+//! `max(|x|)`, so the squared values stay `≤ 1` (`rescaled_rms_f16`). A row
+//! does not read the other rows. See [`rms_norm_gated`] for the SiLU-gated
+//! variant.
 //!
 //! [`rms_norm_gated`]: crate::modules::norm::rms_norm_gated
 
+use super::rescaled_rms_f16;
 use crate::utils::div_eps;
 use burn::module::{Content, DisplaySettings, ModuleDisplay, Param};
 use burn::nn::Initializer;
 use burn::prelude::*;
-use burn::tensor::{DType, f16};
+use burn::tensor::DType;
 
 /// Configuration to create a [`RmsNorm`] layer.
 #[derive(Config, Debug)]
@@ -63,20 +65,11 @@ impl RmsNorm {
                 normalized
             }
             DType::F16 => {
-                use burn::tensor::ElementConversion;
-                let div_eps: f16 = f16::from_elem(div_eps(x.dtype())) * f16::from_f32(2.);
-                // avoid calculating x² directly (due to overflow e.g. on 256 * 256)
-                let max = x.clone().without_autodiff().abs().max().expand(x.shape());
-                let x_ = x.clone() / (max.clone() + div_eps); // x_.abs() <= 1
-                // eps inside the root (matches the main branch): the `sqrt`
-                // backward is otherwise singular for a zero-norm slice.
-                let rms_partial = ((x.clone() * x_).mean_dim(D - 1) + div_eps).sqrt(); // √(x²/max)
-                // `max` is a constant (off autodiff). Floor it too, so an
-                // all-zero tensor (`max = 0`) gives a nonzero denominator, not
-                // `0/0`.
-                let normalized =
-                    (x / rms_partial) / (max + div_eps).sqrt() * self.gamma.val().unsqueeze();
-                normalized
+                // The same formula as the main branch, on each row rescaled
+                // by its own `max(|x|)` (a direct `x²` overflows, e.g. at
+                // 256 · 256).
+                let (x_, rms_, _) = rescaled_rms_f16(x, div_eps(DType::F16));
+                x_ / rms_ * self.gamma.val().unsqueeze()
             }
             DType::I64
             | DType::I32

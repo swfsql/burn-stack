@@ -139,7 +139,9 @@ src/
 │  │                 (into_owned_buffers, assign_in_place). Impls: `()` = no
 │  │                 cache, `Vec`, `Tensor<D>`, a pair = state beside a cache
 │  ├─ activation/    silu, softplus, log_sigmoid (dtype-aware)
-│  ├─ norm/          rms_norm (also usable as QK-Norm), rms_norm_gated, rms_score
+│  ├─ norm/          rms_norm (also usable as QK-Norm), rms_norm_gated, rms_score.
+│  │                 fp16: rescaled_rms_f16 divides each row by its own max(|x|),
+│  │                 so a row reads only itself
 │  ├─ loss/          bce, cross_entropy, mse, l2warp (max-logit penalty, added
 │  │                 to the gradient only)
 │  └─ misc/          gqa, segsum, split, sanity

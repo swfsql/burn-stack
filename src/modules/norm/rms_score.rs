@@ -16,15 +16,16 @@
 //! never materialises the full-width normalised tensor, and computes exactly
 //! `Σ_feat(rms_norm(x) · w) · scale`.
 
+use super::rescaled_rms_f16;
 use crate::utils::div_eps;
 use burn::prelude::*;
-use burn::tensor::{DType, f16};
+use burn::tensor::DType;
 
 /// The parameter-free RMS denominator `d(x) ∈ [‥, 1]` such that the RMSNorm
 /// (matching [`RmsNorm`] math with `γ ≡ 1`) is `x / d(x)`, shape `[‥, 1]`.
 ///
-/// The fp16 path keeps the same overflow-safe max-rescale as [`RmsNorm`],
-/// folded into the same scalar denominator.
+/// The fp16 path keeps the same overflow-safe per-row max-rescale as
+/// [`RmsNorm`], folded into the same scalar denominator.
 ///
 /// [`RmsNorm`]: crate::modules::RmsNorm
 pub fn rms_denom<const D: usize>(x: Tensor<D>) -> Tensor<D> {
@@ -36,18 +37,10 @@ pub fn rms_denom<const D: usize>(x: Tensor<D>) -> Tensor<D> {
             ((x.clone() * x).mean_dim(D - 1) + eps).sqrt()
         }
         DType::F16 => {
-            use burn::tensor::ElementConversion;
-            let eps: f16 = f16::from_elem(div_eps(x.dtype())) * f16::from_f32(2.);
-            // Single global scalar `max`, reshaped to `[1; D]` so it
-            // broadcasts against the `[‥, 1]` partial RMS.
-            let max = x.clone().without_autodiff().abs().max().reshape([1; D]);
-            let x_ = x.clone() / (max.clone() + eps); // x_.abs() <= 1
-            // eps inside the root (matches `RmsNorm`'s F16 branch).
-            let rms_partial = ((x.clone() * x_).mean_dim(D - 1) + eps).sqrt();
-            // `max` is off autodiff (no backward), but floor it too, so an
-            // all-zero tensor (`max = 0`) gives a nonzero denominator, not
-            // `0/0` in the caller. This matches the F32 branch.
-            rms_partial * (max + eps).sqrt()
+            // `m · rms_ = √(mean(x²) + eps)`, with `m` the `max(|x|)` of each
+            // row.
+            let (_, rms_, m) = rescaled_rms_f16(x, div_eps(DType::F16));
+            rms_ * m
         }
         _ => unreachable!("rms_denom expects a float dtype"),
     }

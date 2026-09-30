@@ -8,15 +8,16 @@
 //!
 //! The numerical-stability epsilon is the per-dtype
 //! [`div_eps`](crate::utils::div_eps), so there is no configurable epsilon.
-//! The fp16 path uses the same `max(|x|)`-rescale as
+//! The fp16 path uses the same per-row `max(|x|)`-rescale as
 //! [`RmsNorm`](crate::modules::norm::rms_norm::RmsNorm).
 
+use super::rescaled_rms_f16;
 use crate::modules::Silu;
 use crate::utils::div_eps;
 use burn::module::{Content, DisplaySettings, ModuleDisplay, Param};
 use burn::nn::Initializer;
 use burn::prelude::*;
-use burn::tensor::{DType, f16};
+use burn::tensor::DType;
 
 /// Configuration to create a [`RmsNormGated`] layer.
 #[derive(Config, Debug)]
@@ -93,21 +94,11 @@ impl RmsNormGated {
                 normalized
             }
             DType::F16 => {
-                use burn::tensor::ElementConversion;
-                let div_eps: f16 = f16::from_elem(div_eps(x.dtype())) * f16::from_f32(2.);
-
-                // avoid calculating x² directly (due to overflow e.g. on 256 * 256)
-                let max = x.clone().without_autodiff().abs().max().expand(x.shape());
-                let x_ = x.clone() / (max.clone() + div_eps); // |x_| <= 1
-                // eps inside the root (matches the main branch): the `sqrt`
-                // backward is otherwise singular for a zero-norm slice.
-                let rms_partial = ((x.clone() * x_).mean_dim(D - 1) + div_eps).sqrt(); // √(x²/max)
-                // `max` is a constant (off autodiff). Floor it too, so an
-                // all-zero tensor (`max = 0`) gives a nonzero denominator, not
-                // `0/0`.
-                let normalized =
-                    (x / rms_partial) / (max + div_eps).sqrt() * self.gamma.val().unsqueeze();
-                normalized
+                // The same formula as the main branch, on each row rescaled
+                // by its own `max(|x|)` (a direct `x²` overflows, e.g. at
+                // 256 · 256).
+                let (x_, rms_, _) = rescaled_rms_f16(x, div_eps(DType::F16));
+                x_ / rms_ * self.gamma.val().unsqueeze()
             }
             DType::I64
             | DType::I32

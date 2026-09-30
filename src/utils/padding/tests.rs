@@ -8,7 +8,7 @@ use crate::modules::bidi::{BidiLayersBuilder, OutputMergeConfig};
 use crate::modules::{LatentNetworkBuilder, Layers, LayersBuilder, ResidualsConfig};
 use crate::reference::{RefBlock, RefBlockConfig, RefCaches};
 use crate::utils::class::{ClassMarker, class_chunk_plan, init_class_emb};
-use crate::utils::test_helpers::{dtype_tol, max_abs_diff, max_rel_diff};
+use crate::utils::test_helpers::{dtype_tol, max_rel_diff};
 use crate::utils::{ClassCursor, ClassCursors, ClassLatent, ClassToken, GradHorizon};
 use burn::module::{ModuleVisitor, Param};
 use burn::prelude::*;
@@ -110,7 +110,7 @@ fn assert_grads_match(padded: Vec<Option<Tensor<1>>>, solo: Vec<Option<Tensor<1>
     for (i, (p, s)) in padded.into_iter().zip(solo).enumerate() {
         match (p, s) {
             (Some(p), Some(s)) => {
-                let diff = max_abs_diff(p, s);
+                let diff = max_rel_diff(p, s);
                 assert!(diff < dtype_tol(TOL), "parameter {i}: gradient differs by {diff}");
             }
             (None, None) => {}
