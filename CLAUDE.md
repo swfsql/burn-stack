@@ -140,10 +140,10 @@ src/
 │  │                 cache, `Vec`, `Tensor<D>`, a pair = state beside a cache
 │  ├─ activation/    silu, softplus, log_sigmoid (dtype-aware)
 │  ├─ norm/          rms_norm (also usable as QK-Norm), rms_norm_gated, rms_score.
-│  │                 f16/bf16 compute in f32 (upcast/downcast); ε = norm_eps
-│  │                 (the div_eps of f32) in every dtype
-│  ├─ loss/          bce, cross_entropy, mse, l2warp (max-logit penalty, added
-│  │                 to the gradient only)
+│  │                 f16/bf16 compute in f32 (upcast/downcast); ε = the
+│  │                 div_eps of the compute dtype (f64 stays f64)
+│  ├─ loss/          bce, cross_entropy, mse (computed as the norms), l2warp
+│  │                 (max-logit penalty, added to the gradient only)
 │  └─ misc/          gqa, segsum, split, sanity
 ├─ examples/         example scaffolding shared by the consumer crates
 │  │                 (feature `examples-common`, off by default, dev-only)
@@ -210,7 +210,7 @@ src/
 │  │                 that a captured step can replay
 │  └─ report.rs      MuonPlan::describe(&module): per-param optimizer assignment
 └─ utils/            lower-level plumbing
-   ├─ mod.rs         div_eps (per-dtype epsilon; the norms use norm_eps)
+   ├─ mod.rs         div_eps (per-dtype epsilon), upcast/downcast (f16/bf16 ↔ f32)
    ├─ class/         ClassToken / ClassLatent placement (CLS-style registers) +
    │                 ClassCursor(s): offsets + full-length hint, shared by
    │                 forward/step/prime

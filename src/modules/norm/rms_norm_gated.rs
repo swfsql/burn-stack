@@ -6,12 +6,13 @@
 //! - `false`: gate, then normalise: `y = rms(x · SiLU(z)) · γ` applied to
 //!   `x · SiLU(z)`
 //!
-//! The epsilon is `norm::norm_eps`, one value for every dtype, so there is no
-//! configurable epsilon. As in
+//! The epsilon is the `div_eps` of the dtype that the norm computes in, so
+//! there is no configurable epsilon. As in
 //! [`RmsNorm`](crate::modules::norm::rms_norm::RmsNorm), an f16 or bf16 input
-//! computes in f32, the gate included.
+//! computes in f32, the gate included, and an f64 input computes in f64.
 
-use super::{downcast, rms, upcast};
+use super::rms;
+use crate::utils::{downcast, upcast};
 use crate::modules::Silu;
 use burn::module::{Content, DisplaySettings, ModuleDisplay, Param};
 use burn::nn::Initializer;

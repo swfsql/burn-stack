@@ -13,7 +13,7 @@
 //! - the per-dtype numerical constants below.
 
 use burn::prelude::ToElement;
-use burn::tensor::DType;
+use burn::tensor::{DType, FloatDType, Tensor};
 
 /// Macros emitting per-backend `BackendExt` impls + autodiff marker traits.
 #[macro_use]
@@ -117,5 +117,28 @@ pub fn div_eps(dtype: DType) -> f32 {
         DType::QFloat(_) => {
             unimplemented!()
         }
+    }
+}
+
+/// `x` in the dtype that a precision-sensitive computation (a norm, a loss,
+/// the sampler) runs in, and the dtype of `x` if the result must go back to
+/// it.
+///
+/// f16 and bf16 go to f32. f32 and f64 stay as they are. The `ε` of such a
+/// computation is the [`div_eps`] of the dtype that it runs in. So an f16,
+/// bf16 or f32 input computes the same function, and an f64 input computes it
+/// in f64.
+pub(crate) fn upcast<const D: usize>(x: Tensor<D>) -> (Tensor<D>, Option<DType>) {
+    match x.dtype() {
+        dtype @ (DType::F16 | DType::BF16) => (x.cast(FloatDType::F32), Some(dtype)),
+        _ => (x, None),
+    }
+}
+
+/// `x` cast back to the dtype that [`upcast`] returned, if any.
+pub(crate) fn downcast<const D: usize>(x: Tensor<D>, dtype: Option<DType>) -> Tensor<D> {
+    match dtype {
+        Some(dtype) => x.cast(dtype),
+        None => x,
     }
 }

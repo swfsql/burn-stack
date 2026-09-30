@@ -217,6 +217,13 @@ pub const ADAMW_WEIGHT_DECAY: f32 = 1e-4;
 /// clipping at 1.0, and cautious weight decay ([`ADAMW_WEIGHT_DECAY`]).
 /// `dtype` should be the default float dtype of the device (the epsilon is
 /// sized to it).
+///
+/// The epsilon is the [`div_eps`](crate::utils::div_eps) of `dtype`, not the
+/// one of f32. Burn's AdamW keeps its moments in the dtype of the gradient.
+/// In f16, `(1 − β₂)·g²` rounds to 0 for `|g|` below about `5·10⁻³`, so the
+/// second moment `v` is often 0, and the step is `m/ε`. With the epsilon of
+/// f32 (`8.2·10⁻⁸`), that step overflows f16 for `|m|` above about `5·10⁻³`.
+/// So at small gradients, an f16 model takes other steps than an f32 model.
 pub fn optimizer_config(dtype: burn::tensor::DType) -> AdamWConfig {
     AdamWConfig::new()
         .with_epsilon(crate::utils::div_eps(dtype))

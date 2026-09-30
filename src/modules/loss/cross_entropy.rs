@@ -5,8 +5,12 @@
 //! class indices, and drops padding/weights/label-smoothing.  `output_logits`
 //! and `target_logits` control whether each side is normalised (log-softmax /
 //! softmax) before the loss.
+//!
+//! An f16 or bf16 input computes in f32, with the `ε` of f32, and the loss
+//! goes back to the dtype of the input. f32 and f64 compute in their own
+//! dtype, with their own `ε`.
 
-use crate::utils::div_eps;
+use crate::utils::{div_eps, downcast, upcast};
 use burn::module::Module;
 use burn::prelude::*;
 use burn::tensor::activation::{log_softmax, softmax};
@@ -61,14 +65,17 @@ impl CrossEntropyLoss {
     /// - logits: `[batch_size, num_classes]`
     /// - targets: `[batch_size, num_classes]`
     pub fn forward(&self, logits: Tensor<2>, targets: Tensor<2>) -> Tensor<1> {
+        let (logits, half) = upcast(logits);
+        let targets = targets.cast(logits.dtype());
         let log_probs = if self.output_logits {
             // Numerically stable via log-softmax
             log_softmax(logits, 1)
         } else {
-            // The outputs are probabilities. eps *inside* the log (dtype-aware
-            // through `div_eps`, so f16-safe) floors both the value and the
-            // `1/x` backward for a zero-probability class (as the log(0) of
-            // BCE does).
+            // The outputs are probabilities. eps *inside* the log (the
+            // `div_eps` of the dtype that the loss computes in) floors both
+            // the value and the `1/x` backward for a zero-probability class
+            // (as the log(0) of BCE does). In f16, the `div_eps` of f16
+            // (`7.1e-4`) would floor every probability below it.
             let eps = div_eps(logits.dtype());
             (logits + eps).log()
         };
@@ -79,6 +86,9 @@ impl CrossEntropyLoss {
             targets
         };
 
-        (targets * log_probs).sum_dim(1).mean().neg()
+        downcast((targets * log_probs).sum_dim(1).mean().neg(), half)
     }
 }
+
+#[cfg(all(test, feature = "_dev-test"))]
+mod tests;

@@ -38,7 +38,7 @@ fn host_draw(probs: &[f32], threshold: f32) -> u8 {
     (VOCAB_SIZE - 1) as u8
 }
 
-/// In f32, as [`sample_token`] computes them, whatever the dtype of `logits`.
+/// In f32, as [`sample_token`] computes them for f16, bf16 and f32 `logits`.
 fn host_probs(logits: Tensor<2>, temperature: f64) -> Vec<f32> {
     softmax(logits.cast(FloatDType::F32) / temperature, 1).into_data().iter::<f32>().collect()
 }
@@ -75,6 +75,26 @@ fn device_draw_is_the_host_draw() {
         let greedy = device_draw(logits.clone(), 0.0, 0.5, &device);
         assert_eq!(greedy, host_argmax(logits), "greedy");
     }
+}
+
+/// An f64 model draws in f64. The first two tokens share the probability
+/// mass, with `p₀ = ½ + 10⁻¹²`, and the draw is `½ + 2·10⁻¹²`. So the draw is
+/// in the interval of token 1. In f32, both round to `½`, and the draw would
+/// give token 0.
+#[test]
+fn an_f64_model_draws_in_f64() {
+    let device = test_device();
+    let mut values = vec![-1e4f64; VOCAB_SIZE];
+    values[0] = 4e-12;
+    values[1] = 0.0;
+    let logits = Tensor::<1>::from_data(
+        burn::tensor::TensorData::new(values, [VOCAB_SIZE]),
+        (&device, DType::F64),
+    )
+    .reshape([1, VOCAB_SIZE]);
+    let draw = Tensor::<1>::from_data([0.5 + 2e-12f64], (&device, DType::F64));
+    let token = sample_token(logits, 1.0, draw).into_data().iter::<i64>().next().unwrap();
+    assert_eq!(token, 1, "the draw is above the total of token 0");
 }
 
 /// Two real layers over the story alphabet, opened by two `Start` latents (so

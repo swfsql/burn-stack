@@ -5,13 +5,14 @@
 //! per-channel scale `γ`. It is the Pre-LN of every residual block, and also a
 //! **QK-Norm** on the key/query-like projections of a block.
 //!
-//! `ε` is one value for every dtype (`norm::norm_eps`, the `div_eps` of f32),
-//! and an f16 or bf16 input computes in f32. So each dtype computes the same
-//! function. See [`rms_norm_gated`] for the SiLU-gated variant.
+//! An f16 or bf16 input computes in f32, with the `ε` of f32. So an f16, bf16
+//! or f32 input computes the same function. An f64 input computes in f64,
+//! with the `ε` of f64. See [`rms_norm_gated`] for the SiLU-gated variant.
 //!
 //! [`rms_norm_gated`]: crate::modules::norm::rms_norm_gated
 
-use super::{downcast, rms, upcast};
+use super::rms;
+use crate::utils::{downcast, upcast};
 use burn::module::{Content, DisplaySettings, ModuleDisplay, Param};
 use burn::nn::Initializer;
 use burn::prelude::*;

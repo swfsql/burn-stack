@@ -16,7 +16,8 @@
 //! never materialises the full-width normalised tensor, and computes exactly
 //! `Σ_feat(rms_norm(x) · w) · scale`.
 
-use super::{downcast, rms, upcast};
+use super::rms;
+use crate::utils::{downcast, upcast};
 use burn::prelude::*;
 use burn::tensor::FloatDType;
 

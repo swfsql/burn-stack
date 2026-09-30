@@ -11,9 +11,13 @@ use crate::utils::test_helpers::test_device;
 ///
 /// [`div_eps`]: crate::utils::div_eps
 #[test]
+#[cfg_attr(
+    not(feature = "dev-f16"),
+    ignore = "f16 build only: a half-precision check (f16 and bf16 inputs)"
+)]
 fn a_half_input_gives_the_formula_at_small_activations() {
     let device = test_device();
-    let eps = f64::from(crate::modules::norm::norm_eps());
+    let eps = f64::from(crate::utils::div_eps(burn::tensor::DType::F32));
     let (rows, width) = (6, 64);
     let host = |t: Tensor<2>| -> Vec<f64> {
         let v: Vec<f32> = t.into_data().try_into_vec_as().unwrap();

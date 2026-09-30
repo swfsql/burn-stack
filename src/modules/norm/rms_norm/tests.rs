@@ -4,19 +4,23 @@ use burn::tensor::Distribution;
 use crate::utils::test_helpers::test_device;
 
 /// A half-precision input computes the formula `x / √(mean(x²) + ε)` with the
-/// one `ε` of every dtype ([`norm_eps`](crate::modules::norm::norm_eps)), at
-/// each scale of a row: zero, the subnormals of f16, and up to the top of its
-/// range. The forward and the gradient are finite, and each is within two
-/// steps of the dtype of the f64 formula.
+/// `ε` of f32, the dtype that it computes in, at each scale of a row: zero,
+/// the subnormals of f16, and up to the top of its range. The forward and the
+/// gradient are finite, and each is within two steps of the dtype of the f64
+/// formula.
 ///
 /// A row near zero is the limit case of the backward. Its gradient is about
 /// `|h|/√ε ≈ 3500·|h|`, and f16 holds that for the `|h| ≤ 5` here. The gradient
 /// is compared with the size of its two terms (`|h|/rms`), because at width 1
 /// the terms cancel.
 #[test]
+#[cfg_attr(
+    not(feature = "dev-f16"),
+    ignore = "f16 build only: a half-precision check (f16 and bf16 inputs)"
+)]
 fn a_half_input_computes_the_formula_at_each_scale() {
     let device = test_device();
-    let eps = f64::from(crate::modules::norm::norm_eps());
+    let eps = f64::from(crate::utils::div_eps(burn::tensor::DType::F32));
     let rows = 8;
     let host = |t: Tensor<2>| -> Vec<f64> {
         let v: Vec<f32> = t.into_data().try_into_vec_as().unwrap();
@@ -60,6 +64,39 @@ fn a_half_input_computes_the_formula_at_each_scale() {
                     "{dtype:?}, scale {scale}, width {width}: the gradient is off by {err_g:.2e} (size {size_g:.2e})"
                 );
             }
+        }
+    }
+}
+
+/// An f64 input computes in f64, with the `ε` of f64, in [`RmsNorm`] and in
+/// [`rms_denom`](crate::modules::rms_denom). The rows have `mean(x²) ≈ 10⁻¹⁰`.
+/// There, the `ε` of f32 (`8.2·10⁻⁸`) would make the output about 29× too
+/// small. Each result is within `10⁻¹²` (relative) of the f64 formula.
+#[test]
+fn an_f64_input_computes_in_f64() {
+    use burn::tensor::DType;
+    let device = test_device();
+    let eps = f64::from(crate::utils::div_eps(DType::F64));
+    let (rows, width) = (4, 16);
+    let x = (Tensor::<2>::random([rows, width], Distribution::Normal(0.0, 1.0), &device) * 1e-5)
+        .cast(FloatDType::F64);
+    let xs: Vec<f64> = x.to_data().try_into_vec_as().unwrap();
+    let mut norm = RmsNormConfig::new(width).init(&device);
+    norm.gamma = Param::from_tensor(norm.gamma.val().cast(FloatDType::F64));
+
+    let y = norm.forward(x.clone());
+    let denom = crate::modules::rms_denom(x);
+    assert_eq!(y.dtype(), DType::F64, "the output of RmsNorm");
+    assert_eq!(denom.dtype(), DType::F64, "the output of rms_denom");
+    let ys: Vec<f64> = y.into_data().try_into_vec_as().unwrap();
+    let ds: Vec<f64> = denom.into_data().try_into_vec_as().unwrap();
+    for r in 0..rows {
+        let row = &xs[r * width..(r + 1) * width];
+        let rms = (row.iter().map(|v| v * v).sum::<f64>() / width as f64 + eps).sqrt();
+        assert!((ds[r] - rms).abs() <= 1e-12 * rms, "row {r}: rms_denom {} vs {rms}", ds[r]);
+        for (c, x) in row.iter().enumerate() {
+            let (got, want) = (ys[r * width + c], x / rms);
+            assert!((got - want).abs() <= 1e-12 * want.abs().max(1.0), "row {r}: {got} vs {want}");
         }
     }
 }
