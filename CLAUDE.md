@@ -142,8 +142,8 @@ src/
 │  ├─ norm/          rms_norm (also usable as QK-Norm), rms_norm_gated, rms_score.
 │  │                 f16/bf16 compute in f32 (upcast/downcast); ε = the
 │  │                 div_eps of the compute dtype (f64 stays f64)
-│  ├─ loss/          bce, cross_entropy, mse (computed as the norms), l2warp
-│  │                 (max-logit penalty, added to the gradient only)
+│  ├─ loss/          bce, cross_entropy, mse, l2warp (max-logit penalty, added
+│  │                 to the gradient only), each computed as the norms
 │  └─ misc/          gqa, segsum, split, sanity
 ├─ examples/         example scaffolding shared by the consumer crates
 │  │                 (feature `examples-common`, off by default, dev-only)

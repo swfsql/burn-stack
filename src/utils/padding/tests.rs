@@ -17,6 +17,12 @@ use crate::utils::test_helpers::test_device;
 
 const D_MODEL: usize = 8;
 const TOL: f32 = 1e-4;
+/// The gradient tolerance for f16 and bf16 gradients. The padded batch and the
+/// slots alone add in different orders, and each rounds on its own. In f16,
+/// the multi-gate layers differ by `3·10⁻³` to `2.2·10⁻²` (30 runs), above
+/// `dtype_tol(TOL)` (`1.8·10⁻²`). In f64, they agree to `6.5·10⁻¹⁶`. A padding
+/// error gives a difference of order 1, so this tolerance still finds it.
+const HALF_GRAD_TOL: f32 = 5e-2;
 
 /// One row of a container's output: user token `t`, or marker `i` of the
 /// `level`-th splice (network tokens, stack latents, then each layer's).
@@ -110,8 +116,12 @@ fn assert_grads_match(padded: Vec<Option<Tensor<1>>>, solo: Vec<Option<Tensor<1>
     for (i, (p, s)) in padded.into_iter().zip(solo).enumerate() {
         match (p, s) {
             (Some(p), Some(s)) => {
+                let tol = match p.dtype() {
+                    burn::tensor::DType::F16 | burn::tensor::DType::BF16 => HALF_GRAD_TOL,
+                    _ => TOL,
+                };
                 let diff = max_rel_diff(p, s);
-                assert!(diff < dtype_tol(TOL), "parameter {i}: gradient differs by {diff}");
+                assert!(diff < tol, "parameter {i}: gradient differs by {diff}");
             }
             (None, None) => {}
             (p, s) => panic!(
