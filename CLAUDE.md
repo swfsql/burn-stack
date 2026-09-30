@@ -58,10 +58,6 @@ cargo doc --no-deps         # build docs
   `burn-mamba/Cargo.toml`). The `backend-*` cfgs are evaluated where
   `impl_backend_ext_for_burn_backends!` expands, which is in the *calling*
   crate.
-- `Cargo.toml` `[patch]`es every burn and cubecl crate to the swfsql forks
-  with the tracel-ai/burn#5772 memory fix (a captured graph holds the memory
-  of one pass, not ~3). A crate that is missing from the list links a second
-  copy.
 
 ## Writing Style
 
@@ -239,8 +235,7 @@ src/
    ├─ graph.rs           CapturedStep: a step captured once (the `capture` of
    │                     burn) and replayed. A stable input (a StepInput: one
    │                     tensor or a tuple) and cache buffers refreshed in place.
-   │                     One eager run before `capture` (a cold capture fails
-   │                     without it). Caches restored around it. The graph is
+   │                     Caches restored around `capture`. The graph is
    │                     kept only if every buffer id survived (else eager).
    │                     Stateless = caches `()`. WARMUP_STEPS.
    │                     graph/weights.rs: Weights<M>, the params of a module as
@@ -294,10 +289,6 @@ A captured graph can replay a `step()` (`utils/graph.rs`, `CapturedStep`):
 - `capture` is `unsafe`: what the step reads beyond its arguments must stay
   the same buffers.
 - A fixed-shape `forward` is the step with caches `()`.
-- `capture` first runs the closure once eagerly. The warm-ups of burn never
-  run in place (the priming of cubecl holds a second handle on every buffer).
-  Without the eager run, the recorded run compiles the in-place kernel
-  variants, and loads a module mid-capture, which invalidates it.
 
 A training step is the step whose caches are the weights of the model
 (`Weights`): forward, backward and `optim::SgdConfig::step`, with the learning

@@ -1,6 +1,6 @@
 [package]
 name = "burn-stack"
-version = "0.25.0"
+version = "0.26.0"
 edition = "2024"
 description = "Block-generic layer/network composition on Burn: Pre-LN layers, virtual-layer stacks, bidirectional pairs, latent/vocab networks, multi-gate residuals, class tokens, and Muon parameter groups."
 
@@ -77,7 +77,7 @@ rand = { version = "0.9.2", optional = true }
 rand_chacha = { version = "0.9.0", optional = true }
 temp-dir = { version = "0.1.16", optional = true }
 # burn-flex = { version = "0.22.0-pre.3", default-features = false, optional = true }
-burn-flex = { git = "https://github.com/tracel-ai/burn.git", rev = "8f08fdad05e734918efd695b11ebe13d92a8714e", default-features = false, optional = true }
+burn-flex = { git = "https://github.com/tracel-ai/burn.git", rev = "a6de085337c847ee13188d6d3085955709cccf38", default-features = false, optional = true }
 
 ### For the main branch. ###
 # burn = { version = "0.22.0-pre.3", default-features = false, features = ["extension"]}
@@ -85,10 +85,10 @@ burn-flex = { git = "https://github.com/tracel-ai/burn.git", rev = "8f08fdad05e7
 # burn-fusion = { version = "0.22.0-pre.3", default-features = false, optional = true}
 # `examples-common` only: the MNIST download path.
 # burn-dataset = { version = "0.22.0-pre.3", features = ["network"], optional = true }
-burn = { git = "https://github.com/tracel-ai/burn.git", rev = "8f08fdad05e734918efd695b11ebe13d92a8714e", default-features = false, features = ["extension"] }
-burn-cubecl = { git = "https://github.com/tracel-ai/burn.git", rev = "8f08fdad05e734918efd695b11ebe13d92a8714e", default-features = false, optional = true}
-burn-fusion = { git = "https://github.com/tracel-ai/burn.git", rev = "8f08fdad05e734918efd695b11ebe13d92a8714e", default-features = false, optional = true}
-burn-dataset = { git = "https://github.com/tracel-ai/burn.git", rev = "8f08fdad05e734918efd695b11ebe13d92a8714e", features = ["network"], optional = true }
+burn = { git = "https://github.com/tracel-ai/burn.git", rev = "a6de085337c847ee13188d6d3085955709cccf38", default-features = false, features = ["extension"] }
+burn-cubecl = { git = "https://github.com/tracel-ai/burn.git", rev = "a6de085337c847ee13188d6d3085955709cccf38", default-features = false, optional = true}
+burn-fusion = { git = "https://github.com/tracel-ai/burn.git", rev = "a6de085337c847ee13188d6d3085955709cccf38", default-features = false, optional = true}
+burn-dataset = { git = "https://github.com/tracel-ai/burn.git", rev = "a6de085337c847ee13188d6d3085955709cccf38", features = ["network"], optional = true }
 
 ### For local development. ###
 # burn = { path = "../burn/crates/burn", default-features = false, features = ["extension"] }
@@ -98,68 +98,7 @@ burn-dataset = { git = "https://github.com/tracel-ai/burn.git", rev = "8f08fdad0
 [dev-dependencies]
 ### For the main branch. ###
 # burn = { version = "0.22.0-pre.3", default-features = false, features = ["autodiff", "std", "optim", "extension"]}
-burn = { git = "https://github.com/tracel-ai/burn.git", rev = "8f08fdad05e734918efd695b11ebe13d92a8714e", default-features = false, features = ["autodiff", "std", "optim", "extension"]}
+burn = { git = "https://github.com/tracel-ai/burn.git", rev = "a6de085337c847ee13188d6d3085955709cccf38", default-features = false, features = ["autodiff", "std", "optim", "extension"]}
 
 ### For local development. ###
 # burn = { path = "../burn/crates/burn", default-features = false, features = ["autodiff", "std"] }
-
-# tracel-ai/burn#5772 ("Related: a capture needs ~3x a pass's memory"): burn and
-# cubecl at the pinned revs plus one line each — burn's `capture` primes only
-# its last warm-up, cubecl pins only what the recording touched — so a captured
-# graph holds one pass's memory instead of three. Every burn and cubecl crate in
-# the dependency graph is patched (a missing one links a second copy).
-[patch."https://github.com/tracel-ai/burn.git"]
-burn = { git = "https://github.com/swfsql/burn.git", rev = "143bff617c988bdd3245fe0093f789fbdc5585cb" }
-burn-autodiff = { git = "https://github.com/swfsql/burn.git", rev = "143bff617c988bdd3245fe0093f789fbdc5585cb" }
-burn-backend = { git = "https://github.com/swfsql/burn.git", rev = "143bff617c988bdd3245fe0093f789fbdc5585cb" }
-burn-backend-extension = { git = "https://github.com/swfsql/burn.git", rev = "143bff617c988bdd3245fe0093f789fbdc5585cb" }
-burn-core = { git = "https://github.com/swfsql/burn.git", rev = "143bff617c988bdd3245fe0093f789fbdc5585cb" }
-burn-cpu = { git = "https://github.com/swfsql/burn.git", rev = "143bff617c988bdd3245fe0093f789fbdc5585cb" }
-burn-cubecl = { git = "https://github.com/swfsql/burn.git", rev = "143bff617c988bdd3245fe0093f789fbdc5585cb" }
-burn-cubecl-fusion = { git = "https://github.com/swfsql/burn.git", rev = "143bff617c988bdd3245fe0093f789fbdc5585cb" }
-burn-cuda = { git = "https://github.com/swfsql/burn.git", rev = "143bff617c988bdd3245fe0093f789fbdc5585cb" }
-burn-dataset = { git = "https://github.com/swfsql/burn.git", rev = "143bff617c988bdd3245fe0093f789fbdc5585cb" }
-burn-derive = { git = "https://github.com/swfsql/burn.git", rev = "143bff617c988bdd3245fe0093f789fbdc5585cb" }
-burn-dispatch = { git = "https://github.com/swfsql/burn.git", rev = "143bff617c988bdd3245fe0093f789fbdc5585cb" }
-burn-einsum = { git = "https://github.com/swfsql/burn.git", rev = "143bff617c988bdd3245fe0093f789fbdc5585cb" }
-burn-flex = { git = "https://github.com/swfsql/burn.git", rev = "143bff617c988bdd3245fe0093f789fbdc5585cb" }
-burn-fusion = { git = "https://github.com/swfsql/burn.git", rev = "143bff617c988bdd3245fe0093f789fbdc5585cb" }
-burn-ir = { git = "https://github.com/swfsql/burn.git", rev = "143bff617c988bdd3245fe0093f789fbdc5585cb" }
-burn-linalg = { git = "https://github.com/swfsql/burn.git", rev = "143bff617c988bdd3245fe0093f789fbdc5585cb" }
-burn-ndarray = { git = "https://github.com/swfsql/burn.git", rev = "143bff617c988bdd3245fe0093f789fbdc5585cb" }
-burn-nn = { git = "https://github.com/swfsql/burn.git", rev = "143bff617c988bdd3245fe0093f789fbdc5585cb" }
-burn-optim = { git = "https://github.com/swfsql/burn.git", rev = "143bff617c988bdd3245fe0093f789fbdc5585cb" }
-burn-pack = { git = "https://github.com/swfsql/burn.git", rev = "143bff617c988bdd3245fe0093f789fbdc5585cb" }
-burn-remote = { git = "https://github.com/swfsql/burn.git", rev = "143bff617c988bdd3245fe0093f789fbdc5585cb" }
-burn-rocm = { git = "https://github.com/swfsql/burn.git", rev = "143bff617c988bdd3245fe0093f789fbdc5585cb" }
-burn-router = { git = "https://github.com/swfsql/burn.git", rev = "143bff617c988bdd3245fe0093f789fbdc5585cb" }
-burn-signal = { git = "https://github.com/swfsql/burn.git", rev = "143bff617c988bdd3245fe0093f789fbdc5585cb" }
-burn-std = { git = "https://github.com/swfsql/burn.git", rev = "143bff617c988bdd3245fe0093f789fbdc5585cb" }
-burn-store = { git = "https://github.com/swfsql/burn.git", rev = "143bff617c988bdd3245fe0093f789fbdc5585cb" }
-burn-tch = { git = "https://github.com/swfsql/burn.git", rev = "143bff617c988bdd3245fe0093f789fbdc5585cb" }
-burn-tensor = { git = "https://github.com/swfsql/burn.git", rev = "143bff617c988bdd3245fe0093f789fbdc5585cb" }
-burn-train = { git = "https://github.com/swfsql/burn.git", rev = "143bff617c988bdd3245fe0093f789fbdc5585cb" }
-burn-vision = { git = "https://github.com/swfsql/burn.git", rev = "143bff617c988bdd3245fe0093f789fbdc5585cb" }
-burn-wgpu = { git = "https://github.com/swfsql/burn.git", rev = "143bff617c988bdd3245fe0093f789fbdc5585cb" }
-
-[patch."https://github.com/tracel-ai/cubecl"]
-cubecl = { git = "https://github.com/swfsql/cubecl.git", rev = "afe4c5d5168546f1f1598a2b8879bc940068e278" }
-cubecl-common = { git = "https://github.com/swfsql/cubecl.git", rev = "afe4c5d5168546f1f1598a2b8879bc940068e278" }
-cubecl-core = { git = "https://github.com/swfsql/cubecl.git", rev = "afe4c5d5168546f1f1598a2b8879bc940068e278" }
-cubecl-cpp = { git = "https://github.com/swfsql/cubecl.git", rev = "afe4c5d5168546f1f1598a2b8879bc940068e278" }
-cubecl-cpu = { git = "https://github.com/swfsql/cubecl.git", rev = "afe4c5d5168546f1f1598a2b8879bc940068e278" }
-cubecl-cuda = { git = "https://github.com/swfsql/cubecl.git", rev = "afe4c5d5168546f1f1598a2b8879bc940068e278" }
-cubecl-environment = { git = "https://github.com/swfsql/cubecl.git", rev = "afe4c5d5168546f1f1598a2b8879bc940068e278" }
-cubecl-hip = { git = "https://github.com/swfsql/cubecl.git", rev = "afe4c5d5168546f1f1598a2b8879bc940068e278" }
-cubecl-ir = { git = "https://github.com/swfsql/cubecl.git", rev = "afe4c5d5168546f1f1598a2b8879bc940068e278" }
-cubecl-llvm = { git = "https://github.com/swfsql/cubecl.git", rev = "afe4c5d5168546f1f1598a2b8879bc940068e278" }
-cubecl-macros = { git = "https://github.com/swfsql/cubecl.git", rev = "afe4c5d5168546f1f1598a2b8879bc940068e278" }
-cubecl-macros-internal = { git = "https://github.com/swfsql/cubecl.git", rev = "afe4c5d5168546f1f1598a2b8879bc940068e278" }
-cubecl-metal = { git = "https://github.com/swfsql/cubecl.git", rev = "afe4c5d5168546f1f1598a2b8879bc940068e278" }
-cubecl-opt = { git = "https://github.com/swfsql/cubecl.git", rev = "afe4c5d5168546f1f1598a2b8879bc940068e278" }
-cubecl-runtime = { git = "https://github.com/swfsql/cubecl.git", rev = "afe4c5d5168546f1f1598a2b8879bc940068e278" }
-cubecl-server = { git = "https://github.com/swfsql/cubecl.git", rev = "afe4c5d5168546f1f1598a2b8879bc940068e278" }
-cubecl-spirv = { git = "https://github.com/swfsql/cubecl.git", rev = "afe4c5d5168546f1f1598a2b8879bc940068e278" }
-cubecl-std = { git = "https://github.com/swfsql/cubecl.git", rev = "afe4c5d5168546f1f1598a2b8879bc940068e278" }
-cubecl-wgpu = { git = "https://github.com/swfsql/cubecl.git", rev = "afe4c5d5168546f1f1598a2b8879bc940068e278" }
-cubecl-zspace = { git = "https://github.com/swfsql/cubecl.git", rev = "afe4c5d5168546f1f1598a2b8879bc940068e278" }

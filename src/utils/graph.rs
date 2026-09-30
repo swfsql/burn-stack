@@ -14,18 +14,11 @@
 //!   refreshes the caches itself. It ends with
 //!   [`CacheTensors::assign_in_place`](crate::modules::CacheTensors::assign_in_place),
 //!   so that every replay advances the state.
-//! - The closure *runs* before it is recorded: once eagerly, then the warm-ups
-//!   of [`capture`](burn::tensor::capture) (and on a backend without graphs,
+//! - The closure *runs* before it is recorded: the warm-ups of
+//!   [`capture`](burn::tensor::capture) (and on a backend without graphs,
 //!   also the recorded run). So the caches are saved first and restored
 //!   after. The first [`step`](CapturedStep::step) continues from the caches
 //!   that it was given.
-//! - The eager run lets a *cold* capture succeed. The warm-ups of `capture`
-//!   hold a second handle on every buffer that they allocate, so none of their
-//!   ops runs in place, while the recorded run does. Also, a kernel variant
-//!   that first compiles inside the window loads a module mid-capture, which
-//!   invalidates the capture. The eager run compiles the variants of the
-//!   recorded run first (a workaround:
-//!   <https://github.com/tracel-ai/burn/issues/5772>).
 //! - A replay is correct only if every write landed in place. The capture
 //!   checks this once, with a comparison of buffer ids across the capture.
 //!   Where this cannot be confirmed (no hardware graph: flex, ndarray, …, or a
@@ -63,7 +56,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 /// Eager steps to run before [`CapturedStep::capture`], in addition to the
-/// runs that it makes itself (one eager, then the 3 warm-ups of
+/// runs that it makes itself (the 3 warm-ups of
 /// [`capture`](burn::tensor::capture), all rolled back). These are real steps,
 /// and their outputs are used like any other.
 ///
@@ -286,7 +279,7 @@ impl<'a, I: StepInput + 'a, Y: 'a, C: CacheTensors + 'a> CapturedStep<'a, I, Y, 
         let step: Rc<RefCell<Box<StepFn<'a, I, Y, C>>>> = Rc::new(RefCell::new(Box::new(step)));
         let input = Rc::new(RefCell::new(Some(input)));
         let caches = Rc::new(RefCell::new(Some(caches)));
-        let mut run: Box<dyn FnMut() -> Y + 'a> = {
+        let run: Box<dyn FnMut() -> Y + 'a> = {
             let (step, input, caches) = (step.clone(), input.clone(), caches.clone());
             Box::new(move || {
                 let stable = caches.borrow_mut().take().expect("caches are always put back");
@@ -296,8 +289,6 @@ impl<'a, I: StepInput + 'a, Y: 'a, C: CacheTensors + 'a> CapturedStep<'a, I, Y, 
                 y
             })
         };
-        // Eager, before the warm-ups of `capture` (see the module docs).
-        drop(run());
         let graph = burn::tensor::capture(device, run);
 
         // The closure ran: put back the caches that it was given.
@@ -432,7 +423,7 @@ impl<'a, const D: usize, K: InputKind + 'a, Y: 'a, C: CacheTensors + 'a>
             {
                 let slot = self.input.borrow();
                 let stable = slot.as_ref().expect("the input is always present");
-                assert_eq!(stable.shape(), data.shape, "a captured step keeps its input shape");
+                assert_eq!(&stable.shape(), data.shape(), "a captured step keeps its input shape");
                 // A graph is kept only after the id of the input was read, so
                 // the input has one.
                 let c = cube(stable).expect("a captured input is a cubecl tensor");
