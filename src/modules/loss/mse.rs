@@ -1,8 +1,8 @@
 //! Mean squared error loss.
 //!
 //! The fp16 path avoids forming `(logits − targets)²` directly (which overflows
-//! for large differences) by factoring out `max(|diff|)` before squaring, then
-//! multiplying it back in after the reduction.
+//! for large differences) by factoring out `s = max(|diff|) + eps` before
+//! squaring, then multiplying the same `s` back in after the reduction.
 
 use crate::utils::div_eps;
 use burn::module::Module;
@@ -52,15 +52,21 @@ impl MseLoss {
                 let div_eps: f16 = f16::from_elem(div_eps(logits.dtype())) * f16::from_f32(2.);
                 // avoid calculating sub² directly (due to overflow e.g. on 256 * 256)
                 let sub = logits.sub(targets);
-                let max = sub.clone().without_autodiff().abs().max();
-                let sub_ = sub.clone() / (max.clone().expand(sub.shape()) + div_eps); // sub_.abs() <= 1
-                let partial = sub * sub_; // sub² = partial * max
+                // `s = max(|sub|) + eps`, off autodiff (`eps` guards an all-zero
+                // `sub`). `mean(sub · sub/s) · s = mean(sub²)` for each `s > 0`,
+                // so the division and the product use the same `s`. The max is
+                // global because the loss is one sum over all elements: `s`
+                // changes only the rounding. An output per row (a norm) needs
+                // the max of each row (see `norm::rescaled_rms_f16`).
+                let scale = sub.clone().without_autodiff().abs().max() + div_eps;
+                let sub_ = sub.clone() / scale.clone().expand(sub.shape()); // sub_.abs() <= 1
+                let partial = sub * sub_; // sub² = partial * s
                 let reduced_partial = match reduction {
                     Reduction::Mean | Reduction::Auto => partial.mean(),
                     Reduction::BatchMean => partial.mean() / batch_size as f32,
                     Reduction::Sum => partial.sum(),
                 };
-                reduced_partial * max
+                reduced_partial * scale
             }
             DType::I64
             | DType::I32
@@ -90,3 +96,6 @@ impl MseLoss {
         logits.sub(targets).square()
     }
 }
+
+#[cfg(all(test, feature = "_dev-test"))]
+mod tests;
