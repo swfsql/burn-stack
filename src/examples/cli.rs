@@ -21,7 +21,7 @@
 mod tests;
 
 use crate::examples::session::{Cadence, MetricsLog, Session, TrainingProgress};
-use crate::examples::training::{Budget, Lr, OptimizerConfig, OptimizerKind, TrainingConfig};
+use crate::examples::training::{Budget, OptimizerConfig, OptimizerKind, TrainingConfig};
 use crate::modules::ModelConfigExt;
 use burn::optim::ModuleOptimizer;
 use burn::prelude::*;
@@ -50,7 +50,7 @@ BEHAVIOR OVERVIEW
 - The program reads and writes the model weights, the optimizer state and the configurations in the artifacts directory (--artifacts-path). Without --artifacts-path, the program creates a new temporary directory and prints its path.
 - With --remove-artifacts and --training, the program deletes the model and optimizer files (and the saved progress) in the artifacts directory before training.
 - The program loads the model and optimizer weights from the artifacts directory if they are present. Otherwise it creates new ones and saves them.
-- --seed, --epochs, --batch-size and --max-lr replace the value in the training config (loaded or created) before the program saves the config. So later runs from the same artifacts directory inherit the value. --epochs also rescales the length of a cosine LR schedule by the same factor, so the schedule still spans the run. --batch-size rescales its length and warmup by the inverse factor (an epoch has that many fewer steps).
+- --seed, --epochs, --batch-size and --max-lr replace the value in the training config (loaded or created) before the program saves the config. So later runs from the same artifacts directory inherit the value. --epochs also rescales the step counts of the LR schedule by the same factor, so the schedule still spans the run (a cosine keeps its warmup). --batch-size rescales them and the warmup by the inverse factor (an epoch has that many fewer steps). --max-lr gives a cosine its max rate and a constant schedule its rate. It scales all rates of a ramp or a sequence, so that their peak becomes LR.
 - --adamw, --sgd and --muon choose the optimizer. --muon puts the hidden weight matrices of the model on Muon, and the other flag (default --adamw) optimizes every other parameter. --adamw and --sgd are exclusive. Without these flags, a new training config gets the default optimizer of the example.
 - In a loaded config, these flags replace the optimizer and keep the LR schedule (see --max-lr). If the new optimizer would ignore the optimizer state that the old optimizer saved, the program panics. (--remove-artifacts with --training removes that state.)
 - Only plain SGD (--sgd alone) has a training step that replays from a captured graph.
@@ -77,9 +77,9 @@ OPTIONS:
                                 number of epochs. Unlimited when absent.
         --max-seconds <S>       Stop training when S seconds have passed since its first step. Unlimited when absent.
     -s, --seed <N>              Replace the RNG seed of the training config (model init, data shuffle, sampling)
-        --epochs <N>            Replace the number of epochs of the training config (rescales a cosine LR schedule)
-        --batch-size <N>        Replace the mini-batch size of the training config (rescales a cosine LR schedule)
-        --max-lr <LR>           Replace the peak rate of the LR schedule (the only rate of a constant schedule)
+        --epochs <N>            Replace the number of epochs of the training config (rescales the LR schedule)
+        --batch-size <N>        Replace the mini-batch size of the training config (rescales the LR schedule)
+        --max-lr <LR>           Replace the peak rate of the LR schedule (a sequence scales all its rates)
         --adamw                 Optimize with AdamW (with --muon: every parameter that Muon does not own)
         --sgd                   Optimize with plain SGD (with --muon: every parameter that Muon does not own)
         --muon                  Put the hidden weight matrices on Muon
@@ -332,11 +332,14 @@ impl AppArgs {
     /// `--epochs`, `--max-lr`, the optimizer flags) to `training`, the loaded
     /// or newly created config, before it is saved.
     ///
-    /// `--epochs` rescales the `total_steps` of a cosine schedule by the same
-    /// factor. So a schedule sized to the run still spans it (a resumed run
-    /// then lands where the longer or shorter cosine has it). The warmup does
-    /// not change. `--batch-size` rescales both by the inverse factor, because
-    /// an epoch then takes that many fewer steps.
+    /// `--epochs` rescales the step counts of the schedule by the same factor
+    /// ([`Lr::scale_steps`](crate::examples::training::Lr::scale_steps)). So a
+    /// schedule sized to the run still spans it (a resumed run then lands
+    /// where the longer or shorter schedule has it). The warmup of a cosine
+    /// does not change. `--batch-size` rescales the step counts and the warmup
+    /// by the inverse factor, because an epoch then takes that many fewer
+    /// steps. `--max-lr` sets the peak rate
+    /// ([`Lr::set_peak`](crate::examples::training::Lr::set_peak)).
     ///
     /// An optimizer flag that disagrees with the optimizer of `training`
     /// replaces it with [`OptimizerConfig::of`] (`dtype` sizes the epsilon of
@@ -354,23 +357,15 @@ impl AppArgs {
             training.seed = seed;
         }
         if let Some(batch_size) = self.batch_size {
-            if let Lr::CosineAnnealing(cosine) = &mut training.lr {
-                cosine.total_steps = cosine.total_steps * training.batch_size / batch_size;
-                cosine.warmup_steps = cosine.warmup_steps * training.batch_size / batch_size;
-            }
+            training.lr.scale_steps(training.batch_size, batch_size, true);
             training.batch_size = batch_size;
         }
         if let Some(epochs) = self.epochs {
-            if let Lr::CosineAnnealing(cosine) = &mut training.lr {
-                cosine.total_steps = cosine.total_steps * epochs / training.num_epochs.max(1);
-            }
+            training.lr.scale_steps(epochs, training.num_epochs.max(1), false);
             training.num_epochs = epochs;
         }
         if let Some(max_lr) = self.max_lr {
-            match &mut training.lr {
-                Lr::CosineAnnealing(cosine) => cosine.max_lr = max_lr,
-                Lr::Constant(constant) => constant.lr = max_lr,
-            }
+            training.lr.set_peak(max_lr);
         }
         let saved = training.optimizer.kind();
         if let Some(kind) = self.optimizer.filter(|&kind| kind != saved) {

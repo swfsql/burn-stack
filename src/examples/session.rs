@@ -103,6 +103,7 @@ impl Session {
         items_total: usize,
         mut log: MetricsLog,
     ) -> Self {
+        schedule.validate();
         let lr = schedule.get_lr(progress.step);
         let meta = MetricMetadata {
             progress: Progress::new(0, items_total, None),

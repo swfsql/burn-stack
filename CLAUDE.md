@@ -222,7 +222,9 @@ src/
    │                 Applications (which application of its real layer each
    │                 virtual layer is) + GradHorizon (which virtual layers
    │                 back-propagate)
-   ├─ scheduler/     LR schedulers (cosine + warmup, constant)
+   ├─ scheduler/     LR schedules (cosine + warmup, constant, linear) + Sequence
+   │                 (segments from a global step, each counting from its
+   │                 start: a whole run in one config)
    ├─ backend_macros.rs  impl_backend_ext_for_burn_backends! /
    │                     decl_autodiff_backend_ext!: per-backend BackendExt impls
    ├─ combined_grad.rs   flatten/unflatten (y, final_state) for a custom backward

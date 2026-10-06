@@ -19,7 +19,7 @@ use burn::{
     train::metric::NumericEntry,
 };
 use crate::optim::{FallbackConfig, MuonPlan, SgdConfig, muon_config};
-pub use crate::utils::scheduler::{ConstantLr, CosineAnnealingLr, Lr};
+pub use crate::utils::scheduler::{ConstantLr, CosineAnnealingLr, LinearLr, Lr, LrSegment};
 use std::time::{Duration, Instant};
 
 /// Current value of a metric reading, or `NaN` when the metric has none yet

@@ -4,12 +4,12 @@
 //! - on a loaded config, the flags replace its optimizer, unless the state
 //!   saved under that optimizer would then be ignored,
 //! - `--batch-size` rescales a cosine schedule with the step count of the
-//!   epoch,
+//!   epoch, and `--epochs` and `--max-lr` rescale a sequence,
 //! - the clock of the time budget starts at the first step,
 //! - an explicit config file does not read the saved config.
 
 use super::*;
-use crate::examples::training::{CosineAnnealingLr, OptimizerConfig};
+use crate::examples::training::{ConstantLr, CosineAnnealingLr, LinearLr, Lr, LrSegment, OptimizerConfig};
 use temp_dir::TempDir;
 
 fn scratch() -> TempDir {
@@ -108,6 +108,20 @@ fn the_batch_size_rescales_a_cosine_schedule() {
     assert_eq!(training.batch_size, 32);
     let Lr::CosineAnnealing(cosine) = &training.lr else { panic!() };
     assert_eq!((cosine.total_steps, cosine.warmup_steps), (500, 25));
+}
+
+#[test]
+fn the_flags_rescale_a_sequence() {
+    let dir = scratch();
+    let mut training = config(OptimizerKind::AdamW).with_num_epochs(1).with_lr(Lr::Sequence(vec![
+        LrSegment::new(0, Lr::Linear(LinearLr::new(0.0, 4e-3, 100))),
+        LrSegment::new(1000, Lr::Constant(ConstantLr::new().with_lr(1e-3))),
+    ]));
+    parse(dir.path(), &["--epochs", "2", "--max-lr", "2e-3"]).override_training_config(&mut training, DType::F32);
+    assert_eq!(training.lr.peak(), 2e-3);
+    let mid_warmup = training.lr.get_lr(100);
+    assert!((mid_warmup - 1e-3).abs() < 1e-15, "the warmup ends at step 200 now: {mid_warmup}");
+    assert_eq!(training.lr.get_lr(2000), 5e-4, "the step down moves to step 2000 and scales");
 }
 
 /// With `--training-config`, the config in the artifacts directory is not

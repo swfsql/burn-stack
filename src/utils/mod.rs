@@ -60,7 +60,7 @@ pub use packing::Packed;
 pub use padding::Padding;
 pub use schedule::{Applications, BidiSchedule, GradHorizon, Schedule};
 pub use untied::UntiedParam;
-pub use scheduler::{ConstantLr, CosineAnnealingLr, Lr};
+pub use scheduler::{ConstantLr, CosineAnnealingLr, LinearLr, Lr, LrSegment};
 
 /// A small `dtype`-specific epsilon for safe division (`x / (y + eps)`),
 /// returned as `f32`.
