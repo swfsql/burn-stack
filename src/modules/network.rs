@@ -417,34 +417,59 @@ where
     /// the embedding of the id, plus [`flag_embedding`](Self::flag_embedding)
     /// where the flag is 1.
     fn embed(&self, x: Tensor<3, Int>) -> Tensor<3> {
-        let [batch, sequence, 2] = x.dims() else {
-            panic!("a token is a pair (id, flag): {:?}", x.dims())
-        };
-        let id_bs = x.clone().narrow(2, 0, 1).reshape([batch, sequence]);
-        let flag_bs1 = x.narrow(2, 1, 1).float();
-        let flag_d = self.flag_embedding.val();
-        let [d_model] = flag_d.dims();
-        self.embedding.forward(id_bs) + flag_bs1 * flag_d.reshape([1, 1, d_model])
+        embed_pairs(&self.embedding, &self.flag_embedding, x)
     }
 
     /// Project `[batch, sequence, d_model]` → `[batch, sequence, padded_vocab
     /// + 1]`: the vocab logits, then the flag logit.
     fn apply_heads(&self, x: Tensor<3>) -> Tensor<3> {
-        let flag = self.flag_head.forward(x.clone());
-        Tensor::cat(vec![self.apply_lm_head(x), flag], 2)
+        apply_vocab_heads(&self.embedding, self.lm_head.as_ref(), &self.flag_head, x)
     }
+}
 
-    /// Project `[batch, sequence, d_model]` → `[batch, sequence, padded_vocab]`
-    /// using the dedicated head, or the tied (transposed embedding) weight.
-    fn apply_lm_head(&self, x: Tensor<3>) -> Tensor<3> {
-        if let Some(lm_head) = &self.lm_head {
-            lm_head.forward(x)
-        } else {
+/// Embed token pairs `[batch, sequence, 2]` → `[batch, sequence, d_model]`:
+/// the embedding of the id, plus `flag_embedding` where the flag is 1. The
+/// input boundary of every vocab network of this crate.
+pub(crate) fn embed_pairs(
+    embedding: &Embedding,
+    flag_embedding: &Param<Tensor<1>>,
+    x: Tensor<3, Int>,
+) -> Tensor<3> {
+    let [batch, sequence, 2] = x.dims() else {
+        panic!("a token is a pair (id, flag): {:?}", x.dims())
+    };
+    let id_bs = x.clone().narrow(2, 0, 1).reshape([batch, sequence]);
+    let flag_bs1 = x.narrow(2, 1, 1).float();
+    let flag_d = flag_embedding.val();
+    let [d_model] = flag_d.dims();
+    embedding.forward(id_bs) + flag_bs1 * flag_d.reshape([1, 1, d_model])
+}
+
+/// Project `[batch, sequence, d_model]` → `[batch, sequence, padded_vocab +
+/// 1]`: the vocab logits, then the flag logit. `lm_head = None` ties the
+/// head to the transposed embedding. The output boundary of every vocab
+/// network of this crate.
+pub(crate) fn apply_vocab_heads(
+    embedding: &Embedding,
+    lm_head: Option<&Linear>,
+    flag_head: &Linear,
+    x: Tensor<3>,
+) -> Tensor<3> {
+    let flag = flag_head.forward(x.clone());
+    let logits = match lm_head {
+        Some(lm_head) => lm_head.forward(x),
+        None => {
             // Weight tying: reuse embedding.weight^T ([d_model, padded_vocab]).
-            let weight = self.embedding.weight.clone().map(|w| w.transpose());
+            let weight = embedding.weight.clone().map(|w| w.transpose());
             Linear { weight, bias: None }.forward(x)
         }
-    }
+    };
+    Tensor::cat(vec![logits, flag], 2)
+}
+
+/// Round `vocab_size` up to the next multiple of `multiple`.
+pub(crate) fn padded_vocab(vocab_size: usize, multiple: usize) -> usize {
+    vocab_size.div_ceil(multiple) * multiple
 }
 
 /// Plain factory for [`VocabNetwork`]. Mirrors [`LatentNetworkBuilder`] but adds
@@ -461,19 +486,10 @@ pub struct VocabNetworkBuilder<C> {
 }
 
 impl<C: BlockConfig> VocabNetworkBuilder<C> {
-    /// Round `vocab_size` up to the next multiple of `multiple`.
-    fn padded_vocab(vocab_size: usize, multiple: usize) -> usize {
-        if vocab_size.is_multiple_of(multiple) {
-            vocab_size
-        } else {
-            ((vocab_size / multiple) + 1) * multiple
-        }
-    }
-
     /// Allocate and initialise the network on `device`.
     pub fn init(&self, device: &Device) -> VocabNetwork<C::Block> {
         let d_model = self.layers.block.d_model();
-        let padded_vocab = Self::padded_vocab(self.vocab_size, self.pad_vocab_size_multiple);
+        let padded_vocab = padded_vocab(self.vocab_size, self.pad_vocab_size_multiple);
         let lm_head = if self.missing_lm_head {
             None
         } else {

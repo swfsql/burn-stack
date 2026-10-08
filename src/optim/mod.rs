@@ -209,6 +209,15 @@ impl MuonPlan {
         }
     }
 
+    /// Every spec of this plan, matched only under the path substring `scope`
+    /// (see [`ProjSpec::within`]). A model with stacks of different widths
+    /// builds one plan per stack, scopes each one to its stack, and joins them
+    /// with [`Self::extend`].
+    pub fn within(mut self, scope: &str) -> Self {
+        self.specs = self.specs.into_iter().map(|spec| spec.within(scope)).collect();
+        self
+    }
+
     /// Remove every segment named `name` from the ownership of Muon (it goes
     /// to the fallback optimizer). So a caller can opt out a sub-projection
     /// without a rebuild of the plan.

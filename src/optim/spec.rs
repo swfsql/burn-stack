@@ -82,12 +82,23 @@ pub struct ProjSpec {
     /// whole number of copies of `segments` side by side, one per application.
     /// The blocks of each copy are stepped on their own.
     pub tiled: bool,
+    /// More path substrings that the parameter must contain (empty ⇒ none).
+    /// They scope the spec to one part of a model. A model that holds stacks
+    /// of different widths needs this: the same weight name then has a
+    /// different column layout in each stack (see [`Self::within`]).
+    pub within: Vec<String>,
 }
 
 impl ProjSpec {
     /// A fused weight of the mixer block.
     pub fn block(path: impl Into<String>, segments: Vec<ProjSegment>) -> Self {
-        Self { path: path.into(), scope: ProjScope::Block, segments, tiled: false }
+        Self {
+            path: path.into(),
+            scope: ProjScope::Block,
+            segments,
+            tiled: false,
+            within: Vec::new(),
+        }
     }
 
     /// An unfused weight of the mixer block. Muon owns it in full.
@@ -97,12 +108,26 @@ impl ProjSpec {
 
     /// A fused weight matched by plain path substring.
     pub fn path(path: impl Into<String>, segments: Vec<ProjSegment>) -> Self {
-        Self { path: path.into(), scope: ProjScope::Path, segments, tiled: false }
+        Self {
+            path: path.into(),
+            scope: ProjScope::Path,
+            segments,
+            tiled: false,
+            within: Vec::new(),
+        }
     }
 
     /// This spec over an untied weight (see [`Self::tiled`]).
     pub fn tiled(mut self) -> Self {
         self.tiled = true;
+        self
+    }
+
+    /// This spec, matched only under the path substring `scope` (for
+    /// example, `"stages.0.encoder."`), in addition to its own predicates.
+    /// Each call adds one more substring that the path must contain.
+    pub fn within(mut self, scope: impl Into<String>) -> Self {
+        self.within.push(scope.into());
         self
     }
 
@@ -140,11 +165,15 @@ impl ProjSpec {
     /// single `"block.in_proj.weight"` predicate would miss it, silently, and
     /// leave the weight on the fallback optimizer. `"block."` alone stands for
     /// every [`BLOCK_CONTAINERS`] entry, because each one ends with it.
+    ///
+    /// The [`Self::within`] scopes are more predicates of the same kind.
     pub fn predicates(&self) -> Vec<String> {
-        match self.scope {
+        let mut predicates = match self.scope {
             ProjScope::Block => vec!["block.".to_string(), self.path.clone()],
             ProjScope::Path => vec![self.path.clone()],
-        }
+        };
+        predicates.extend(self.within.iter().cloned());
+        predicates
     }
 
     /// The parameter group selecting this weight (AND over [`Self::predicates`]).

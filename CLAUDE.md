@@ -111,7 +111,8 @@ src/
 │  │                 grad_horizon truncates BPTT to a tracked-layer mask
 │  │                 (forward/step/prime cut alike). only_start_latents (the
 │  │                 capture gate). forward_packed shares the loop of forward
-│  │                 (forward_rows): the Start latents go into the opening slots
+│  │                 (forward_rows): the Start latents go into the opening slots.
+│  │                 zero_caches_2d/3d
 │  ├─ mlp.rs         GatedMlp: SwiGLU feed-forward interleaved with the mixer.
 │  │                 from_hidden_ratio = the Llama ⅔·ratio·d_model sizing rule
 │  ├─ model_config.rs ModelConfigExt: config → module + its Muon plan. The seam
@@ -122,19 +123,35 @@ src/
 │  ├─ network.rs     LatentNetwork (optional final norm) / VocabNetwork
 │  │                 (+ forward_packed; tokens are pairs (id, flag), the
 │  │                 flag channel: flag_embedding in, flag_head → the last
-│  │                 logit column)
+│  │                 logit column). embed_pairs/apply_vocab_heads: the vocab
+│  │                 I/O, shared with HNetVocabNetwork
 │  ├─ shape.rs       NetworkShape (+ LatentShape/VocabShape/BidiShape): the
 │  │                 serialisable, block-free half of a model config. The
 │  │                 builders carry `C` and cannot derive Config, so the config
 │  │                 of a consumer is the pair `{ shape, block }`. init/muon_plan
 │  │                 over any BlockConfig
 │  ├─ bidi.rs        BidiLayers<M> + BidiLayerPair<M> + OutputMerge
+│  ├─ hnet/          HNet<E, M>: stages of Layers<E> around a main Layers<M>,
+│  │                 dynamic chunking between levels; mod.rs header = the math.
+│  │                 forward (right padding; reads the chunk counts to the
+│  │                 host) / step (StepMode: Masked = capturable, Gathered =
+│  │                 the chunk-starting rows only). No class markers, no packed
+│  │                 rows. routing.rs: Router (W_q prev row, W_k current row,
+│  │                 identity init, p > ½), RouterCache, Routing (+ ratio_loss).
+│  │                 chunk.rs: the index math (prefix_sum of b → source rows,
+│  │                 inner padding). smooth.rs: the EMA as a two-level segsum
+│  │                 scan. cache.rs: HNetCaches + row select/gather/merge over
+│  │                 CacheTensors. network.rs: HNetVocabNetwork (+ start rows:
+│  │                 forward_opened, prime). shape.rs: HNetShape/HNetVocabShape
+│  │                 (init over the cumulative residual depth, Muon plan
+│  │                 scoped per stack)
 │  ├─ cache.rs       CacheStack trait (+ per-slot inner/from_inner/device,
 │  │                 whole-stack detach() to carry state across a gradient
 │  │                 boundary). lift: the way back from `inner`, onto a device
 │  │                 with its checkpointing strategy.
 │  │                 CacheTensors: a pairwise TensorZip traversal per cache type
-│  │                 (into_owned_buffers, assign_in_place). Impls: `()` = no
+│  │                 (into_owned_buffers, assign_in_place). Axis 0 of every
+│  │                 tensor is the batch. Impls: `()` = no
 │  │                 cache, `Vec`, `Tensor<D>`, a pair = state beside a cache
 │  ├─ activation/    silu, softplus, log_sigmoid (dtype-aware)
 │  ├─ norm/          rms_norm (also usable as QK-Norm), rms_norm_gated, rms_score.
@@ -142,7 +159,8 @@ src/
 │  │                 div_eps of the compute dtype (f64 stays f64)
 │  ├─ loss/          bce, cross_entropy, mse, l2warp (max-logit penalty, added
 │  │                 to the gradient only), each computed as the norms
-│  └─ misc/          gqa, segsum, split, sanity
+│  └─ misc/          gqa, segsum, split, sanity, prefix_sum (blocked: the values
+│                    of cumsum, not its quadratic cost on cubecl)
 ├─ examples/         example scaffolding shared by the consumer crates
 │  │                 (feature `examples-common`, off by default, dev-only)
 │  ├─ cli.rs         AppArgs: every flag that the examples share (training-config
@@ -202,8 +220,9 @@ src/
 │  ├─ mod.rs         MuonPlan: specs → ModuleOptimizer (FallbackConfig: AdamW |
 │  │                 SGD, + Muon groups)
 │  ├─ spec.rs        ProjSpec/ProjSegment: fused-weight column seams → ParamGroup
-│  │                 (`tiled`: one copy per application). BLOCK_CONTAINERS = the
-│  │                 field names that store a block
+│  │                 (`tiled`: one copy per application; `within`: more path
+│  │                 substrings that scope it to one stack). BLOCK_CONTAINERS =
+│  │                 the field names that store a block
 │  ├─ segmented.rs   Segmented: one optimizer per column block of a fused weight.
 │  │                 An SGD block is stateless and holds no state entry
 │  ├─ sgd.rs         SgdConfig: plain SGD (decay, clipping, no momentum). `init`
@@ -334,7 +353,7 @@ the stack puts its `Start` latents into reserved opening slots, so the shapes
 do not change. The packer places the resets where the block accepts them.
 `RefBlock` skips padded rows and asserts the contract.
 
-### Virtual layers, bidirectional, class tokens
+### Virtual layers, bidirectional, class tokens, H-Net
 
 - **Virtual layers** (`utils/schedule/`): `Layers<M>` runs `n_virtual_layers`
   logical passes over `n_real_layers` weight sets. Each virtual layer keeps
@@ -406,6 +425,13 @@ do not change. The packer places the resets where the block accepts them.
   - A `grad_horizon` cut through an untying layer panics.
   - Shapes `retie` after their `InitPolicy`.
   - `ProjSpec::tiled` steps each copy alone.
+- **H-Net** (`modules/hnet/`): a hierarchy of stacks. A stage runs encoder →
+  router → keep the chunk-starting rows → inner network (the next stage or
+  the main network) → EMA + repeat + `STE(c)` + residual → decoder. Two block
+  families: `E` for every stage, `M` for the main network. `forward` = `step`
+  unrolled (outputs, caches, gradients). `step` runs the inner network on
+  some rows only, so it selects, gathers and merges cache rows through
+  `CacheTensors`.
 
 ---
 

@@ -183,6 +183,18 @@ where
             .unwrap_or(self.n_real_layers)
     }
 
+    /// The zero caches that [`Self::step`] starts from when it gets `None`:
+    /// one slot per virtual layer, sized for a `[batch, d_model]` input.
+    pub fn zero_caches_2d(&self, x: &Tensor<2>) -> M::Caches {
+        self.real_layers[0].application(0).block.zero_caches_2d(x, self.n_virtual_count())
+    }
+
+    /// The zero caches for a `[batch, sequence, d_model]` input: those of
+    /// [`Block::zero_caches_3d`] for every virtual layer.
+    pub fn zero_caches_3d(&self, x: &Tensor<3>) -> M::Caches {
+        self.real_layers[0].application(0).block.zero_caches_3d(x, self.n_virtual_count())
+    }
+
     fn real_idx(&self, virtual_idx: usize) -> usize {
         if let Some((n, schedule)) = &self.n_virtual_layers {
             schedule.real_idx(virtual_idx, *n, self.n_real_layers)

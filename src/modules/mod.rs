@@ -29,8 +29,12 @@ pub mod layers;
 /// Loss functions (binary cross-entropy, cross-entropy, mean squared error,
 /// the L2-warp penalty).
 pub mod loss;
-/// Tensor helpers: `segsum`, `gqa`, typed `split`, and `sanity` guards.
+/// Tensor helpers: `segsum`, `gqa`, `prefix_sum`, typed `split`, and
+/// `sanity` guards.
 pub mod misc;
+/// H-Net: a hierarchy of block stacks with dynamic chunking between levels
+/// ([`HNet`]).
+pub mod hnet;
 /// The SwiGLU feed-forward block interleaved with the mixer ([`GatedMlp`]).
 pub mod mlp;
 /// The config → module interface of a generic training loop
@@ -49,6 +53,7 @@ pub use activation::log_sigmoid::log_sigmoid;
 pub use activation::silu::Silu;
 pub use activation::softplus::softplus;
 pub use misc::gqa::gqa_expand_to_heads;
+pub use misc::prefix_sum::prefix_sum;
 pub use misc::sanity::sanity;
 pub use misc::segsum::segsum;
 pub use misc::split::split_into;
@@ -60,6 +65,10 @@ pub use norm::rms_score::{normed_score, rms_denom, score_scale};
 
 pub use bidi::{BidiLayerPair, BidiLayers, BidiLayersBuilder, OutputMerge, OutputMergeConfig};
 pub use cache::{CacheStack, CacheTensors, TensorZip, lift};
+pub use hnet::{
+    HNet, HNetCaches, HNetShape, HNetStageShape, HNetVocabNetwork, HNetVocabShape, Routing,
+    StepMode,
+};
 pub use layer::{Layer, LayerUntied};
 pub use layers::{Layers, LayersBuilder};
 pub use multi_gate::{

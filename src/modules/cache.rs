@@ -131,6 +131,12 @@ pub trait TensorZip {
 /// tensor). A shared destination does not give a wrong value (`slice_assign`
 /// copies). But a replayed graph keeps writing the buffer that the capture
 /// saw.
+///
+/// **Axis 0 of every tensor is the batch.** A container that runs a network on
+/// some rows only (the `step` of [`HNet`](crate::modules::HNet)) selects,
+/// gathers and merges the rows of a cache through this traversal. So a cache
+/// must hold no tensor that is shared by the slots of a batch. The two caches
+/// that a traversal pairs can then also differ in batch size.
 pub trait CacheTensors: Clone {
     /// Pair every tensor of `self` with the matching one of `other` through
     /// `z`, and keep the structure of `self`.

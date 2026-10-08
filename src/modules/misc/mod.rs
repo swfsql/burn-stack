@@ -1,5 +1,8 @@
 /// Group→head expansion (GQA-style sharing).
 pub mod gqa;
+/// Blocked inclusive prefix sum (the values of `cumsum`, not its quadratic
+/// cost on cubecl).
+pub mod prefix_sum;
 /// Optional `NaN`/`Inf` guards gated by [`crate::DENY_NAN`] / [`crate::DENY_INF`].
 pub mod sanity;
 /// Stable segment-sum → 1-semiseparable mask (log-space prefix-sum differences).
