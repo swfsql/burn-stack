@@ -53,12 +53,24 @@
 //! frontier. The model reads the layout from [`TinyStoriesBatch::packed`], and
 //! scores with [`lm_output_packed`]. The validation is never packed, so its
 //! bits per character do not change with the packing.
+//!
+//! # The loss of a character
+//!
+//! A character is a pair `(id, case flag)` (see [`dataset`](super::dataset)).
+//! Its loss is the cross-entropy of the id, plus the binary cross-entropy of
+//! the flag when the character is a letter. A symbol has no case, so its flag
+//! prediction is ignored. The sum is the information of the **cased** text.
+//! The validation reports it in bits per character, and also its two parts:
+//! the id (`primary`) and the flag (`case`).
+
+#[cfg(test)]
+mod tests;
 
 use crate::examples::cli::AppArgs;
 use crate::examples::device::loader_device;
 use crate::examples::tiny_stories::dataset::{
-    PackLayout, PackedStoriesBatcher, PackedStoriesDataset, Split, TinyStoriesBatch,
-    TinyStoriesBatcher, TinyStoriesDataset, VOCAB_SIZE,
+    FIRST_LETTER, PackLayout, PackedStoriesBatcher, PackedStoriesDataset, Split,
+    TinyStoriesBatch, TinyStoriesBatcher, TinyStoriesDataset, VOCAB_SIZE,
 };
 use crate::examples::session::{Cadence, Session, TrainingProgress};
 use crate::examples::training::{TrainingConfig, metric_current};
@@ -567,7 +579,7 @@ pub fn epoch_train<W: LmModel>(
         let b = session.begin_batch();
         // Built on the host by a worker, moved here (see `loader_device`).
         let run = run.to_device(&valid_device);
-        let [batch_size, _windows_seq_len] = run.inputs.dims();
+        let [batch_size, _windows_seq_len, _pair] = run.inputs.dims();
         let windows = run.num_windows();
         let mut caches: Option<W::Caches> = None;
         // The run opens here. Window 0 gets what the model splices in front of
@@ -718,7 +730,7 @@ pub fn epoch_valid<W: LmModel>(
     {
         batches += 1;
         let run = run.to_device(device);
-        let [batch_size, _windows_seq_len] = run.inputs.dims();
+        let [batch_size, _windows_seq_len, _pair] = run.inputs.dims();
         let mut caches: Option<W::Caches> = None;
         let mut class = ClassCursors::stream();
 
@@ -737,13 +749,23 @@ pub fn epoch_valid<W: LmModel>(
     // Display the averaged validation metrics.
     let loss = loss_metric.value();
     let bits = loss / std::f64::consts::LN_2;
+    let primary_bits = loss_metric.primary() / std::f64::consts::LN_2;
+    let case_bits = bits - primary_bits;
     let acc = metric_current(acc_metric.running_value());
     session.log_valid(
         "valid",
-        &[("loss", loss), ("bits", bits), ("acc", acc), ("batches", batches as f64)],
+        &[
+            ("loss", loss),
+            ("bits", bits),
+            ("primary_bits", primary_bits),
+            ("case_bits", case_bits),
+            ("acc", acc),
+            ("batches", batches as f64),
+        ],
     );
     println!(
-        "Epoch {}/{}, Avg Valid Loss {loss:.4} ({bits:.3} bits/char), Avg Valid Acc: {acc}",
+        "Epoch {}/{}, Avg Valid Loss {loss:.4} ({bits:.3} bits/char: primary {primary_bits:.3} \
+         + case {case_bits:.3}), Avg Valid Acc: {acc}",
         epoch, config.training.num_epochs,
     );
 }
@@ -780,15 +802,21 @@ pub fn epoch_valid<W: LmModel>(
 /// (tracel-ai/burn#5751). For the same reason, the real count is summed on the
 /// device, not passed as a host scalar: kernel scalars are also part of the
 /// key of that cache.
+///
+/// The logits are `[batch, out_len, VOCAB_SIZE + 1]` (the vocab logits, then
+/// the case logit), and the inputs and targets are pairs. The module header
+/// gives the loss of one position.
 pub fn lm_output(
     logits: Tensor<3>,
-    inputs: Tensor<2, Int>,
-    targets: Tensor<2, Int>,
+    inputs: Tensor<3, Int>,
+    targets: Tensor<3, Int>,
     scored: &[usize],
 ) -> ClassificationOutput {
-    let [batch_size, seq_len] = targets.dims();
+    let [batch_size, seq_len, 2] = targets.dims() else {
+        panic!("the targets are pairs (id, flag): {:?}", targets.dims())
+    };
     let [_, out_len, _] = logits.dims();
-    assert_eq!([batch_size, out_len, VOCAB_SIZE], logits.dims());
+    assert_eq!([batch_size, out_len, VOCAB_SIZE + 1], logits.dims());
     assert_eq!(batch_size, scored.len());
     assert!(out_len >= seq_len, "the forward dropped user positions");
 
@@ -822,7 +850,7 @@ pub fn lm_output(
         .expand([batch_size, positions])
         .greater_equal(scored_bp)
         .reshape([rows]);
-    masked_output(logits.reshape([rows, VOCAB_SIZE]), targets.reshape([rows]), pad)
+    masked_output(logits.reshape([rows, VOCAB_SIZE + 1]), targets.reshape([rows, 2]), pad)
 }
 
 /// [`lm_output`] for a batch of packed rows ([`TinyStoriesBatch::packed`]).
@@ -830,32 +858,56 @@ pub fn lm_output(
 /// and `score_bs` marks the scored positions.
 pub fn lm_output_packed(
     logits: Tensor<3>,
-    targets: Tensor<2, Int>,
+    targets: Tensor<3, Int>,
     score_bs: Tensor<2, Bool>,
 ) -> ClassificationOutput {
-    let [batch_size, width] = targets.dims();
-    assert_eq!([batch_size, width, VOCAB_SIZE], logits.dims());
+    let [batch_size, width, 2] = targets.dims() else {
+        panic!("the targets are pairs (id, flag): {:?}", targets.dims())
+    };
+    assert_eq!([batch_size, width, VOCAB_SIZE + 1], logits.dims());
     assert_eq!([batch_size, width], score_bs.dims());
     let rows = batch_size * width;
     let pad = score_bs.bool_not().reshape([rows]);
-    masked_output(logits.reshape([rows, VOCAB_SIZE]), targets.reshape([rows]), pad)
+    masked_output(logits.reshape([rows, VOCAB_SIZE + 1]), targets.reshape([rows, 2]), pad)
 }
 
-/// The cross-entropy of `logits` (`[rows, VOCAB_SIZE]`) against `targets`
-/// (`[rows]`), with the rows of `pad` (`true`) left out: the mean over the
-/// other rows. Their targets become [`PAD_TARGET`].
-fn masked_output(logits: Tensor<2>, targets: Tensor<1, Int>, pad: Tensor<1, Bool>) -> ClassificationOutput {
-    let [rows] = targets.dims();
-    let nll = burn::tensor::activation::log_softmax(logits.clone(), 1)
-        .gather(1, targets.clone().reshape([rows, 1]))
+/// The loss of `logits` (`[rows, VOCAB_SIZE + 1]`) against the target pairs
+/// `targets` (`[rows, 2]`), with the rows of `pad` (`true`) left out. The loss
+/// of a row is the cross-entropy of its id, plus the binary cross-entropy of
+/// its case flag when the id is a letter ([`case_nll`]). The loss is their
+/// sum over the other rows, divided by the count of those rows. The output
+/// keeps the vocab logits, and the ids as its targets ([`PAD_TARGET`] at the
+/// padding), for the accuracy.
+fn masked_output(logits: Tensor<2>, targets: Tensor<2, Int>, pad: Tensor<1, Bool>) -> ClassificationOutput {
+    let [rows, 2] = targets.dims() else {
+        panic!("the targets are pairs (id, flag): {:?}", targets.dims())
+    };
+    let id_r = targets.clone().narrow(1, 0, 1).reshape([rows]);
+    let flag_r = targets.narrow(1, 1, 1).reshape([rows]);
+    let vocab_rv = logits.clone().narrow(1, 0, VOCAB_SIZE);
+    let case_r = logits.narrow(1, VOCAB_SIZE, 1).reshape([rows]);
+    let nll = burn::tensor::activation::log_softmax(vocab_rv.clone(), 1)
+        .gather(1, id_r.clone().reshape([rows, 1]))
         .reshape([rows])
         .neg()
         .mask_fill(pad.clone(), 0);
+    let letter = id_r.clone().greater_equal_elem(FIRST_LETTER as i64);
+    let unscored = pad.clone().bool_or(letter.bool_not());
+    let case = case_nll(case_r, flag_r).mask_fill(unscored, 0);
     let real = pad.clone().bool_not().float();
-    let loss = nll.sum() / real.sum();
-    let targets = targets.mask_fill(pad, PAD_TARGET as i64);
+    let loss = (nll.sum() + case.sum()) / real.sum();
+    let targets = id_r.mask_fill(pad, PAD_TARGET as i64);
 
-    ClassificationOutput::new(loss, logits, targets)
+    ClassificationOutput::new(loss, vocab_rv, targets)
+}
+
+/// The binary cross-entropy of a case logit `z` against its flag `y` (0 or
+/// 1): `−log σ(z)` for a 1, `−log σ(−z)` for a 0. As `softplus(z) − y·z`, with
+/// `softplus(z) = max(z, 0) + log(1 + e^(−|z|))`, which has no overflow for a
+/// large `|z|`.
+pub fn case_nll<const D: usize>(z: Tensor<D>, y: Tensor<D, Int>) -> Tensor<D> {
+    let softplus = z.clone().clamp_min(0) + z.clone().abs().neg().exp().log1p();
+    softplus - y.float() * z
 }
 
 /// The target of a padded position in the [`ClassificationOutput`] of
@@ -869,26 +921,41 @@ pub const PAD_TARGET: usize = VOCAB_SIZE;
 /// not as a whole window. Burn's `LossMetric` weights by the length of the
 /// loss tensor, and the fixed shapes of [`lm_output`] do not tie that length
 /// to the real count.
+///
+/// It also keeps the primary part (the cross-entropy of the ids). It computes
+/// that part again from the vocab logits of the output.
 #[derive(Default)]
 struct PerCharLoss {
     sum: f64,
+    primary: f64,
     count: f64,
 }
 
 impl PerCharLoss {
     fn update(&mut self, output: &ClassificationOutput) {
-        let count = output
-            .targets
-            .clone()
-            .not_equal_elem(PAD_TARGET as i64)
-            .int()
+        let [rows, _] = output.output.dims();
+        let pad = output.targets.clone().equal_elem(PAD_TARGET as i64);
+        let count = pad.clone().bool_not().int().sum().into_scalar::<i64>() as f64;
+        let ids = output.targets.clone().mask_fill(pad.clone(), 0).reshape([rows, 1]);
+        let primary = burn::tensor::activation::log_softmax(output.output.clone(), 1)
+            .gather(1, ids)
+            .reshape([rows])
+            .neg()
+            .mask_fill(pad, 0)
             .sum()
-            .into_scalar::<i64>() as f64;
+            .into_scalar::<f64>();
         self.sum += output.loss.clone().into_scalar::<f64>() * count;
+        self.primary += primary;
         self.count += count;
     }
 
+    /// The loss per character: the primary part plus the case part.
     fn value(&self) -> f64 {
         self.sum / self.count
+    }
+
+    /// The primary part of [`Self::value`].
+    fn primary(&self) -> f64 {
+        self.primary / self.count
     }
 }

@@ -120,7 +120,9 @@ src/
 │  ├─ multi_gate.rs  Multi-Gate Residuals (Standard | MultiGate): accumulate,
 │  │                 then mix
 │  ├─ network.rs     LatentNetwork (optional final norm) / VocabNetwork
-│  │                 (+ forward_packed)
+│  │                 (+ forward_packed; tokens are pairs (id, flag), the
+│  │                 flag channel: flag_embedding in, flag_head → the last
+│  │                 logit column)
 │  ├─ shape.rs       NetworkShape (+ LatentShape/VocabShape/BidiShape): the
 │  │                 serialisable, block-free half of a model config. The
 │  │                 builders carry `C` and cannot derive Config, so the config
@@ -169,8 +171,9 @@ src/
 │  │                 of a Trainer), render.rs (a digit beside its class
 │  │                 distribution, as text or PNG)
 │  └─ tiny_stories/  dataset.rs: character corpus (alphabet, whole-parquet
-│                    download + text cache, one story per item, batches padded
-│                    to whole windows with a per-slot `scored` count). Packed
+│                    download + cased text cache, one story per item, batches
+│                    of (id, case flag) pairs padded to whole windows with a
+│                    per-slot `scored` count; cased tokens: UPPER, pair). Packed
 │                    train rows: pack_rows (first-fit over open rows, at the
 │                    PackLayout of the model), PackedStoriesDataset/Batcher,
 │                    TinyStoriesBatch::packed.
@@ -183,11 +186,14 @@ src/
 │                    model spliced in against the first character of the story,
 │                    and masks the padding out at the fixed window shape
 │                    (PAD_TARGET rows, the mean normalised on device,
-│                    PerCharLoss for validation). Class markers are offered,
-│                    never assumed.
+│                    PerCharLoss for validation). The loss of a character:
+│                    the id CE + the case BCE of a letter (case_nll); the
+│                    validation splits primary/case bits. Class markers are
+│                    offered, never assumed.
 │                    sample.rs: one prime/prefill/decode sampler over
-│                    VocabNetwork<M>. `decode`, the shared loop, draws on the
-│                    device in f32 (the token is step state) and replays a
+│                    VocabNetwork<M>. `decode`, the shared loop, draws the id
+│                    and the case of a letter on the device in f32 (the pair
+│                    is step state) and replays a
 │                    CapturedStep. A `Prefill`, held across prompts, feeds
 │                    right-padded fixed-shape chunks after a kept opening, with
 │                    one captured chunk for all

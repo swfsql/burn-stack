@@ -306,86 +306,98 @@ impl<C: BlockConfig> LatentNetworkBuilder<C> {
 /// The LM head is **tied** (`lm_head = None`, the transposed embedding weight
 /// is reused) or **untied** (a dedicated `Linear`). The vocabulary is rounded
 /// up to a multiple for GPU alignment (see [`VocabNetworkBuilder`]).
+///
+/// **The flag channel.** A token is a pair `(id, flag)`: a vocab id and a
+/// binary flag (the letter case, in the text examples). So the token inputs
+/// have a trailing axis of 2: the id, then the flag (0 or 1). The input adds
+/// [`flag_embedding`](Self::flag_embedding) to the embedding of each token
+/// whose flag is 1. The logits have `padded_vocab + 1` columns: the vocab
+/// logits, then the flag logit of the next token ([`flag_head`](Self::flag_head)).
+/// The flag logit is a binary logit, not a member of the vocab softmax.
 #[derive(Module, Debug)]
 pub struct VocabNetwork<M: Module> {
     /// Token embedding table, weight shape `[padded_vocab, d_model]`.
     pub embedding: Embedding,
+    /// The flag input, `[d_model]`: added to the embedding of a token whose
+    /// flag is 1. Zero at init, so a new network reads no flag.
+    pub flag_embedding: Param<Tensor<1>>,
     /// The shared layer stack.
     pub layers: Layers<M>,
     /// Final RMSNorm applied before the LM head (`norm_f`).
     pub norm_f: RmsNorm,
     /// Optional dedicated LM head. `None` ⇒ weight-tied (reuse embedding`ᵀ`).
     pub lm_head: Option<Linear>,
+    /// The flag output: one logit per position (`d_model → 1`), the last
+    /// column of the logits.
+    pub flag_head: Linear,
 }
 
 impl<M: Block> VocabNetwork<M>
 where
     M::Options: Clone,
 {
-    /// Full-sequence pass: token IDs `[batch, sequence]` → logits
-    /// `[batch, sequence, padded_vocab]`. `class` places the class latents of
-    /// the inner stack (`None` ⇒ `x` is the whole sequence), and `pad` marks a
-    /// right-padded batch (see [`Layers::forward`]).
+    /// Full-sequence pass: token pairs `[batch, sequence, 2]` → logits
+    /// `[batch, sequence, padded_vocab + 1]`. `class` places the class latents
+    /// of the inner stack (`None` ⇒ `x` is the whole sequence), and `pad` marks
+    /// a right-padded batch (see [`Layers::forward`]).
     pub fn forward(
         &self,
-        x: Tensor<2, Int>,
+        x: Tensor<3, Int>,
         caches: Option<M::Caches>,
         options: M::Options,
         class: Option<&mut ClassCursors>,
         pad: Option<Tensor<2, Bool>>,
     ) -> (Tensor<3>, M::Caches) {
-        let x = self.embedding.forward(x);
+        let x = self.embed(x);
         let (x, caches) = self.layers.forward(x, caches, options, class, pad);
         let x = self.norm_f.forward(x);
-        (self.apply_lm_head(x), caches)
+        (self.apply_heads(x), caches)
     }
 
-    /// [`Self::forward`] over packed rows: token IDs `[batch, rows]` → logits
-    /// `[batch, rows, padded_vocab]`, with every sequence of a slot restarted
-    /// at its reset (see [`Layers::forward_packed`]). The token of an opening
-    /// slot is not read: the stack puts its class latent there.
+    /// [`Self::forward`] over packed rows: token pairs `[batch, rows, 2]` →
+    /// logits `[batch, rows, padded_vocab + 1]`, with every sequence of a slot
+    /// restarted at its reset (see [`Layers::forward_packed`]). The token of
+    /// an opening slot is not read: the stack puts its class latent there.
     pub fn forward_packed(
         &self,
-        x: Tensor<2, Int>,
+        x: Tensor<3, Int>,
         caches: Option<M::Caches>,
         options: M::Options,
         packed: &Packed,
     ) -> (Tensor<3>, M::Caches) {
-        let x = self.embedding.forward(x);
+        let x = self.embed(x);
         let (x, caches) = self.layers.forward_packed(x, caches, options, packed);
         let x = self.norm_f.forward(x);
-        (self.apply_lm_head(x), caches)
+        (self.apply_heads(x), caches)
     }
 
-    /// Single-token step: token IDs `[batch]` → logits `[batch, padded_vocab]`.
+    /// Single-token step: token pairs `[batch, 2]` → logits
+    /// `[batch, padded_vocab + 1]`.
     ///
     /// The vocab network has no class tokens of its own (they would duplicate
     /// the class latents of the layers). It forwards `class` (the stack-level
     /// and per-virtual-layer cursors) to [`Layers::step`].
     pub fn step(
         &self,
-        x: Tensor<1, Int>,
+        x: Tensor<2, Int>,
         caches: Option<M::Caches>,
         class: Option<&mut ClassCursors>,
     ) -> (Tensor<2>, M::Caches) {
         // Embed the single token via a temporary unit sequence axis.
-        let x = self
-            .embedding
-            .forward(x.unsqueeze_dim::<2>(1))
-            .squeeze_dim(1);
+        let x = self.embed(x.unsqueeze_dim::<3>(1)).squeeze_dim(1);
         let (x, caches) = self.layers.step(x, caches, class);
         let x = self.norm_f.forward(x);
-        // Reuse the 3-D head by lifting/lowering the sequence axis.
-        let logits = self.apply_lm_head(x.unsqueeze_dim(1)).squeeze_dim(1);
+        // Reuse the 3-D heads by lifting/lowering the sequence axis.
+        let logits = self.apply_heads(x.unsqueeze_dim(1)).squeeze_dim(1);
         (logits, caches)
     }
 
     /// Step the class latents that the stack has waiting for its next token,
-    /// with no token of its own. Returns the logits `[batch, padded_vocab]` of
-    /// the **last** latent emitted, or `None` when none were waiting. This is
-    /// the entry point of seedless generation (`prime` → sample → `step` → …).
-    /// The vocab network has no class tokens of its own, so it forwards `class`
-    /// to [`Layers::prime`], whose docs state the placement rules.
+    /// with no token of its own. Returns the logits `[batch, padded_vocab + 1]`
+    /// of the **last** latent emitted, or `None` when none were waiting. This
+    /// is the entry point of seedless generation (`prime` → sample → `step` →
+    /// …). The vocab network has no class tokens of its own, so it forwards
+    /// `class` to [`Layers::prime`], whose docs state the placement rules.
     pub fn prime(
         &self,
         batch: usize,
@@ -395,10 +407,31 @@ where
         let (x, caches) = self.layers.prime(batch, caches, class);
         let logits = x.map(|x| {
             let x = self.norm_f.forward(x);
-            // Reuse the 3-D head by lifting/lowering the sequence axis.
-            self.apply_lm_head(x.unsqueeze_dim(1)).squeeze_dim(1)
+            // Reuse the 3-D heads by lifting/lowering the sequence axis.
+            self.apply_heads(x.unsqueeze_dim(1)).squeeze_dim(1)
         });
         (logits, caches)
+    }
+
+    /// Embed token pairs `[batch, sequence, 2]` → `[batch, sequence, d_model]`:
+    /// the embedding of the id, plus [`flag_embedding`](Self::flag_embedding)
+    /// where the flag is 1.
+    fn embed(&self, x: Tensor<3, Int>) -> Tensor<3> {
+        let [batch, sequence, 2] = x.dims() else {
+            panic!("a token is a pair (id, flag): {:?}", x.dims())
+        };
+        let id_bs = x.clone().narrow(2, 0, 1).reshape([batch, sequence]);
+        let flag_bs1 = x.narrow(2, 1, 1).float();
+        let flag_d = self.flag_embedding.val();
+        let [d_model] = flag_d.dims();
+        self.embedding.forward(id_bs) + flag_bs1 * flag_d.reshape([1, 1, d_model])
+    }
+
+    /// Project `[batch, sequence, d_model]` → `[batch, sequence, padded_vocab
+    /// + 1]`: the vocab logits, then the flag logit.
+    fn apply_heads(&self, x: Tensor<3>) -> Tensor<3> {
+        let flag = self.flag_head.forward(x.clone());
+        Tensor::cat(vec![self.apply_lm_head(x), flag], 2)
     }
 
     /// Project `[batch, sequence, d_model]` → `[batch, sequence, padded_vocab]`
@@ -452,9 +485,11 @@ impl<C: BlockConfig> VocabNetworkBuilder<C> {
         };
         VocabNetwork {
             embedding: EmbeddingConfig::new(padded_vocab, d_model).init(device),
+            flag_embedding: Param::from_tensor(Tensor::zeros([d_model], device)),
             layers: self.layers.init(device),
             norm_f: RmsNormConfig::new(d_model).init(device),
             lm_head,
+            flag_head: LinearConfig::new(d_model, 1).init(device),
         }
     }
 }

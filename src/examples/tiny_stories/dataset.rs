@@ -1,6 +1,6 @@
 //! Character-level [TinyStories-GPT4-clean] corpus: a stream of
-//! single-character tokens over a **case-folded ASCII** alphabet, one *story*
-//! per training item.
+//! single-character tokens over a **case-folded ASCII** alphabet, plus a
+//! **case flag** per token, one *story* per training item.
 //!
 //! [TinyStories-GPT4-clean]: https://huggingface.co/datasets/karpathy/tinystories-gpt4-clean
 //!
@@ -13,6 +13,13 @@
 //! is no `<unk>`, no `<bos>`, and no padding class
 //! (`pad_vocab_size_multiple = 1`). So every logit that the model emits is a
 //! character that it can legitimately produce.
+//!
+//! The case is not in the vocabulary. It is a second, binary channel: the
+//! **case flag** is 1 for `A-Z` and 0 for every other character. A *cased
+//! token* holds both, as the token id plus the bit [`UPPER`]. The stories keep
+//! their case, and a batch splits each cased token into the pair `(id, flag)`
+//! (see [`TinyStoriesBatch`]). So the model reads the flag at its input, and
+//! predicts it as one more output (see [`lm_output`](super::lm::lm_output)).
 //!
 //! # Download
 //!
@@ -91,6 +98,29 @@ pub const ALPHABET: &str = "\n !\"$',-.0123456789:;?abcdefghijklmnopqrstuvwxyz";
 /// Number of character classes (= the model's `vocab_size`).
 pub const VOCAB_SIZE: usize = ALPHABET.len();
 
+/// The id of `a`. [`ALPHABET`] is in ASCII order and ends with `a-z`, so the
+/// letters are the ids `FIRST_LETTER..VOCAB_SIZE`.
+pub const FIRST_LETTER: usize = VOCAB_SIZE - 26;
+const _: () = assert!(ALPHABET.as_bytes()[FIRST_LETTER] == b'a');
+
+/// The case bit of a cased token: set for an upper-case letter. The token ids
+/// are below [`VOCAB_SIZE`], so this bit is free.
+pub const UPPER: u8 = 0x80;
+const _: () = assert!(VOCAB_SIZE <= UPPER as usize);
+
+/// The pair `[id, flag]` of a cased token: the token id, and the case flag (1
+/// for an upper-case letter, 0 for every other character). This is what the
+/// model reads at one position, and what it predicts.
+pub const fn pair(token: u8) -> [i32; 2] {
+    [(token & !UPPER) as i32, (token >> 7) as i32]
+}
+
+/// The cased token of the pair `(id, flag)`. A flag on a character that is not
+/// a letter is ignored.
+pub const fn unpair(id: u8, flag: bool) -> u8 {
+    if flag && id as usize >= FIRST_LETTER { id | UPPER } else { id }
+}
+
 /// Token id reserved by [`Vocab`] for "not in the alphabet".
 const NO_TOKEN: u8 = u8::MAX;
 
@@ -145,18 +175,41 @@ impl Vocab {
         }
     }
 
-    /// The character a token id stands for.
-    pub const fn character(&self, token: u8) -> char {
-        self.to_byte[token as usize] as char
+    /// Cased token of `byte`: its token id, plus [`UPPER`] for `A-Z`. `None`
+    /// when it is outside the alphabet.
+    pub const fn cased_token(&self, byte: u8) -> Option<u8> {
+        match self.token(byte) {
+            Some(id) if byte.is_ascii_uppercase() => Some(id | UPPER),
+            other => other,
+        }
     }
 
-    /// Encode `text`, and silently drop anything outside the alphabet. The
-    /// cached corpus is normalized first, so this affects only user prompts.
+    /// The character of a token id, or of a cased token (upper case when it
+    /// has [`UPPER`]).
+    pub const fn character(&self, token: u8) -> char {
+        let byte = self.to_byte[(token & !UPPER) as usize];
+        if token & UPPER != 0 {
+            byte.to_ascii_uppercase() as char
+        } else {
+            byte as char
+        }
+    }
+
+    /// Encode `text` as case-folded token ids, and silently drop anything
+    /// outside the alphabet. For a match that ignores the case. The model reads
+    /// cased tokens ([`Self::encode_cased`]).
     pub fn encode(&self, text: &str) -> Vec<u8> {
         text.bytes().filter_map(|byte| self.token(byte)).collect()
     }
 
-    /// Decode token ids back to text.
+    /// Encode `text` as cased tokens, and silently drop anything outside the
+    /// alphabet. The cached corpus is normalized first, so the drop affects
+    /// only user prompts.
+    pub fn encode_cased(&self, text: &str) -> Vec<u8> {
+        text.bytes().filter_map(|byte| self.cased_token(byte)).collect()
+    }
+
+    /// Decode token ids or cased tokens back to text.
     pub fn decode(&self, tokens: &[u8]) -> String {
         tokens.iter().map(|&t| self.character(t)).collect()
     }
@@ -229,9 +282,10 @@ fn cache_dir() -> PathBuf {
     dir
 }
 
-/// Case-fold `story`, drop the characters outside [`ALPHABET`] (very rare, ~5
-/// per million), and trim the surrounding whitespace. The text is then exactly
-/// the token stream, and it opens on a real symbol.
+/// Drop the characters of `story` outside [`ALPHABET`] and `A-Z` (very rare,
+/// ~5 per million), and trim the surrounding whitespace. The case stays. The
+/// text is then exactly the stream of cased tokens, and it opens on a real
+/// symbol.
 ///
 /// The drop of everything outside the alphabet also keeps [`STORY_SEPARATOR`]
 /// unambiguous, because the separator is one of those characters. Interior
@@ -240,7 +294,7 @@ fn normalize(story: &str) -> String {
     story
         .bytes()
         .filter(|&byte| VOCAB.token(byte).is_some())
-        .map(|byte| byte.to_ascii_lowercase() as char)
+        .map(|byte| byte as char)
         .collect::<String>()
         .trim()
         .to_owned()
@@ -304,11 +358,11 @@ fn read_parquet(split: Split, n_stories: usize) -> Vec<String> {
     stories
 }
 
-/// The normalized stories of `split`. The first call downloads and extracts
-/// them. Later calls read the text cache: `<split>-<n_stories>.txt`, the
-/// stories joined by [`STORY_SEPARATOR`].
+/// The normalized stories of `split`, with their case. The first call
+/// downloads and extracts them. Later calls read the text cache:
+/// `<split>-<n_stories>-cased.txt`, the stories joined by [`STORY_SEPARATOR`].
 pub fn stories(split: Split, n_stories: usize) -> Vec<String> {
-    let path = cache_dir().join(format!("{}-{n_stories}.txt", split.name()));
+    let path = cache_dir().join(format!("{}-{n_stories}-cased.txt", split.name()));
     if let Ok(cached) = std::fs::read_to_string(&path) {
         let stories: Vec<String> = cached.split(STORY_SEPARATOR).map(str::to_owned).collect();
         if stories.len() == n_stories {
@@ -341,17 +395,17 @@ pub fn stories(split: Split, n_stories: usize) -> Vec<String> {
 // Dataset + batcher
 // ===========================================================================
 
-/// One training item: the token ids of one whole story.
+/// One training item: the cased tokens of one whole story.
 #[derive(Clone, Debug)]
 pub struct TinyStoriesItem {
-    /// Token ids of the story, `[story_len]`.
+    /// Cased tokens of the story, `[story_len]`.
     pub tokens: Vec<u8>,
 }
 
 /// The split's stories, one per item.
 pub struct TinyStoriesDataset {
-    /// One token-id vector per story (shared, so a clone of the dataset is
-    /// free).
+    /// One vector of cased tokens per story (shared, so a clone of the
+    /// dataset is free).
     stories: Arc<Vec<Vec<u8>>>,
     /// Window length: the BPTT span of one forward.
     seq_len: usize,
@@ -371,7 +425,7 @@ impl TinyStoriesDataset {
         let stories: Vec<Vec<u8>> = stories(split, n_stories)
             .iter()
             .map(|story| {
-                let mut tokens = VOCAB.encode(story);
+                let mut tokens = VOCAB.encode_cased(story);
                 tokens.truncate(max_tokens);
                 tokens
             })
@@ -422,11 +476,12 @@ impl Dataset<TinyStoriesItem> for TinyStoriesDataset {
 /// story. [`window`](Self::window) cuts one window out of it.
 #[derive(Clone, Debug)]
 pub struct TinyStoriesBatch {
-    /// Input token ids, `[batch_size, num_windows · seq_len]`.
-    pub inputs: Tensor<2, Int>,
-    /// Next-character targets (the inputs shifted by one),
-    /// `[batch_size, num_windows · seq_len]`.
-    pub targets: Tensor<2, Int>,
+    /// Input pairs (see [`pair`]), `[batch_size, num_windows · seq_len, 2]`:
+    /// the token id, then the case flag.
+    pub inputs: Tensor<3, Int>,
+    /// Next-character targets (the inputs shifted by one), as pairs:
+    /// `[batch_size, num_windows · seq_len, 2]`.
+    pub targets: Tensor<3, Int>,
     /// Real (non-padding) scored positions per batch slot: `story_len - 1` for
     /// the whole batch, and what is left of it for a [`window`](Self::window).
     pub scored: Vec<usize>,
@@ -473,7 +528,7 @@ impl TinyStoriesBatch {
         self.inputs.dims()[1] / self.seq_len
     }
 
-    /// Window `w` of the batch: the `[batch_size, seq_len]` slice of both
+    /// Window `w` of the batch: the `[batch_size, seq_len, 2]` slice of both
     /// tensors, with [`scored`](Self::scored) narrowed to what each slot still
     /// has left inside it (`0` for a story that ended earlier).
     ///
@@ -536,18 +591,18 @@ impl Batcher<TinyStoriesItem, TinyStoriesBatch> for TinyStoriesBatcher {
             .expect("a batch holds at least one story");
         let padded = windows * self.seq_len;
 
-        let mut inputs = Vec::with_capacity(batch_size * padded);
-        let mut targets = Vec::with_capacity(batch_size * padded);
+        let mut inputs = Vec::with_capacity(batch_size * padded * 2);
+        let mut targets = Vec::with_capacity(batch_size * padded * 2);
         for (item, &n) in items.iter().zip(&scored) {
-            // Token 0 pads both sides. `scored` drops every padded position
-            // from the loss, so the pad token matters only for the state of a
-            // slot whose story is already over.
-            inputs.extend(item.tokens[..n].iter().map(|&t| t as i32));
-            targets.extend(item.tokens[1..].iter().map(|&t| t as i32));
-            inputs.resize(inputs.len() + (padded - n), 0);
-            targets.resize(targets.len() + (padded - n), 0);
+            // The pair (0, 0) pads both sides. `scored` drops every padded
+            // position from the loss, so the pad token matters only for the
+            // state of a slot whose story is already over.
+            inputs.extend(item.tokens[..n].iter().flat_map(|&t| pair(t)));
+            targets.extend(item.tokens[1..].iter().flat_map(|&t| pair(t)));
+            inputs.resize(inputs.len() + (padded - n) * 2, 0);
+            targets.resize(targets.len() + (padded - n) * 2, 0);
         }
-        let shape = [batch_size, padded];
+        let shape = [batch_size, padded, 2];
         TinyStoriesBatch {
             inputs: Tensor::<1, Int>::from_ints(inputs.as_slice(), device).reshape(shape),
             targets: Tensor::<1, Int>::from_ints(targets.as_slice(), device).reshape(shape),
@@ -635,7 +690,7 @@ pub fn pack_rows(
     rows
 }
 
-/// One packed row: the token ids of its stories, in row order.
+/// One packed row: the cased tokens of its stories, in row order.
 #[derive(Clone, Debug)]
 pub struct PackedItem {
     /// The stories of the row.
@@ -670,7 +725,7 @@ impl PackedStoriesDataset {
         let stories: Vec<Vec<u8>> = stories(split, n_stories)
             .iter()
             .map(|story| {
-                let mut tokens = VOCAB.encode(story);
+                let mut tokens = VOCAB.encode_cased(story);
                 tokens.truncate(max_tokens);
                 tokens
             })
@@ -715,8 +770,8 @@ impl Dataset<PackedItem> for PackedStoriesDataset {
 /// A story takes `lead` opening slots, then its tokens but the last as
 /// inputs. The next token is the target of each input. The last opening slot
 /// is scored against the first token. The next story starts at the next
-/// multiple of `align`. Token 0 fills the slots and the gaps, which are not
-/// scored.
+/// multiple of `align`. The pair (0, 0) fills the slots and the gaps, which are
+/// not scored. Inputs and targets are pairs (see [`pair`]).
 #[derive(Clone)]
 pub struct PackedStoriesBatcher {
     /// Positions per row.
@@ -736,8 +791,8 @@ impl Batcher<PackedItem, TinyStoriesBatch> for PackedStoriesBatcher {
     fn batch(&self, items: Vec<PackedItem>, device: &Device) -> TinyStoriesBatch {
         let (width, PackLayout { align, lead }) = (self.width, self.layout);
         let rows = items.len();
-        let mut inputs = vec![0i32; rows * width];
-        let mut targets = vec![0i32; rows * width];
+        let mut inputs = vec![[0i32; 2]; rows * width];
+        let mut targets = vec![[0i32; 2]; rows * width];
         let mut score = vec![false; rows * width];
         let mut starts = vec![Vec::new(); rows];
         let mut scored = vec![0usize; rows];
@@ -750,22 +805,24 @@ impl Batcher<PackedItem, TinyStoriesBatch> for PackedStoriesBatcher {
                 starts[b].push(start);
                 let first = start + lead;
                 if lead > 0 {
-                    targets[row + first - 1] = tokens[0] as i32;
+                    targets[row + first - 1] = pair(tokens[0]);
                     score[row + first - 1] = true;
                 }
                 for j in 0..n {
-                    inputs[row + first + j] = tokens[j] as i32;
-                    targets[row + first + j] = tokens[j + 1] as i32;
+                    inputs[row + first + j] = pair(tokens[j]);
+                    targets[row + first + j] = pair(tokens[j + 1]);
                     score[row + first + j] = true;
                 }
                 scored[b] += n + usize::from(lead > 0);
                 start = (first + n).next_multiple_of(align);
             }
         }
-        let shape = [rows, width];
+        let pairs = |p: Vec<[i32; 2]>| {
+            Tensor::<1, Int>::from_ints(p.concat().as_slice(), device).reshape([rows, width, 2])
+        };
         TinyStoriesBatch {
-            inputs: Tensor::<1, Int>::from_ints(inputs.as_slice(), device).reshape(shape),
-            targets: Tensor::<1, Int>::from_ints(targets.as_slice(), device).reshape(shape),
+            inputs: pairs(inputs),
+            targets: pairs(targets),
             scored,
             seq_len: width,
             packed: Some(PackedRows {
@@ -774,7 +831,7 @@ impl Batcher<PackedItem, TinyStoriesBatch> for PackedStoriesBatcher {
                     burn::tensor::TensorData::new(score, [rows * width]),
                     device,
                 )
-                .reshape(shape),
+                .reshape([rows, width]),
             }),
         }
     }

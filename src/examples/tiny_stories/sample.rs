@@ -30,12 +30,14 @@
 //!
 //! Characters are drawn on the device ([`sample_token`]). So decoding waits
 //! for the device only to read the story back, one chunk at a time
-//! ([`READBACK`]).
+//! ([`READBACK`]). A character is a pair `(id, case flag)`: the id comes from
+//! the vocab logits, and the flag of a letter from the case logit (see
+//! [`dataset`](super::dataset)).
 
 #[cfg(test)]
 mod tests;
 
-use crate::examples::tiny_stories::dataset::{VOCAB, VOCAB_SIZE};
+use crate::examples::tiny_stories::dataset::{FIRST_LETTER, VOCAB, VOCAB_SIZE, pair, unpair};
 use crate::modules::{Block, CacheTensors, VocabNetwork};
 use crate::utils::graph::{CapturedStep, WARMUP_STEPS};
 use crate::utils::{ClassCursors, upcast};
@@ -57,7 +59,7 @@ use std::rc::Rc;
 /// be one). A model that splices nothing has no such opening and panics here.
 /// Prompt it, or write the sampler that its opening needs.
 ///
-/// A prompt is case-folded and filtered through the alphabet (see [`VOCAB`]),
+/// A prompt keeps its case, is filtered through the alphabet (see [`VOCAB`]),
 /// and must not come out empty. The same cursors splice the opening of the
 /// model in front of it, exactly as in training.
 ///
@@ -96,7 +98,7 @@ where
         // Prefill. Keep the cache and the logits of the last prompt character
         // (the next character is drawn from them).
         Some(prompt) => {
-            let tokens = VOCAB.encode(prompt);
+            let tokens = VOCAB.encode_cased(prompt);
             assert!(
                 !tokens.is_empty(),
                 "the prompt has no character inside the alphabet: {prompt:?}"
@@ -117,9 +119,9 @@ where
                 }
                 // One chunkwise pass over the opening and the whole prompt.
                 None => {
-                    let ids: Vec<i32> = tokens.iter().map(|&t| t as i32).collect();
-                    let input =
-                        Tensor::<1, Int>::from_ints(ids.as_slice(), device).reshape([1, ids.len()]);
+                    let pairs: Vec<i32> = tokens.iter().flat_map(|&t| pair(t)).collect();
+                    let input = Tensor::<1, Int>::from_ints(pairs.as_slice(), device)
+                        .reshape([1, tokens.len(), 2]);
                     let (logits, caches) =
                         model.forward(input, None, options, Some(&mut class), None);
                     let last = logits.dims()[1] - 1;
@@ -165,10 +167,11 @@ where
 /// of a consumer share this loop.
 ///
 /// The logits of the opening give the first character. Every later character
-/// costs a `step` on the character before it, and is drawn from its logits on
-/// the device ([`sample_token`]). The token is state, like the cache. The only
-/// thing that a step takes from the host is its uniform, and `rng` draws all
-/// of them at the start. The characters are read back [`READBACK`] at a time.
+/// costs a `step` on the character before it (its pair `[1, 2]`), and is
+/// drawn from its logits on the device ([`sample_token`]). The token is state,
+/// like the cache. The only thing that a step takes from the host is its two
+/// uniforms (the id and the case), and `rng` draws all of them at the start.
+/// The characters are read back [`READBACK`] at a time.
 ///
 /// With `capture`, the first [`WARMUP_STEPS`] steps run eagerly. The other
 /// steps replay one [`CapturedStep`] of the step and its draw, without
@@ -194,23 +197,23 @@ pub unsafe fn decode<C: CacheTensors>(
     temperature: f64,
     rng: &mut ChaCha8Rng,
     capture: bool,
-    mut step: impl FnMut(Tensor<1, Int>, C, Option<&mut ClassCursors>) -> (Tensor<2>, C),
+    mut step: impl FnMut(Tensor<2, Int>, C, Option<&mut ClassCursors>) -> (Tensor<2>, C),
 ) -> String {
     if n_chars == 0 {
         return String::new();
     }
-    // One uniform per character (none are used when greedy).
-    let draws: Vec<f32> = (0..n_chars)
-        .map(|_| if temperature > 0.0 { rng.random_range(0.0..1.0) } else { 0.0 })
-        .collect();
+    // Two uniforms per character, the id and the case (none are used when
+    // greedy).
+    let mut uniform = || if temperature > 0.0 { rng.random_range(0.0..1.0) } else { 0.0 };
+    let draws: Vec<[f32; 2]> = (0..n_chars).map(|_| [uniform(), uniform()]).collect();
     // In f32 whatever the dtype of the model. `sample_token` casts it to the
     // dtype that it draws in.
-    let draw = |i: usize| Tensor::<1>::from_data([draws[i]], (device, DType::F32));
+    let draw = |i: usize| Tensor::<1>::from_data(draws[i], (device, DType::F32));
 
     // One decode step, from the last token to the next. The token travels as a
-    // float id (exact), the kind that a captured state holds.
+    // float pair (exact), the kind that a captured state holds.
     let advance = move |u: Tensor<1>,
-                        (caches, token): (C, Tensor<1>),
+                        (caches, token): (C, Tensor<2>),
                         class: Option<&mut ClassCursors>| {
         let (logits, caches) = step(token.int(), caches, class);
         let token = sample_token(logits, temperature, u);
@@ -236,8 +239,8 @@ pub unsafe fn decode<C: CacheTensors>(
             Some(captured) => {
                 // Copied out of the output buffer of the graph, because the
                 // next replay overwrites it.
-                let token = captured.step_data(TensorData::from([draws[i]]));
-                token.empty_like().slice_assign([0..1], token.clone())
+                let token = captured.step_data(TensorData::from(draws[i]));
+                token.empty_like().slice_assign([0..1, 0..2], token.clone())
             }
             None => {
                 let advance = advance.as_mut().expect("stepped eagerly until captured");
@@ -253,7 +256,9 @@ pub unsafe fn decode<C: CacheTensors>(
         }
     }
     read_back(&mut tokens, &mut ids);
-    ids.into_iter().map(|id| VOCAB.character(id as u8)).collect()
+    ids.chunks(2)
+        .map(|p| VOCAB.character(unpair(p[0] as u8, p[1] == 1)))
+        .collect()
 }
 
 /// A prompt consumed into a cache `chunk` tokens at a time, with the last
@@ -282,21 +287,21 @@ pub struct Prefill<'a, C: CacheTensors> {
     opened: Rc<RefCell<ClassCursors>>,
     /// The chunk, until it is captured.
     run: Option<Box<ChunkFn<'a, C>>>,
-    captured: Option<CapturedStep<'a, Tensor<2, Int>, Tensor<2>, C>>,
+    captured: Option<CapturedStep<'a, Tensor<3, Int>, Tensor<2>, C>>,
     /// The chunks run eagerly so far. [`WARMUP_STEPS`] of them precede a
     /// capture.
     eager_chunks: usize,
 }
 
-/// One chunk: its ids (`-1` at the padding) and the cache before it → the
-/// logits of its last real row and the cache after it.
-type ChunkFn<'a, C> = dyn FnMut(Tensor<2, Int>, C) -> (Tensor<2>, C) + 'a;
+/// One chunk: its pairs `[1, chunk, 2]` (id `-1` at the padding) and the cache
+/// before it → the logits of its last real row and the cache after it.
+type ChunkFn<'a, C> = dyn FnMut(Tensor<3, Int>, C) -> (Tensor<2>, C) + 'a;
 
 impl<'a, C: CacheTensors + 'a> Prefill<'a, C> {
-    /// `forward` runs one chunk from a cache. It takes the `[1, chunk]` ids,
-    /// the cache, the `pad` mask of the chunk (`true` at padding) and the
-    /// cursors that the opening left. It returns the logits `[1, chunk, vocab]`
-    /// and the cache after the chunk. Where no hardware graph is available,
+    /// `forward` runs one chunk from a cache. It takes the `[1, chunk, 2]`
+    /// token pairs, the cache, the `pad` mask of the chunk (`true` at padding)
+    /// and the cursors that the opening left. It returns the logits
+    /// `[1, chunk, vocab + 1]` and the cache after the chunk. Where no hardware graph is available,
     /// the captured chunk runs eagerly. So `capture` changes the speed, never
     /// the text.
     ///
@@ -310,17 +315,17 @@ impl<'a, C: CacheTensors + 'a> Prefill<'a, C> {
         device: &Device,
         chunk: usize,
         capture: bool,
-        mut forward: impl FnMut(Tensor<2, Int>, C, Tensor<2, Bool>, &mut ClassCursors) -> (Tensor<3>, C)
+        mut forward: impl FnMut(Tensor<3, Int>, C, Tensor<2, Bool>, &mut ClassCursors) -> (Tensor<3>, C)
         + 'a,
     ) -> Self {
         assert!(chunk > 0, "a prefill chunk holds at least one token");
         let opened = Rc::new(RefCell::new(ClassCursors::stream()));
         let run = {
             let opened = opened.clone();
-            move |x: Tensor<2, Int>, caches: C| {
-                // The mask, the ids and the last real row all come from `x`, on
-                // the device.
-                let pad = x.clone().lower_elem(0);
+            move |x: Tensor<3, Int>, caches: C| {
+                // The mask, the pairs and the last real row all come from `x`,
+                // on the device.
+                let pad = x.clone().narrow(2, 0, 1).squeeze_dim::<2>(2).lower_elem(0);
                 let last = pad.clone().bool_not().int().sum_dim(1).sub_scalar(1).reshape([1]);
                 let mut class = opened.borrow().clone();
                 let (logits, caches) = forward(x.clamp_min(0), caches, pad, &mut class);
@@ -345,9 +350,9 @@ impl<'a, C: CacheTensors + 'a> Prefill<'a, C> {
         self.captured.as_ref().is_some_and(|c| c.is_captured())
     }
 
-    /// Consume `prompt` (token ids, not empty) after the opening. Returns the
-    /// logits of its last token (`[1, vocab]`, the next token is drawn from
-    /// them), the cache after it, and the cursors to continue with. `open` runs
+    /// Consume `prompt` (cased tokens, not empty) after the opening. Returns
+    /// the logits of its last token (`[1, vocab + 1]`, the next token is drawn
+    /// from them), the cache after it, and the cursors to continue with. `open` runs
     /// the opening at the first call only: `prime` from a zero cache and new
     /// cursors, or `None` when there is nothing to prime. With no opening,
     /// there is nothing to continue, and this returns `None`.
@@ -360,12 +365,13 @@ impl<'a, C: CacheTensors + 'a> Prefill<'a, C> {
         let (caches, class) = self.opening.get_or_insert_with(open).clone()?;
         *self.opened.borrow_mut() = class.clone();
         let chunk = self.chunk;
+        // The pairs of chunk `k`, with the pair (-1, 0) at the padding.
         let ids = |k: usize| {
-            let mut ids = vec![-1i32; chunk];
-            for (id, &token) in ids.iter_mut().zip(&prompt[k * chunk..]) {
-                *id = token as i32;
+            let mut pairs = vec![[-1i32, 0]; chunk];
+            for (p, &token) in pairs.iter_mut().zip(&prompt[k * chunk..]) {
+                *p = pair(token);
             }
-            TensorData::new(ids, [1, chunk])
+            TensorData::new(pairs.concat(), [1, chunk, 2])
         };
         let mut caches = Some(caches);
         let mut logits = None;
@@ -413,36 +419,51 @@ impl<'a, C: CacheTensors + 'a> Prefill<'a, C> {
 /// by the device, so a sync per chunk costs it almost nothing.
 pub const READBACK: usize = 32;
 
-/// Move `tokens` to the host, onto `ids`.
-fn read_back(tokens: &mut Vec<Tensor<1, Int>>, ids: &mut Vec<i64>) {
+/// Move `tokens` (pairs `[1, 2]`) to the host, onto `ids` (flat pairs).
+fn read_back(tokens: &mut Vec<Tensor<2, Int>>, ids: &mut Vec<i64>) {
     if !tokens.is_empty() {
         ids.extend(Tensor::cat(std::mem::take(tokens), 0).into_data().iter::<i64>());
     }
 }
 
-/// Draw one token from `logits` (`[1, VOCAB_SIZE]`) on the device. The token
-/// is the first one whose cumulative temperature-scaled probability reaches
-/// the uniform `draw` (`[1]`, in `[0, 1)`). When `temperature <= 0`, it is the
-/// argmax (`draw` is not used).
+/// Draw one token, the pair `[1, 2]` (id, case flag), from `logits`
+/// (`[1, VOCAB_SIZE + 1]`) on the device, with the uniforms `draw` (`[2]`, in
+/// `[0, 1)`).
 ///
-/// The running total never decreases, so that first token is the count of
-/// totals below `draw`. The count is clamped, because rounding can leave the
-/// last total short of 1. The last token then takes the remainder. Nothing is
-/// read back.
+/// - The id is the first one whose cumulative temperature-scaled probability
+///   reaches `draw[0]`. The running total never decreases, so that first id
+///   is the count of totals below the draw. The count is clamped, because
+///   rounding can leave the last total short of 1. The last id then takes the
+///   remainder.
+/// - The flag is 1 when `draw[1]` is below `σ(z / temperature)`, with `z` the
+///   case logit, and when the id is a letter. A symbol has no case.
+///
+/// When `temperature <= 0`, the id is the argmax and the flag is `z > 0` (the
+/// draws are not used). Nothing is read back.
 ///
 /// The draw is in f32 for an f16, bf16 or f32 model, and in f64 for an f64
-/// model. In f16, the step of the running total below 1 is `4.9·10⁻⁴`, so a
-/// token with a smaller probability near the end of the total could get no
+/// model. In f16, the step of the running total below 1 is `4.9·10⁻⁴`, so an
+/// id with a smaller probability near the end of the total could get no
 /// interval, and the f16 `draw` has the same step.
-pub fn sample_token(logits: Tensor<2>, temperature: f64, draw: Tensor<1>) -> Tensor<1, Int> {
-    assert_eq!([1, VOCAB_SIZE], logits.dims());
-    if temperature <= 0.0 {
-        return logits.argmax(1).reshape([1]);
-    }
-    let (logits, _) = upcast(logits);
-    let dtype = logits.dtype();
-    let cumulative = softmax(logits / temperature, 1).cumsum(1);
-    let draw = draw.cast(dtype).reshape([1, 1]).expand([1, VOCAB_SIZE]);
-    let below = cumulative.lower(draw).int().sum_dim(1);
-    below.clamp_max(VOCAB_SIZE as i64 - 1).reshape([1])
+pub fn sample_token(logits: Tensor<2>, temperature: f64, draw: Tensor<1>) -> Tensor<2, Int> {
+    assert_eq!([1, VOCAB_SIZE + 1], logits.dims());
+    let case = logits.clone().narrow(1, VOCAB_SIZE, 1);
+    let logits = logits.narrow(1, 0, VOCAB_SIZE);
+    let (id, upper) = if temperature <= 0.0 {
+        (logits.argmax(1), case.greater_elem(0))
+    } else {
+        let (logits, _) = upcast(logits);
+        let (case, _) = upcast(case);
+        let dtype = logits.dtype();
+        let draw = draw.cast(dtype);
+        let cumulative = softmax(logits / temperature, 1).cumsum(1);
+        let draw_id = draw.clone().narrow(0, 0, 1).reshape([1, 1]).expand([1, VOCAB_SIZE]);
+        let below = cumulative.lower(draw_id).int().sum_dim(1);
+        let p_upper = burn::tensor::activation::sigmoid(case / temperature);
+        let draw_case = draw.narrow(0, 1, 1).reshape([1, 1]);
+        (below.clamp_max(VOCAB_SIZE as i64 - 1), draw_case.lower(p_upper))
+    };
+    let letter = id.clone().greater_equal_elem(FIRST_LETTER as i64);
+    let flag = upper.bool_and(letter).int();
+    Tensor::cat(vec![id, flag], 1)
 }

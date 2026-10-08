@@ -38,8 +38,16 @@ fn assert_caches(label: &str, a: &RefCaches, b: &RefCaches) {
     }
 }
 
+/// The token pairs `(id, flag)` of step `k`, flat `[BATCH · 2]`.
 fn tokens(k: usize) -> Vec<i32> {
-    (0..BATCH).map(|b| ((k * 7 + b * 3 + 1) % VOCAB) as i32).collect()
+    (0..BATCH)
+        .flat_map(|b| [((k * 7 + b * 3 + 1) % VOCAB) as i32, ((k + b) % 2) as i32])
+        .collect()
+}
+
+/// [`tokens`] as a `[BATCH, 2]` tensor.
+fn token_pairs(k: usize, device: &Device) -> Tensor<2, Int> {
+    Tensor::<1, Int>::from_ints(tokens(k).as_slice(), device).reshape([BATCH, 2])
 }
 
 /// Two real layers, opened by two `Start` latents: after `prime`, a step with
@@ -64,8 +72,7 @@ fn eager_run(net: &VocabNetwork<RefBlock>, device: &Device) -> (Vec<Tensor<2>>, 
     let mut caches = caches.expect("two Start latents leave a cache");
     let mut outs = Vec::new();
     for k in 0..STEPS {
-        let x = Tensor::<1, Int>::from_ints(tokens(k).as_slice(), device);
-        let (y, c) = net.step(x, Some(caches), Some(&mut class));
+        let (y, c) = net.step(token_pairs(k, device), Some(caches), Some(&mut class));
         outs.push(y);
         caches = c;
     }
@@ -81,10 +88,9 @@ fn captured_token_steps_are_the_eager_steps() {
 
     let mut class = ClassCursors::stream();
     let (_, caches) = net.prime(BATCH, None, Some(&mut class));
-    let x = Tensor::<1, Int>::from_ints(tokens(0).as_slice(), &device);
-    let (y0, caches) = net.step(x, caches, Some(&mut class));
+    let (y0, caches) = net.step(token_pairs(0, &device), caches, Some(&mut class));
     let opening = caches.clone();
-    let x = Tensor::<1, Int>::from_ints(tokens(1).as_slice(), &device);
+    let x = token_pairs(1, &device);
     // Safety: the step reads nothing but its arguments and `net`, borrowed.
     let mut captured =
         unsafe { CapturedStep::capture(&device, x, caches, |x, c| net.step(x, Some(c), None)) };
@@ -93,7 +99,7 @@ fn captured_token_steps_are_the_eager_steps() {
     let d = max_abs_diff(y0, eager[0].clone());
     assert_eq!(d, 0.0, "step 0 differs by {d}");
     for k in 1..STEPS {
-        let data = TensorData::new(tokens(k), [BATCH]);
+        let data = TensorData::new(tokens(k), [BATCH, 2]);
         // Compared at once: the next replay overwrites it.
         let y = captured.step_data(data).clone();
         let d = max_abs_diff(y, eager[k].clone());
@@ -104,7 +110,7 @@ fn captured_token_steps_are_the_eager_steps() {
     // Setting the state in place restarts from it.
     captured.set_caches(opening);
     for k in 1..STEPS {
-        let data = TensorData::new(tokens(k), [BATCH]);
+        let data = TensorData::new(tokens(k), [BATCH, 2]);
         let y = captured.step_data(data).clone();
         let d = max_abs_diff(y, eager[k].clone());
         assert_eq!(d, 0.0, "restarted step {k} differs by {d}");

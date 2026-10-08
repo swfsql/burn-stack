@@ -3,9 +3,12 @@
 //! - [`pack_rows`] places every story exactly once, at aligned starts, and no
 //!   row overflows. One open row keeps the order of the stories.
 //! - [`PackedStoriesBatcher`] lays out the slots, the inputs, the targets and
-//!   the scored positions of each story where the packer put it.
+//!   the scored positions of each story where the packer put it, and splits
+//!   each cased token into its pair `(id, flag)`.
+//! - The cased tokens of a text keep its case, and fold onto the ids of
+//!   [`VOCAB::encode`](super::Vocab::encode).
 
-use super::{PackLayout, PackedItem, PackedStoriesBatcher, pack_rows};
+use super::{PackLayout, PackedItem, PackedStoriesBatcher, UPPER, VOCAB, pack_rows, pair, unpair};
 use burn::data::dataloader::batcher::Batcher;
 use burn::prelude::*;
 use crate::utils::test_helpers::test_device;
@@ -54,45 +57,73 @@ fn packed_batcher_lays_out_each_story() {
     let width = 16;
     // Row 0: a story of 3 tokens at 0 (slots 0..2, inputs 2..4, next at 4).
     // Then a story of 5 tokens at 4 (slots 4..6, inputs 6..10). Row 1: one
-    // story of 2 tokens at 0.
+    // story of 2 tokens at 0. Some tokens are upper case.
+    let (s0, s1, s2) = (
+        [30 | UPPER, 31, 32],
+        [40, 41 | UPPER, 42, 43, 44 | UPPER],
+        [25 | UPPER, 26],
+    );
     let items = vec![
         PackedItem {
-            stories: vec![vec![10, 11, 12], vec![20, 21, 22, 23, 24]],
+            stories: vec![s0.to_vec(), s1.to_vec()],
         },
         PackedItem {
-            stories: vec![vec![30, 31]],
+            stories: vec![s2.to_vec()],
         },
     ];
     let device = test_device();
     let batch = PackedStoriesBatcher::new(width, layout).batch(items, &device);
     let packed = batch.packed.expect("a packed batch");
     let ints = |t: Tensor<2, Int>| t.into_data().convert::<i64>().try_to_vec::<i64>().unwrap();
+    let pairs = |t: Tensor<3, Int>| t.into_data().convert::<i64>().try_to_vec::<i64>().unwrap();
     let bools = |t: Tensor<2, Bool>| t.into_data().try_to_vec::<bool>().unwrap();
 
-    let mut inputs = vec![0i64; 2 * width];
-    let mut targets = vec![0i64; 2 * width];
+    let mut inputs = vec![[0i64; 2]; 2 * width];
+    let mut targets = vec![[0i64; 2]; 2 * width];
     let mut score = vec![false; 2 * width];
     let mut reset = vec![false; 2 * width];
     let mut latent = vec![-1i64; 2 * width];
+    let id_flag = |t: u8| pair(t).map(i64::from);
     // (row, start, tokens)
-    for (b, start, tokens) in [(0, 0, &[10, 11, 12][..]), (0, 4, &[20, 21, 22, 23, 24]), (1, 0, &[30, 31])] {
+    for (b, start, tokens) in [(0, 0, &s0[..]), (0, 4, &s1[..]), (1, 0, &s2[..])] {
         let at = b * width + start;
         reset[at] = true;
         latent[at] = 0;
         latent[at + 1] = 1;
-        targets[at + 1] = tokens[0];
+        targets[at + 1] = id_flag(tokens[0]);
         score[at + 1] = true;
         for j in 0..tokens.len() - 1 {
-            inputs[at + 2 + j] = tokens[j];
-            targets[at + 2 + j] = tokens[j + 1];
+            inputs[at + 2 + j] = id_flag(tokens[j]);
+            targets[at + 2 + j] = id_flag(tokens[j + 1]);
             score[at + 2 + j] = true;
         }
     }
-    assert_eq!(ints(batch.inputs), inputs);
-    assert_eq!(ints(batch.targets), targets);
+    assert_eq!(pairs(batch.inputs), inputs.concat());
+    assert_eq!(pairs(batch.targets), targets.concat());
     assert_eq!(bools(packed.score_bs), score);
     assert_eq!(bools(packed.layout.reset_bs), reset);
     assert_eq!(ints(packed.layout.latent_bs), latent);
     assert_eq!(batch.scored, vec![3 + 5, 2]);
     assert_eq!(batch.seq_len, width);
+}
+
+#[test]
+fn cased_tokens_keep_the_case() {
+    let text = "Hi, Lily! I'm Tom.";
+    let cased = VOCAB.encode_cased(text);
+    assert_eq!(VOCAB.decode(&cased), text);
+    // The ids fold the case.
+    let ids: Vec<u8> = cased.iter().map(|&t| pair(t)[0] as u8).collect();
+    assert_eq!(ids, VOCAB.encode(text));
+    // The flags mark A-Z only.
+    let flags: Vec<bool> = cased.iter().map(|&t| pair(t)[1] == 1).collect();
+    let upper: Vec<bool> = text.bytes().map(|b| b.is_ascii_uppercase()).collect();
+    assert_eq!(flags, upper);
+    // A pair goes back to its cased token, and a flag on a symbol is dropped.
+    for &t in &cased {
+        let [id, flag] = pair(t);
+        assert_eq!(unpair(id as u8, flag == 1), t);
+    }
+    let bang = VOCAB.token(b'!').unwrap();
+    assert_eq!(unpair(bang, true), bang);
 }
