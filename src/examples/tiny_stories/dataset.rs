@@ -74,6 +74,15 @@
 //! ([`PackLayout`]). The packer fills the rows first-fit, over a few open rows
 //! ([`pack_rows`]). No state goes from one packed batch to the next. Only the
 //! train split is packed.
+//!
+//! # Length buckets
+//!
+//! A model that takes no packed rows can still waste less on padding. A
+//! bucketed batch ([`BucketedStoriesDataset`], [`BucketedStoriesBatcher`]) is
+//! one window of stories of similar length: each story goes to the shortest
+//! of a few *slots* (batch lengths) that holds it ([`bucket_batches`]). Each
+//! slot takes as many stories as score about the same number of characters,
+//! so a slot has one batch shape. Only the train split is bucketed.
 
 #[cfg(test)]
 mod tests;
@@ -834,5 +843,166 @@ impl Batcher<PackedItem, TinyStoriesBatch> for PackedStoriesBatcher {
                 .reshape([rows, width]),
             }),
         }
+    }
+}
+
+// ===========================================================================
+// Length buckets
+// ===========================================================================
+
+/// Group stories into batches of similar length (the *buckets*). Returns the
+/// slot and the stories of each batch, slot after slot.
+///
+/// `lens` holds the scored count of each story (its tokens less one), and
+/// `order` the order in which to take them (a shuffle). `slots` are the batch
+/// lengths, ascending. A story goes to the shortest slot that holds it. A
+/// slot takes `round(chars / m)` stories per batch, where `m` is the mean
+/// scored count of its own stories. So each batch scores about `chars`
+/// characters, and a slot has one batch shape. The stories that do not fill
+/// a last batch move up to the next slot. The last slot can end with one
+/// smaller batch.
+///
+/// # Panics
+/// If the slots do not ascend strictly, or a story is longer than the
+/// longest slot.
+pub fn bucket_batches(
+    lens: &[usize],
+    order: &[usize],
+    slots: &[usize],
+    chars: usize,
+) -> Vec<(usize, Vec<usize>)> {
+    assert!(
+        !slots.is_empty() && slots.windows(2).all(|w| w[0] < w[1]),
+        "the slots must ascend strictly: {slots:?}"
+    );
+    let mut members = vec![Vec::new(); slots.len()];
+    for &story in order {
+        let k = slots
+            .iter()
+            .position(|&slot| lens[story] <= slot)
+            .expect("a story is longer than the longest slot");
+        members[k].push(story);
+    }
+    let mut batches = Vec::new();
+    let mut carry: Vec<usize> = Vec::new();
+    for (own, &slot) in members.iter().zip(slots) {
+        if own.is_empty() {
+            continue;
+        }
+        let mean = own.iter().map(|&s| lens[s]).sum::<usize>() as f64 / own.len() as f64;
+        let size = ((chars as f64 / mean).round() as usize).max(1);
+        let mut queue: Vec<usize> = carry.drain(..).chain(own.iter().copied()).collect();
+        carry = queue.split_off(queue.len() / size * size);
+        batches.extend(queue.chunks(size).map(|batch| (slot, batch.to_vec())));
+    }
+    if !carry.is_empty() {
+        batches.push((*slots.last().unwrap(), carry));
+    }
+    batches
+}
+
+/// One batch of stories of similar length (see [`bucket_batches`]).
+#[derive(Clone, Debug)]
+pub struct BucketItem {
+    /// The positions of each row of the batch.
+    pub slot: usize,
+    /// The stories of the batch.
+    pub stories: Vec<Vec<u8>>,
+}
+
+/// The train split as batches of similar length (see [`bucket_batches`]).
+/// One item is one whole batch, so its dataloader takes one item per batch.
+pub struct BucketedStoriesDataset {
+    /// The stories, each truncated to the longest slot.
+    stories: Arc<Vec<Vec<u8>>>,
+    /// The slot and the stories of each batch.
+    batches: Vec<(usize, Vec<usize>)>,
+}
+
+impl BucketedStoriesDataset {
+    /// Group `n_stories` of `split` into batches of `slots` positions that
+    /// score about `chars` characters each, in the order of a shuffle with
+    /// `seed`. A story longer than the longest slot is truncated to fit.
+    pub fn new(split: Split, n_stories: usize, slots: &[usize], chars: usize, seed: u64) -> Self {
+        use rand::SeedableRng;
+        use rand::seq::SliceRandom;
+        let longest = *slots.iter().max().expect("at least one slot");
+        let stories: Vec<Vec<u8>> = stories(split, n_stories)
+            .iter()
+            .map(|story| {
+                let mut tokens = VOCAB.encode_cased(story);
+                tokens.truncate(longest + 1);
+                tokens
+            })
+            .filter(|tokens| tokens.len() >= 2)
+            .collect();
+        let lens: Vec<usize> = stories.iter().map(|tokens| tokens.len() - 1).collect();
+        let mut order: Vec<usize> = (0..stories.len()).collect();
+        order.shuffle(&mut rand_chacha::ChaCha8Rng::seed_from_u64(seed));
+        let batches = bucket_batches(&lens, &order, slots, chars);
+        Self {
+            stories: Arc::new(stories),
+            batches,
+        }
+    }
+
+    /// Total number of characters in the stories.
+    pub fn num_tokens(&self) -> usize {
+        self.stories.iter().map(Vec::len).sum()
+    }
+
+    /// The batches: the items of the dataset.
+    pub fn num_batches(&self) -> usize {
+        self.batches.len()
+    }
+
+    /// The share of the positions of all batches that are scored.
+    pub fn fill(&self) -> f64 {
+        let positions: usize = self.batches.iter().map(|(slot, batch)| slot * batch.len()).sum();
+        let scored: usize = self.stories.iter().map(|tokens| tokens.len() - 1).sum();
+        scored as f64 / positions as f64
+    }
+
+    /// Each slot as `slot: batches × stories` (the stories of its first
+    /// batch).
+    pub fn summary(&self) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        let mut i = 0;
+        while i < self.batches.len() {
+            let (slot, size) = (self.batches[i].0, self.batches[i].1.len());
+            let n = self.batches[i..].iter().take_while(|(s, _)| *s == slot).count();
+            parts.push(format!("{slot}: {n} × {size}"));
+            i += n;
+        }
+        parts.join(", ")
+    }
+}
+
+impl Dataset<BucketItem> for BucketedStoriesDataset {
+    fn get(&self, index: usize) -> Result<BucketItem, DatasetError> {
+        let (slot, batch) = &self.batches[index];
+        Ok(BucketItem {
+            slot: *slot,
+            stories: batch.iter().map(|&s| self.stories[s].clone()).collect(),
+        })
+    }
+
+    fn len(&self) -> usize {
+        self.batches.len()
+    }
+}
+
+/// Stacks the one [`BucketItem`] of a batch into a one-window
+/// [`TinyStoriesBatch`] of `[stories, slot]`, as [`TinyStoriesBatcher`] pads
+/// it.
+#[derive(Clone, Default)]
+pub struct BucketedStoriesBatcher;
+
+impl Batcher<BucketItem, TinyStoriesBatch> for BucketedStoriesBatcher {
+    fn batch(&self, items: Vec<BucketItem>, device: &Device) -> TinyStoriesBatch {
+        let [item] = <[BucketItem; 1]>::try_from(items)
+            .expect("a bucketed dataloader takes one item (one batch) per batch");
+        let stories = item.stories.into_iter().map(|tokens| TinyStoriesItem { tokens }).collect();
+        TinyStoriesBatcher::new(item.slot).batch(stories, device)
     }
 }

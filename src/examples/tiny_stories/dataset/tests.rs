@@ -5,10 +5,15 @@
 //! - [`PackedStoriesBatcher`] lays out the slots, the inputs, the targets and
 //!   the scored positions of each story where the packer put it, and splits
 //!   each cased token into its pair `(id, flag)`.
+//! - [`bucket_batches`] places every story exactly once, in a slot that holds
+//!   it, with one batch shape per slot.
 //! - The cased tokens of a text keep its case, and fold onto the ids of
 //!   [`VOCAB::encode`](super::Vocab::encode).
 
-use super::{PackLayout, PackedItem, PackedStoriesBatcher, UPPER, VOCAB, pack_rows, pair, unpair};
+use super::{
+    PackLayout, PackedItem, PackedStoriesBatcher, UPPER, VOCAB, bucket_batches, pack_rows, pair,
+    unpair,
+};
 use burn::data::dataloader::batcher::Batcher;
 use burn::prelude::*;
 use crate::utils::test_helpers::test_device;
@@ -48,6 +53,33 @@ fn pack_rows_places_every_story_once_and_fits() {
             let flat: Vec<usize> = rows.concat();
             assert_eq!(flat, order, "one open row keeps the order");
         }
+    }
+}
+
+#[test]
+fn bucket_batches_place_every_story_once_and_fit() {
+    let slots = [16, 32, 64];
+    let lens: Vec<usize> = lens(500, 64).iter().map(|n| n - 1).collect();
+    let order: Vec<usize> = (0..lens.len()).rev().collect();
+    let batches = bucket_batches(&lens, &order, &slots, 120);
+    let mut seen = vec![0; lens.len()];
+    for (slot, batch) in &batches {
+        assert!(!batch.is_empty(), "no empty batch");
+        for &story in batch {
+            seen[story] += 1;
+            assert!(lens[story] <= *slot, "a story is longer than its slot");
+        }
+    }
+    assert!(seen.iter().all(|&n| n == 1), "every story in exactly one batch");
+    // One batch shape per slot, except one smaller last batch.
+    for &slot in &slots {
+        let sizes: Vec<usize> =
+            batches.iter().filter(|(s, _)| *s == slot).map(|(_, b)| b.len()).collect();
+        let tail = usize::from(slot == 64);
+        assert!(
+            sizes[..sizes.len() - tail].iter().all(|&n| n == sizes[0]),
+            "slot {slot}: sizes {sizes:?}"
+        );
     }
 }
 

@@ -69,8 +69,9 @@ mod tests;
 use crate::examples::cli::AppArgs;
 use crate::examples::device::loader_device;
 use crate::examples::tiny_stories::dataset::{
-    FIRST_LETTER, PackLayout, PackedStoriesBatcher, PackedStoriesDataset, Split,
-    TinyStoriesBatch, TinyStoriesBatcher, TinyStoriesDataset, VOCAB_SIZE,
+    BucketedStoriesBatcher, BucketedStoriesDataset, FIRST_LETTER, PackLayout,
+    PackedStoriesBatcher, PackedStoriesDataset, Split, TinyStoriesBatch, TinyStoriesBatcher,
+    TinyStoriesDataset, VOCAB_SIZE,
 };
 use crate::examples::session::{Cadence, Session, TrainingProgress};
 use crate::examples::training::{TrainingConfig, metric_current};
@@ -122,16 +123,37 @@ pub struct TinyStoriesConfig {
     /// `run_len` and the batch size of [`Self::training`].
     #[config(default = "None")]
     pub pack: Option<Pack>,
+    /// Train on batches of similar length (see [`Bucket`]). `None`: every
+    /// batch draws `batch_size` stories at random. Not with [`Self::pack`].
+    #[config(default = "None")]
+    pub bucket: Option<Bucket>,
 }
 
 impl TinyStoriesConfig {
-    /// Items per train batch: rows when packed, else stories.
+    /// Items per train batch: rows when packed, one batch when bucketed, else
+    /// stories.
     pub fn train_batch_size(&self) -> usize {
-        match &self.pack {
-            Some(pack) => pack.rows,
-            None => self.training.batch_size,
+        match (&self.pack, &self.bucket) {
+            (Some(pack), _) => pack.rows,
+            (None, Some(_)) => 1,
+            (None, None) => self.training.batch_size,
         }
     }
+}
+
+/// The geometry of length-bucketed training (see
+/// [`bucket_batches`](super::dataset::bucket_batches)). A batch is one window
+/// of its slot, so the train windows ignore `seq_len` and `run_len` (the
+/// validation keeps them).
+#[derive(Config, Debug)]
+pub struct Bucket {
+    /// The batch lengths, ascending. A story goes to the shortest slot that
+    /// holds it. The longest slot truncates a story (4,149 characters keep
+    /// every story whole).
+    pub slots: Vec<usize>,
+    /// The scored characters per batch. A slot takes `round(chars / m)`
+    /// stories, `m` the mean length of its stories.
+    pub chars: usize,
 }
 
 /// The geometry of packed training (see [`dataset`](super::dataset)).
@@ -269,6 +291,22 @@ pub struct Overrides {
     pub pack_open: Option<usize>,
     /// `--no-pack`: train on one story per batch slot.
     pub no_pack: bool,
+    /// `--buckets <a,b,…>`: train on length buckets with these slots.
+    pub buckets: Option<Vec<usize>>,
+    /// `--bucket-chars <usize>`: scored characters per bucketed batch.
+    pub bucket_chars: Option<usize>,
+    /// `--no-bucket`: train on batches drawn at random.
+    pub no_bucket: bool,
+}
+
+/// A comma-separated list of positive integers (`--buckets`).
+fn parse_slots(arg: &str) -> Result<Vec<usize>, String> {
+    arg.split(',')
+        .map(|s| match s.trim().parse::<usize>() {
+            Ok(n) if n >= 1 => Ok(n),
+            _ => Err(format!("slot {s:?} is not a positive integer")),
+        })
+        .collect()
 }
 
 impl Overrides {
@@ -283,7 +321,10 @@ impl Overrides {
         "    --pack <W>             Train on packed rows of W positions, each row whole stories (needs --pack-rows once)\n",
         "    --pack-rows <N>        Rows per packed batch\n",
         "    --pack-open <K>        Open rows of the packer (default 8; 1 keeps the shuffled order)\n",
-        "    --no-pack              Train on one story per batch slot",
+        "    --no-pack              Train on one story per batch slot\n",
+        "    --buckets <A,B,…>      Train on batches of similar length: each story goes to the shortest slot that holds it (needs --bucket-chars once)\n",
+        "    --bucket-chars <N>     Scored characters per bucketed batch\n",
+        "    --no-bucket            Train on batches of stories drawn at random",
     );
 
     /// Take these flags out of the parser of the example, over the arguments
@@ -301,6 +342,9 @@ impl Overrides {
             pack_rows: pargs.opt_value_from_str("--pack-rows").unwrap(),
             pack_open: pargs.opt_value_from_str("--pack-open").unwrap(),
             no_pack: pargs.contains("--no-pack"),
+            buckets: pargs.opt_value_from_fn("--buckets", parse_slots).unwrap(),
+            bucket_chars: pargs.opt_value_from_str("--bucket-chars").unwrap(),
+            no_bucket: pargs.contains("--no-bucket"),
         }
     }
 
@@ -351,6 +395,31 @@ impl Overrides {
             None => assert!(
                 self.pack_rows.is_none() && self.pack_open.is_none(),
                 "--pack-rows and --pack-open need packed training (--pack)"
+            ),
+        }
+        assert!(
+            !(self.no_bucket && self.buckets.is_some()),
+            "--buckets and --no-bucket contradict each other"
+        );
+        if self.no_bucket {
+            config.bucket = None;
+        }
+        if let Some(slots) = &self.buckets {
+            let chars = self
+                .bucket_chars
+                .or(config.bucket.as_ref().map(|bucket| bucket.chars))
+                .expect("--buckets needs --bucket-chars (scored characters per batch)");
+            config.bucket = Some(Bucket::new(slots.clone(), chars));
+        }
+        match config.bucket.as_mut() {
+            Some(bucket) => {
+                if let Some(chars) = self.bucket_chars {
+                    bucket.chars = chars;
+                }
+            }
+            None => assert!(
+                self.bucket_chars.is_none(),
+                "--bucket-chars needs bucketed training (--buckets)"
             ),
         }
     }
@@ -449,8 +518,9 @@ pub fn dataloaders(
 /// `progress` resumes (see [`TrainingProgress::shuffle_seed`]).
 ///
 /// With [`TinyStoriesConfig::pack`], the train split is packed into rows with
-/// the `layout` of the model, in the order of that same shuffle. The
-/// validation split is never packed.
+/// the `layout` of the model, in the order of that same shuffle. With
+/// [`TinyStoriesConfig::bucket`], the train split is grouped into batches of
+/// similar length. The validation split is never packed nor bucketed.
 pub fn dataloaders_for(
     config: &TinyStoriesConfig,
     training_device: &Device,
@@ -468,8 +538,41 @@ pub fn dataloaders_for(
     // The workers build batches on the host, and the loops move them to the
     // device. A worker that uploads to the GPU from its own thread can
     // invalidate a graph under capture (see `loader_device`).
-    let dataloader_train: Dataloader = match &config.pack {
-        None => {
+    assert!(
+        config.pack.is_none() || config.bucket.is_none(),
+        "packed rows and length buckets exclude each other"
+    );
+    let dataloader_train: Dataloader = match (&config.pack, &config.bucket) {
+        (None, Some(bucket)) => {
+            let train_set = BucketedStoriesDataset::new(
+                Split::Train,
+                config.train_stories,
+                &bucket.slots,
+                bucket.chars,
+                seed,
+            );
+            println!(
+                "corpus: {} train characters in {} bucketed batches of ~{} scored characters \
+                 ({:.3} of the positions; slot: batches × stories {})",
+                train_set.num_tokens(),
+                train_set.num_batches(),
+                bucket.chars,
+                train_set.fill(),
+                train_set.summary(),
+            );
+            println!(
+                "corpus: {} valid characters ({} windows of {seq_len}, one run per story, {cap})",
+                valid_set.num_tokens(),
+                valid_set.num_windows(),
+            );
+            DataLoaderBuilder::new(BucketedStoriesBatcher)
+                .batch_size(1)
+                .shuffle(seed)
+                .num_workers(config.training.num_workers)
+                .set_device(loader_device(training_device))
+                .build(train_set)
+        }
+        (None, None) => {
             let train_set =
                 TinyStoriesDataset::new(Split::Train, config.train_stories, seq_len, run_len);
             println!(
@@ -487,7 +590,7 @@ pub fn dataloaders_for(
                 .set_device(loader_device(training_device))
                 .build(train_set)
         }
-        Some(pack) => {
+        (Some(pack), _) => {
             let train_set = PackedStoriesDataset::new(
                 Split::Train,
                 config.train_stories,

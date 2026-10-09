@@ -198,9 +198,12 @@ src/
 │                    per-slot `scored` count; cased tokens: UPPER, pair). Packed
 │                    train rows: pack_rows (first-fit over open rows, at the
 │                    PackLayout of the model), PackedStoriesDataset/Batcher,
-│                    TinyStoriesBatch::packed.
-│                    lm.rs: TinyStoriesConfig (+ `pack`) + its corpus-flag
-│                    Overrides (--pack/--pack-rows/--pack-open/--no-pack),
+│                    TinyStoriesBatch::packed. Length buckets: bucket_batches
+│                    (the shortest slot that holds a story, one shape per
+│                    slot), BucketedStoriesDataset/Batcher (an item = a batch).
+│                    lm.rs: TinyStoriesConfig (+ `pack`, `bucket`) + its
+│                    corpus-flag Overrides (--pack/--pack-rows/--pack-open/
+│                    --no-pack, --buckets/--bucket-chars/--no-bucket),
 │                    dataloaders_for (the validation is never packed),
 │                    lm_output_packed, the
 │                    FrontierGate, the epoch loops + the cache-carrying LmModel
