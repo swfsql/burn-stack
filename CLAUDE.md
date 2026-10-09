@@ -200,11 +200,15 @@ src/
 │                    PackLayout of the model), PackedStoriesDataset/Batcher,
 │                    TinyStoriesBatch::packed. Length buckets: bucket_batches
 │                    (the shortest slot that holds a story, one shape per
-│                    slot), BucketedStoriesDataset/Batcher (an item = a batch).
+│                    slot), probe_order (k batches of each slot first: a VRAM
+│                    probe meets every shape), BucketedStoriesDataset/Batcher
+│                    (an item = a batch).
 │                    lm.rs: TinyStoriesConfig (+ `pack`, `bucket`) + its
 │                    corpus-flag Overrides (--pack/--pack-rows/--pack-open/
-│                    --no-pack, --buckets/--bucket-chars/--no-bucket),
-│                    dataloaders_for (the validation is never packed),
+│                    --no-pack, --buckets/--bucket-chars/--no-bucket,
+│                    --bucket-probe), dataloaders_for (the validation is
+│                    never packed; a bucket probe keeps its order: no
+│                    shuffle, one worker),
 │                    lm_output_packed, the
 │                    FrontierGate, the epoch loops + the cache-carrying LmModel
 │                    seam. lm_output scores any extra output positions that the
