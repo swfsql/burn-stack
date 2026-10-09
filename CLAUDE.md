@@ -169,7 +169,11 @@ src/
 │  │                 saved with its TrainingProgress, progress.json). A flag
 │  │                 replaces a loaded optimizer, but panics if that ignores a
 │  │                 saved optim state. The flags of one example, after `--`:
-│  │                 `extra` + `finish_extra`
+│  │                 `extra` + `finish_extra`. StepFlags: --profile,
+│  │                 --max-vram, --grad-checkpointing (`training_device`)
+│  ├─ prof.rs        the phase timers of a training step (`prof` lines)
+│  ├─ vram.rs        the --max-vram cap (`check` after a backward) + `cleanup`
+│  │                 (the queued pages that `bytes_reserved` misses)
 │  ├─ session.rs     Session, what every epoch loop threads: TrainingProgress
 │  │                 (step, epoch, batch. A resumed epoch finishes from a fresh
 │  │                 shuffle), Budget, Cadence, MetricsLog (metrics.jsonl)

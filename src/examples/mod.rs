@@ -10,6 +10,8 @@
 //!   plain SGD),
 //! - the per-invocation [`session`] that every epoch loop threads (resume
 //!   position, budget, cadence, metrics log),
+//! - the watch of a training step: the phase timers ([`prof`]) and the cap on
+//!   the device memory ([`vram`]),
 //! - the two datasets with their epoch loops: the sequential-[`mnist`]
 //!   classifier and the character-level [`tiny_stories`] language model.
 //!
@@ -27,7 +29,9 @@
 pub mod cli;
 pub mod device;
 pub mod mnist;
+pub mod prof;
 pub mod session;
 pub mod tiny_stories;
 pub mod trainer;
 pub mod training;
+pub mod vram;

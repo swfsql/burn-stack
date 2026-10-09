@@ -508,6 +508,64 @@ pub fn finish_extra(pargs: pico_args::Arguments) {
     assert!(remaining.is_empty(), "unused extra arguments: {remaining:?}");
 }
 
+/// The flags of a training step that an example can take after `--`: the
+/// phase timers ([`prof`](crate::examples::prof)), the cap on the device
+/// memory ([`vram`](crate::examples::vram)) and the gradient checkpointing of
+/// Burn.
+#[derive(Clone, Debug, Default)]
+pub struct StepFlags {
+    /// `--profile <N>` and `--profile-sync`: the arguments of
+    /// [`prof::init`](crate::examples::prof::init).
+    pub profile: Option<(usize, bool)>,
+    /// `--max-vram <MiB>`: the cap on the bytes that the memory pools
+    /// reserve (the CUDA context is not included).
+    pub max_vram_mib: Option<u64>,
+    /// `--grad-checkpointing`: the training device gets the `Balanced`
+    /// gradient checkpointing of Burn.
+    pub grad_checkpointing: bool,
+}
+
+impl StepFlags {
+    /// The help lines of these flags, for the `-- --help` of an example.
+    pub const HELP: &str = concat!(
+        "    --profile <N>          Print the mean milliseconds of each training-step phase once per N windows\n",
+        "    --profile-sync         Also sync the device after each phase (with --profile)\n",
+        "    --grad-checkpointing   Train with the balanced gradient checkpointing of Burn. The backward computes the memory-bound ops again and keeps the outputs of the compute-bound ops. This uses less vram and more time\n",
+        "    --max-vram <MiB>       Stop the process with an error when the memory pools hold more than this, after a backward. Also clean up the memory before windows 0, 1, 2, 4, 8, ... and before each 256th window",
+    );
+
+    /// Take these flags out of the parser of the example (see
+    /// [`AppArgs::extra`]). The parser keeps the other flags.
+    pub fn parse(pargs: &mut pico_args::Arguments) -> Self {
+        let every: Option<usize> = pargs.opt_value_from_str("--profile").unwrap();
+        let sync = pargs.contains("--profile-sync");
+        assert!(every.is_some() || !sync, "--profile-sync needs --profile");
+        assert!(every != Some(0), "--profile must be at least 1");
+        Self {
+            profile: every.map(|every| (every, sync)),
+            max_vram_mib: pargs.opt_value_from_str("--max-vram").unwrap(),
+            grad_checkpointing: pargs.contains("--grad-checkpointing"),
+        }
+    }
+
+    /// Start the timers of `--profile`. Call it once per process.
+    pub fn start_profile(&self) {
+        if let Some((every, sync)) = self.profile {
+            crate::examples::prof::init(every, sync);
+        }
+    }
+
+    /// The training device: `device` with autodiff, and with the gradient
+    /// checkpointing of `--grad-checkpointing`.
+    pub fn training_device(&self, device: &Device) -> Device {
+        let autodiff = device.clone().autodiff();
+        match self.grad_checkpointing {
+            true => autodiff.gradient_checkpointing(),
+            false => autodiff,
+        }
+    }
+}
+
 /// `--adamw` / `--sgd` / `--muon` (see [`HELP`]). `None` when none is given.
 fn parse_optimizer(pargs: &mut pico_args::Arguments) -> Option<OptimizerKind> {
     let (adamw, sgd, muon) = (
