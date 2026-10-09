@@ -54,6 +54,14 @@
 //! scores with [`lm_output_packed`]. The validation is never packed, so its
 //! bits per character do not change with the packing.
 //!
+//! # Length buckets
+//!
+//! With [`TinyStoriesConfig::bucket`], one item is one batch of stories of
+//! similar length (see [`Bucket`]), and a batch is one window. A story then
+//! trains whole, from a fresh state. The validation takes the same slots, so
+//! it also scores each of its stories whole, and `seq_len` and `run_len` do
+//! not apply.
+//!
 //! # The loss of a character
 //!
 //! A character is a pair `(id, case flag)` (see [`dataset`](super::dataset)).
@@ -143,8 +151,8 @@ impl TinyStoriesConfig {
 
 /// The geometry of length-bucketed training (see
 /// [`bucket_batches`](super::dataset::bucket_batches)). A batch is one window
-/// of its slot, so the train windows ignore `seq_len` and `run_len` (the
-/// validation keeps them).
+/// of its slot, so a bucketed run ignores `seq_len` and `run_len`. The
+/// validation takes the same slots and `chars`, so it scores whole stories.
 #[derive(Config, Debug)]
 pub struct Bucket {
     /// The batch lengths, ascending. A story goes to the shortest slot that
@@ -532,7 +540,8 @@ pub fn dataloaders(
 /// With [`TinyStoriesConfig::pack`], the train split is packed into rows with
 /// the `layout` of the model, in the order of that same shuffle. With
 /// [`TinyStoriesConfig::bucket`], the train split is grouped into batches of
-/// similar length. The validation split is never packed nor bucketed.
+/// similar length, and so is the validation split (each story whole). The
+/// validation split is never packed.
 pub fn dataloaders_for(
     config: &TinyStoriesConfig,
     training_device: &Device,
@@ -541,7 +550,6 @@ pub fn dataloaders_for(
 ) -> (Dataloader, Dataloader) {
     let (seq_len, run_len) = (config.seq_len, config.run_len);
     let batcher = TinyStoriesBatcher::new(seq_len);
-    let valid_set = TinyStoriesDataset::new(Split::Valid, config.valid_stories, seq_len, run_len);
     let cap = match run_len {
         usize::MAX => "uncapped".to_owned(),
         _ => format!("capped at {run_len}"),
@@ -573,11 +581,6 @@ pub fn dataloaders_for(
                 train_set.fill(),
                 train_set.summary(),
             );
-            println!(
-                "corpus: {} valid characters ({} windows of {seq_len}, one run per story, {cap})",
-                valid_set.num_tokens(),
-                valid_set.num_windows(),
-            );
             // A probe keeps the order of its batches: the loader shuffles, and
             // its workers split the dataset into parts that they interleave.
             let builder = DataLoaderBuilder::new(BucketedStoriesBatcher).batch_size(1);
@@ -594,12 +597,9 @@ pub fn dataloaders_for(
             let train_set =
                 TinyStoriesDataset::new(Split::Train, config.train_stories, seq_len, run_len);
             println!(
-                "corpus: {} train / {} valid characters ({} / {} windows of {seq_len}, \
-                 one run per story, {cap})",
+                "corpus: {} train characters ({} windows of {seq_len}, one run per story, {cap})",
                 train_set.num_tokens(),
-                valid_set.num_tokens(),
                 train_set.num_windows(),
-                valid_set.num_windows(),
             );
             DataLoaderBuilder::new(batcher.clone())
                 .batch_size(config.training.batch_size)
@@ -628,11 +628,6 @@ pub fn dataloaders_for(
                 layout.align,
                 layout.lead,
             );
-            println!(
-                "corpus: {} valid characters ({} windows of {seq_len}, one run per story, {cap})",
-                valid_set.num_tokens(),
-                valid_set.num_windows(),
-            );
             DataLoaderBuilder::new(PackedStoriesBatcher::new(pack.width, layout))
                 .batch_size(pack.rows)
                 .shuffle(seed)
@@ -641,12 +636,47 @@ pub fn dataloaders_for(
                 .build(train_set)
         }
     };
-    let dataloader_valid = DataLoaderBuilder::new(batcher)
-        .batch_size(config.training.batch_size)
-        .shuffle(config.training.seed)
-        .num_workers(config.training.num_workers)
-        .set_device(loader_device(training_device))
-        .build(valid_set);
+    let dataloader_valid: Dataloader = match &config.bucket {
+        // The slots of the training: each story whole, in one window.
+        Some(bucket) => {
+            let valid_set = BucketedStoriesDataset::new(
+                Split::Valid,
+                config.valid_stories,
+                &bucket.slots,
+                bucket.chars,
+                config.training.seed,
+                0,
+            );
+            println!(
+                "corpus: {} valid characters in {} bucketed batches, every story whole \
+                 (slot: batches × stories {})",
+                valid_set.num_tokens(),
+                valid_set.num_batches(),
+                valid_set.summary(),
+            );
+            DataLoaderBuilder::new(BucketedStoriesBatcher)
+                .batch_size(1)
+                .shuffle(config.training.seed)
+                .num_workers(config.training.num_workers)
+                .set_device(loader_device(training_device))
+                .build(valid_set)
+        }
+        None => {
+            let valid_set =
+                TinyStoriesDataset::new(Split::Valid, config.valid_stories, seq_len, run_len);
+            println!(
+                "corpus: {} valid characters ({} windows of {seq_len}, one run per story, {cap})",
+                valid_set.num_tokens(),
+                valid_set.num_windows(),
+            );
+            DataLoaderBuilder::new(batcher)
+                .batch_size(config.training.batch_size)
+                .shuffle(config.training.seed)
+                .num_workers(config.training.num_workers)
+                .set_device(loader_device(training_device))
+                .build(valid_set)
+        }
+    };
     (dataloader_train, dataloader_valid)
 }
 
