@@ -12,7 +12,7 @@
 
 use super::{
     PackLayout, PackedItem, PackedStoriesBatcher, UPPER, VOCAB, bucket_batches, pack_rows, pair,
-    unpair,
+    probe_order, unpair,
 };
 use burn::data::dataloader::batcher::Batcher;
 use burn::prelude::*;
@@ -81,6 +81,23 @@ fn bucket_batches_place_every_story_once_and_fit() {
             "slot {slot}: sizes {sizes:?}"
         );
     }
+}
+
+#[test]
+fn probe_order_opens_with_each_slot_and_keeps_every_batch() {
+    let slots = [16, 32, 64];
+    let lens: Vec<usize> = lens(500, 64).iter().map(|n| n - 1).collect();
+    let order: Vec<usize> = (0..lens.len()).collect();
+    let batches = bucket_batches(&lens, &order, &slots, 120);
+    let probed = probe_order(batches.clone(), &slots, 2, 7);
+    let first: Vec<usize> = probed[..6].iter().map(|(slot, _)| *slot).collect();
+    assert_eq!(first, [16, 16, 32, 32, 64, 64], "k batches of each slot, slot by slot");
+    let key = |b: &[(usize, Vec<usize>)]| {
+        let mut b = b.to_vec();
+        b.sort();
+        b
+    };
+    assert_eq!(key(&probed), key(&batches), "every batch once");
 }
 
 #[test]

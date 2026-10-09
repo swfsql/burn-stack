@@ -901,6 +901,34 @@ pub fn bucket_batches(
     batches
 }
 
+/// The order of a VRAM probe over the `batches` of [`bucket_batches`]: first
+/// `k` batches of each slot, slot by slot in the order of `slots` (fewer if a
+/// slot has fewer), then the other batches in the order of a shuffle with
+/// `seed`. The memory of a step depends on the shape of its batch (its slot),
+/// not in proportion to its positions, and the pool keeps the pages of each
+/// shape. So a probe of `k · slots.len()` steps meets every shape of a run.
+pub fn probe_order(
+    batches: Vec<(usize, Vec<usize>)>,
+    slots: &[usize],
+    k: usize,
+    seed: u64,
+) -> Vec<(usize, Vec<usize>)> {
+    use rand::SeedableRng;
+    use rand::seq::SliceRandom;
+    let mut taken = vec![false; batches.len()];
+    let mut first = Vec::new();
+    for &slot in slots {
+        for (i, _) in batches.iter().enumerate().filter(|(_, (s, _))| *s == slot).take(k) {
+            taken[i] = true;
+            first.push(i);
+        }
+    }
+    let mut rest: Vec<usize> = (0..batches.len()).filter(|&i| !taken[i]).collect();
+    rest.shuffle(&mut rand_chacha::ChaCha8Rng::seed_from_u64(seed));
+    let mut batches: Vec<Option<(usize, Vec<usize>)>> = batches.into_iter().map(Some).collect();
+    first.into_iter().chain(rest).map(|i| batches[i].take().unwrap()).collect()
+}
+
 /// One batch of stories of similar length (see [`bucket_batches`]).
 #[derive(Clone, Debug)]
 pub struct BucketItem {
@@ -922,8 +950,10 @@ pub struct BucketedStoriesDataset {
 impl BucketedStoriesDataset {
     /// Group `n_stories` of `split` into batches of `slots` positions that
     /// score about `chars` characters each, in the order of a shuffle with
-    /// `seed`. A story longer than the longest slot is truncated to fit.
-    pub fn new(split: Split, n_stories: usize, slots: &[usize], chars: usize, seed: u64) -> Self {
+    /// `seed`. A story longer than the longest slot is truncated to fit. With
+    /// `probe > 0`, the batches take the order of [`probe_order`] (`k =
+    /// probe`); the loader must then keep the order (no shuffle, one worker).
+    pub fn new(split: Split, n_stories: usize, slots: &[usize], chars: usize, seed: u64, probe: usize) -> Self {
         use rand::SeedableRng;
         use rand::seq::SliceRandom;
         let longest = *slots.iter().max().expect("at least one slot");
@@ -939,7 +969,10 @@ impl BucketedStoriesDataset {
         let lens: Vec<usize> = stories.iter().map(|tokens| tokens.len() - 1).collect();
         let mut order: Vec<usize> = (0..stories.len()).collect();
         order.shuffle(&mut rand_chacha::ChaCha8Rng::seed_from_u64(seed));
-        let batches = bucket_batches(&lens, &order, slots, chars);
+        let mut batches = bucket_batches(&lens, &order, slots, chars);
+        if probe > 0 {
+            batches = probe_order(batches, slots, probe, seed);
+        }
         Self {
             stories: Arc::new(stories),
             batches,

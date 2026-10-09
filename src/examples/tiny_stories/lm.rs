@@ -154,6 +154,11 @@ pub struct Bucket {
     /// The scored characters per batch. A slot takes `round(chars / m)`
     /// stories, `m` the mean length of its stories.
     pub chars: usize,
+    /// For a VRAM probe: the run opens with this many batches of each slot
+    /// (see [`probe_order`](super::dataset::probe_order)), and the loader
+    /// keeps the order (no shuffle, one worker). `0`: a shuffled order.
+    #[config(default = 0)]
+    pub probe: usize,
 }
 
 /// The geometry of packed training (see [`dataset`](super::dataset)).
@@ -297,6 +302,8 @@ pub struct Overrides {
     pub bucket_chars: Option<usize>,
     /// `--no-bucket`: train on batches drawn at random.
     pub no_bucket: bool,
+    /// `--bucket-probe <usize>`: open with this many batches of each slot.
+    pub bucket_probe: Option<usize>,
 }
 
 /// A comma-separated list of positive integers (`--buckets`).
@@ -324,7 +331,8 @@ impl Overrides {
         "    --no-pack              Train on one story per batch slot\n",
         "    --buckets <A,B,…>      Train on batches of similar length: each story goes to the shortest slot that holds it (needs --bucket-chars once)\n",
         "    --bucket-chars <N>     Scored characters per bucketed batch\n",
-        "    --no-bucket            Train on batches of stories drawn at random",
+        "    --no-bucket            Train on batches of stories drawn at random\n",
+        "    --bucket-probe <K>     VRAM probe: open with K batches of each slot, slot by slot (no loader shuffle, one worker)",
     );
 
     /// Take these flags out of the parser of the example, over the arguments
@@ -345,6 +353,7 @@ impl Overrides {
             buckets: pargs.opt_value_from_fn("--buckets", parse_slots).unwrap(),
             bucket_chars: pargs.opt_value_from_str("--bucket-chars").unwrap(),
             no_bucket: pargs.contains("--no-bucket"),
+            bucket_probe: pargs.opt_value_from_str("--bucket-probe").unwrap(),
         }
     }
 
@@ -416,10 +425,13 @@ impl Overrides {
                 if let Some(chars) = self.bucket_chars {
                     bucket.chars = chars;
                 }
+                if let Some(probe) = self.bucket_probe {
+                    bucket.probe = probe;
+                }
             }
             None => assert!(
-                self.bucket_chars.is_none(),
-                "--bucket-chars needs bucketed training (--buckets)"
+                self.bucket_chars.is_none() && self.bucket_probe.is_none(),
+                "--bucket-chars and --bucket-probe need bucketed training (--buckets)"
             ),
         }
     }
@@ -550,6 +562,7 @@ pub fn dataloaders_for(
                 &bucket.slots,
                 bucket.chars,
                 seed,
+                bucket.probe,
             );
             println!(
                 "corpus: {} train characters in {} bucketed batches of ~{} scored characters \
@@ -565,10 +578,15 @@ pub fn dataloaders_for(
                 valid_set.num_tokens(),
                 valid_set.num_windows(),
             );
-            DataLoaderBuilder::new(BucketedStoriesBatcher)
-                .batch_size(1)
-                .shuffle(seed)
-                .num_workers(config.training.num_workers)
+            // A probe keeps the order of its batches: the loader shuffles, and
+            // its workers split the dataset into parts that they interleave.
+            let builder = DataLoaderBuilder::new(BucketedStoriesBatcher).batch_size(1);
+            let (builder, workers) = match bucket.probe {
+                0 => (builder.shuffle(seed), config.training.num_workers),
+                _ => (builder, 1),
+            };
+            builder
+                .num_workers(workers)
                 .set_device(loader_device(training_device))
                 .build(train_set)
         }
