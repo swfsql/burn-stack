@@ -156,9 +156,9 @@ pub struct Bucket {
     pub chars: usize,
     /// For a VRAM probe: the run opens with this many batches of each slot
     /// (see [`probe_order`](super::dataset::probe_order)), and the loader
-    /// keeps the order (no shuffle, one worker). `None`: a shuffled order.
-    #[config(default = "None")]
-    pub probe: Option<usize>,
+    /// keeps the order (no shuffle, one worker). `0`: a shuffled order.
+    #[config(default = 0)]
+    pub probe: usize,
 }
 
 /// The geometry of packed training (see [`dataset`](super::dataset)).
@@ -426,8 +426,7 @@ impl Overrides {
                     bucket.chars = chars;
                 }
                 if let Some(probe) = self.bucket_probe {
-                    assert!(probe >= 1, "--bucket-probe must be at least 1");
-                    bucket.probe = Some(probe);
+                    bucket.probe = probe;
                 }
             }
             None => assert!(
@@ -563,7 +562,7 @@ pub fn dataloaders_for(
                 &bucket.slots,
                 bucket.chars,
                 seed,
-                bucket.probe.unwrap_or(0),
+                bucket.probe,
             );
             println!(
                 "corpus: {} train characters in {} bucketed batches of ~{} scored characters \
@@ -583,8 +582,8 @@ pub fn dataloaders_for(
             // its workers split the dataset into parts that they interleave.
             let builder = DataLoaderBuilder::new(BucketedStoriesBatcher).batch_size(1);
             let (builder, workers) = match bucket.probe {
-                None => (builder.shuffle(seed), config.training.num_workers),
-                Some(_) => (builder, 1),
+                0 => (builder.shuffle(seed), config.training.num_workers),
+                _ => (builder, 1),
             };
             builder
                 .num_workers(workers)
