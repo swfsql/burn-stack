@@ -999,14 +999,12 @@ impl BucketedStoriesDataset {
     /// Each slot as `slot: batches × stories` (the stories of its first
     /// batch).
     pub fn summary(&self) -> String {
-        let mut parts: Vec<String> = Vec::new();
-        let mut i = 0;
-        while i < self.batches.len() {
-            let (slot, size) = (self.batches[i].0, self.batches[i].1.len());
-            let n = self.batches[i..].iter().take_while(|(s, _)| *s == slot).count();
-            parts.push(format!("{slot}: {n} × {size}"));
-            i += n;
+        // Per slot (ascending): the batches, and the stories of its first one.
+        let mut slots: std::collections::BTreeMap<usize, (usize, usize)> = Default::default();
+        for (slot, batch) in &self.batches {
+            slots.entry(*slot).or_insert((0, batch.len())).0 += 1;
         }
+        let parts: Vec<String> = slots.iter().map(|(slot, (n, size))| format!("{slot}: {n} × {size}")).collect();
         parts.join(", ")
     }
 }
