@@ -520,6 +520,10 @@ pub struct StepFlags {
     /// `--max-vram <MiB>`: the cap on the bytes that the memory pools
     /// reserve (the CUDA context is not included).
     pub max_vram_mib: Option<u64>,
+    /// `--vram-cleanup-every <N>`: with `--max-vram`, clean up the memory
+    /// before each N-th window (see [`vram`](crate::examples::vram)).
+    /// `None`: the default schedule.
+    pub vram_cleanup_every: Option<u64>,
     /// `--grad-checkpointing`: the training device gets the `Balanced`
     /// gradient checkpointing of Burn.
     pub grad_checkpointing: bool,
@@ -531,7 +535,8 @@ impl StepFlags {
         "    --profile <N>          Print the mean milliseconds of each training-step phase once per N windows\n",
         "    --profile-sync         Also sync the device after each phase (with --profile)\n",
         "    --grad-checkpointing   Train with the balanced gradient checkpointing of Burn. The backward computes the memory-bound ops again and keeps the outputs of the compute-bound ops. This uses less vram and more time\n",
-        "    --max-vram <MiB>       Stop the process with an error when the memory pools hold more than this, after a backward. Also clean up the memory before windows 0, 1, 2, 4, 8, ... and before each 256th window",
+        "    --max-vram <MiB>       Stop the process with an error when the memory pools hold more than this, after a backward. Also clean up the memory before windows 0, 1, 2, 4, 8, ... and before each 256th window\n",
+        "    --vram-cleanup-every <N>  With --max-vram, clean up the memory before each N-th window instead. With 1, the freed pages never wait past a window, so the pool report holds the device memory of the process (the CUDA context excluded)",
     );
 
     /// Take these flags out of the parser of the example (see
@@ -541,9 +546,17 @@ impl StepFlags {
         let sync = pargs.contains("--profile-sync");
         assert!(every.is_some() || !sync, "--profile-sync needs --profile");
         assert!(every != Some(0), "--profile must be at least 1");
+        let max_vram_mib = pargs.opt_value_from_str("--max-vram").unwrap();
+        let vram_cleanup_every: Option<u64> = pargs.opt_value_from_str("--vram-cleanup-every").unwrap();
+        assert!(vram_cleanup_every != Some(0), "--vram-cleanup-every must be at least 1");
+        assert!(
+            vram_cleanup_every.is_none() || max_vram_mib.is_some(),
+            "--vram-cleanup-every needs --max-vram"
+        );
         Self {
             profile: every.map(|every| (every, sync)),
-            max_vram_mib: pargs.opt_value_from_str("--max-vram").unwrap(),
+            max_vram_mib,
+            vram_cleanup_every,
             grad_checkpointing: pargs.contains("--grad-checkpointing"),
         }
     }

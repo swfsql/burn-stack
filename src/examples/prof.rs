@@ -128,15 +128,21 @@ pub fn opt_end(t3: Instant) {
         let [f, b, g, o, u] = s.sums.map(|sum| sum / s.every as f64);
         // Live allocations: flat unless some launch shape varies. Each new
         // shape pins a cached metadata buffer (burn#5751), but the bytes
-        // barely move. `reserved` is every page that the pools hold (the
-        // high-water mark of the step, the CUDA context excluded).
+        // barely move. `reserved` is every page that the pools hold now (the
+        // CUDA context excluded). `peak` is the largest `reserved` that
+        // `vram::check` read after a backward since the last line (only with
+        // `--max-vram`), or now if larger.
         let allocs = match s.device.as_ref().and_then(Device::memory_pool_usage) {
-            Some(usage) => format!(
-                " allocs {} ({:.1} MB) reserved {:.1} MB",
-                usage.number_allocs,
-                usage.bytes_in_use as f64 / 1e6,
-                usage.bytes_reserved as f64 / 1e6
-            ),
+            Some(usage) => {
+                let peak = super::vram::take_peak().unwrap_or(0).max(usage.bytes_reserved);
+                format!(
+                    " allocs {} ({:.1} MB) reserved {:.1} MB peak {:.1} MB",
+                    usage.number_allocs,
+                    usage.bytes_in_use as f64 / 1e6,
+                    usage.bytes_reserved as f64 / 1e6,
+                    peak as f64 / 1e6
+                )
+            }
             None => String::new(),
         };
         println!(
