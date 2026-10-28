@@ -116,9 +116,9 @@ pub fn epoch_train<W: MnistModel>(
         // Built on the host by a worker, moved here (see `loader_device`).
         let pre_metrics = training_model.train_step(batch.to_device(&valid_device), optim, lr);
 
-        loss_metric.update(&pre_metrics.adapt(), session.meta());
-        acc_metric.update(&pre_metrics.adapt(), session.meta());
-        iteration_speed_metric.update(&pre_metrics.adapt(), session.meta());
+        loss_metric.update(&pre_metrics.adapt(), session.meta()).expect("metric update");
+        acc_metric.update(&pre_metrics.adapt(), session.meta()).expect("metric update");
+        iteration_speed_metric.update(&pre_metrics.adapt(), session.meta()).expect("metric update");
 
         let (loss, acc) = (
             metric_current(loss_metric.value()),
@@ -215,8 +215,8 @@ pub fn epoch_valid<V>(
         metric_meta.progress.items_processed += batch_size;
 
         let pre_metrics = InferenceStep::step(valid_model, batch.to_device(device));
-        loss_metric.update(&pre_metrics.adapt(), &metric_meta);
-        acc_metric.update(&pre_metrics.adapt(), &metric_meta);
+        loss_metric.update(&pre_metrics.adapt(), &metric_meta).expect("metric update");
+        acc_metric.update(&pre_metrics.adapt(), &metric_meta).expect("metric update");
     }
 
     // Display the averaged validation metrics

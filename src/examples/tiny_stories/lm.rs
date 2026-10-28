@@ -750,9 +750,9 @@ pub fn epoch_train<W: LmModel>(
                 training_model.train_window(run.window(w), caches.take(), &mut class);
             let pre_metrics = &train_output.item;
 
-            loss_metric.update(&pre_metrics.adapt(), session.meta());
-            acc_metric.update(&pre_metrics.adapt(), session.meta());
-            iteration_speed_metric.update(&pre_metrics.adapt(), session.meta());
+            loss_metric.update(&pre_metrics.adapt(), session.meta()).expect("metric update");
+            acc_metric.update(&pre_metrics.adapt(), session.meta()).expect("metric update");
+            iteration_speed_metric.update(&pre_metrics.adapt(), session.meta()).expect("metric update");
 
             training_model = training_model.optim_step(optim, lr, train_output.grads);
             depth = w + 1;
@@ -892,7 +892,7 @@ pub fn epoch_valid<W: LmModel>(
             let (output, final_caches) =
                 W::valid_window(valid_model, run.window(w), caches.take(), &mut class);
             loss_metric.update(&output);
-            acc_metric.update(&output.adapt(), &metric_meta);
+            acc_metric.update(&output.adapt(), &metric_meta).expect("metric update");
             caches = Some(final_caches);
         }
     }
