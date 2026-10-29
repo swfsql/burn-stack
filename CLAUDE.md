@@ -527,3 +527,20 @@ suffix encodes its shape needs no extra comment. Lower-case = base dimensions
     `Edit`s.
   - Bash stays the tool for *reading* and *inspecting* (`cat`, `sed -n`, `rg`,
     `grep`) and for throwaway files outside the crate (for example, in `/tmp`).
+
+## Agent skills
+
+### Issue tracker
+
+Local markdown files in `.scratch/<feature>/`. See
+`docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five default roles, as the `Status:` line of an issue file. See
+`docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `GLOSSARY.md` + `docs/adr/` at the repo root. See
+`docs/agents/domain.md`.
