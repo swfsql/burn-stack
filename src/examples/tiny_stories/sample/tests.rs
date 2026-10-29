@@ -24,7 +24,7 @@ use burn::module::Param;
 use burn::prelude::*;
 use burn::tensor::activation::softmax;
 use burn::tensor::{DType, Distribution, FloatDType};
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use crate::utils::test_helpers::test_device;
 

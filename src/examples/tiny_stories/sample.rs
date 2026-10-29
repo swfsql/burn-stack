@@ -44,7 +44,7 @@ use crate::utils::{ClassCursors, upcast};
 use burn::prelude::*;
 use burn::tensor::activation::softmax;
 use burn::tensor::{DType, TensorData};
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use std::cell::RefCell;
 use std::rc::Rc;
