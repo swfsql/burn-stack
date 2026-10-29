@@ -1,4 +1,4 @@
-//! The caches of an [`HNet`](super::HNet), and the per-row operations that
+//! The caches of an [`HNet`], and the per-row operations that
 //! its `step` does on the cache of a whole inner network.
 //!
 //! A `step` runs the inner network only on the rows that start a chunk. So it
@@ -8,9 +8,8 @@
 //! - `gather_rows`: some rows of a cache, as a smaller batch.
 //! - `merge_rows`: a smaller batch written back into the full one.
 //!
-//! All three go through
-//! [`CacheTensors`](crate::modules::CacheTensors). They read axis 0 of every
-//! cache tensor as the batch axis, which is a contract of that trait.
+//! All three go through [`CacheTensors`]. They read axis 0 of every cache
+//! tensor as the batch axis, which is a contract of that trait.
 
 use crate::modules::{Block, CacheStack, CacheTensors, TensorZip, lift};
 use crate::modules::hnet::routing::RouterCache;

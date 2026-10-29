@@ -3,7 +3,7 @@
 //! [`F`](crate::utils::fprim::F) is a thin newtype over the
 //! [`FloatTensor`](burn::backend::BackendTypes::FloatTensorPrimitive)
 //! primitive of a backend. It mirrors the subset of the high-level
-//! [`Tensor`](burn::tensor::Tensor) method API that the gradient math of a
+//! [`Tensor`] method API that the gradient math of a
 //! recompute backward uses.
 //!
 //! Why it exists: in Burn 0.22, the high-level `Tensor` is pinned to the

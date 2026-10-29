@@ -19,7 +19,7 @@
 //!   initialisation into every application. So an untied stack at init
 //!   computes exactly the tied one, and the gradients of its copies sum to
 //!   that of the tied weight. Only training makes them differ. A post-build
-//!   [`InitPolicy`](crate::utils::InitPolicy) redraws a 2-D `weight` element by
+//!   [`InitPolicy`] redraws a 2-D `weight` element by
 //!   element, and [`retie`](crate::utils::untied::retie) undoes that.
 //! - **Every application must train.** Only its own application reads a copy.
 //!   So an untracked application leaves it without a gradient, and

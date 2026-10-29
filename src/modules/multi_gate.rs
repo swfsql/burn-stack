@@ -1,5 +1,5 @@
 //! Multi-Gate Residuals (MGR): a depth-wise residual scheme that replaces the
-//! plain additive skip of a [`Layers`](crate::modules::Layers) stack.
+//! plain additive skip of a [`Layers`] stack.
 //!
 //! MGR keeps up to **`n_stream` parallel streams** `sᵢ`, not one residual
 //! stream. The stack input is stream 1. The streams then grow and mix in two

@@ -10,9 +10,8 @@
 //!
 //! A block only ever sees a right-padded mask, and this module keeps it
 //! right-padded. This is necessary because one plan splices the class markers
-//! ([`ClassLatent`](crate::utils::ClassLatent),
-//! [`ClassToken`](crate::utils::ClassToken)) for the whole batch, at
-//! batch-wide positions. But their place in the sequence of a slot depends on
+//! ([`ClassLatent`], [`ClassToken`]) for the whole batch, at batch-wide
+//! positions. But their place in the sequence of a slot depends on
 //! the length of that slot:
 //!
 //! - `Start` and `Custom(k)` precede a user token, so they sit where every

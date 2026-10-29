@@ -44,7 +44,7 @@
 //! network is a [`Layers<M>`]. The reference uses Mamba-2 outside (it handles
 //! the fine-grained rows well) and attention inside. Each stack has its own
 //! [`BlockConfig`] (so its own width) and its own
-//! [`NetworkShape`](crate::modules::NetworkShape) (virtual layers, MLP,
+//! [`NetworkShape`] (virtual layers, MLP,
 //! residuals, …). See [`HNetShape`].
 //!
 //! ## Execution

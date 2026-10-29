@@ -1,7 +1,7 @@
 //! The per-network cache collection trait, and the pairwise tensor visitor
 //! that a captured step uses to write its cache back.
 //!
-//! A [`Block`](crate::modules::Block) family supplies its own `Caches` type.
+//! A [`Block`] family supplies its own `Caches` type.
 //! The generic containers need only indexed access to one slot per (virtual)
 //! layer, plus the backend hop of `grad_horizon`.
 //! [`CapturedStep`](crate::utils::graph::CapturedStep) also needs
