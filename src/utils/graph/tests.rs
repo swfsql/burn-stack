@@ -191,6 +191,26 @@ fn host_data_keeps_the_dtype_of_the_input() {
     assert_eq!(y.dtype(), DType::from(dtype), "the step ran in the default dtype of the device");
 }
 
+/// Host data lands in the right rows of a strided input. On CUDA, cubecl pads
+/// the rows of the `[4, 2]` i32 buffer to 4 elements. A flat host write puts
+/// row 2 of the data into row 1. Rows 1 and 3 of the data go into the
+/// padding, and rows 2 and 3 keep their old values.
+#[test]
+fn host_data_fills_a_strided_input() {
+    let device = test_device();
+    let x = Tensor::<2, Int>::zeros([4, 2], &device);
+    // Safety: the step reads nothing but its arguments.
+    let mut captured = unsafe { CapturedStep::capture(&device, x, (), |x, ()| (x.float(), ())) };
+    let values: Vec<i32> = (1..=8).collect();
+    for k in 0..3 {
+        let values: Vec<i32> = values.iter().map(|v| v * (k + 1)).collect();
+        let y = captured.step_data(TensorData::new(values.clone(), [4, 2])).clone();
+        let want = Tensor::<1, Int>::from_ints(values.as_slice(), &device).reshape([4, 2]).float();
+        let d = max_abs_diff(y, want);
+        assert_eq!(d, 0.0, "call {k}: the output differs by {d}");
+    }
+}
+
 /// A captured SGD training step is the eager `Sgd` of Burn, bit for bit: the
 /// loss at every step and the final weights. The learning rate changes at
 /// every step, and weight decay and gradient clipping are on.

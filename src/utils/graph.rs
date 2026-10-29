@@ -408,8 +408,9 @@ impl<'a, const D: usize, K: InputKind + 'a, Y: 'a, C: CacheTensors + 'a>
     }
 
     /// [`step`](Self::step) on host data (converted to the dtype of the
-    /// input). On a captured graph, this is a host write straight into the
-    /// buffer of the input.
+    /// input). On a captured graph, a contiguous input gets the data as a
+    /// host write straight into its buffer. A strided input gets it through
+    /// [`step`](Self::step): an upload, then a copy in place.
     pub fn step_data(&mut self, data: TensorData) -> &Y {
         let dtype = self.input.borrow().as_ref().expect("the input is always present").dtype();
         let data = data.convert_dtype(dtype);
@@ -420,16 +421,30 @@ impl<'a, const D: usize, K: InputKind + 'a, Y: 'a, C: CacheTensors + 'a>
         }
         #[cfg(all(feature = "cubecl", not(feature = "fusion")))]
         {
-            {
+            let strided = {
                 let slot = self.input.borrow();
                 let stable = slot.as_ref().expect("the input is always present");
                 assert_eq!(&stable.shape(), data.shape(), "a captured step keeps its input shape");
                 // A graph is kept only after the id of the input was read, so
                 // the input has one.
                 let c = cube(stable).expect("a captured input is a cubecl tensor");
-                c.client.write(&c.handle, data.into_bytes());
+                // `write` copies the bytes in row-major order from the start
+                // of the buffer. Only a contiguous input has that layout. A
+                // cubecl buffer of rank 2 or more can pad its rows: a `[4, 2]`
+                // i32 input has the strides `[4, 1]`.
+                if c.is_contiguous() {
+                    c.client.write(&c.handle, data.into_bytes());
+                    None
+                } else {
+                    Some(data)
+                }
+            };
+            match strided {
+                None => self.replay(),
+                // The upload gets the layout of cubecl, and the copy writes it
+                // into the buffer of the input.
+                Some(data) => self.step(Tensor::from_data(data, (&self.device, dtype))),
             }
-            self.replay()
         }
         #[cfg(not(all(feature = "cubecl", not(feature = "fusion"))))]
         unreachable!("a graph is only kept where buffer ids can be read: {data:?}")
