@@ -83,10 +83,11 @@ cargo doc --no-deps         # build docs
   new File Map entry and a short overview of the most important aspects of
   the created/removed/updated files. After a full context reset (the user
   triggers it), this file gets its update.
-- **Commit messages**: the user can ask for a commit message for the session.
-  **Write the message as text only** (a title line + a short body) for the
-  user to copy. Do NOT run `git commit` or any git command to create the
-  commit. End the message with the `Co-Authored-By:` trailer.
+- **Commits**: when a skill or the user tells you to commit (for example, at
+  the end of an implementation), commit your work to the current branch. Do
+  not push. When the user asks only for a commit message, write it as text
+  for the user to copy. A commit message has a title line and a short body,
+  and it ends with the `Co-Authored-By:` trailer.
 
 ## File Map
 
