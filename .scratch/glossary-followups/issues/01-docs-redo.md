@@ -1,6 +1,6 @@
 # 01: Docs redo: a short CLAUDE.md with a short File Map
 
-Status: ready-for-agent
+Status: resolved
 
 Blocked by: None (can start immediately)
 
