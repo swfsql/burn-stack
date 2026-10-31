@@ -153,13 +153,13 @@ prose of `utils/` stays for ticket 04.
 old key stops loading. (The `Config` derive of Burn does not pass a serde
 alias through.) The two consumers set the field, so they do not compile
 against burn-stack until they rename it too. The user chose to rename it here
-only. burn-mamba has the ticket
-`.scratch/glossary-followups/issues/05-init-bias-offset-rename.md`.
-burn-deltanet (two sites) has no ticket yet.
+only.
 
-burn-mamba has a copy of the untied-stack test with the old names
-(`src/unified/tests/untied.rs`: `assert_untied_stack_is_its_unshared_views`,
-the local `unshared`). A later session in burn-mamba renames it.
+- burn-mamba did the rename (its ticket
+  `.scratch/glossary-followups/issues/05-init-bias-offset-rename.md`, against
+  burn-stack `4383373`). It also renamed its copy of the untied-stack test
+  (`src/unified/tests/untied.rs`) to the names of this ticket.
+- burn-deltanet (two sites) has no ticket yet.
 
 ### Choices that this sweep made
 
