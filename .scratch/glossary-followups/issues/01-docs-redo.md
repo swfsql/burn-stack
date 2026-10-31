@@ -83,14 +83,104 @@ module headers.
 
 ## Acceptance criteria
 
-- [ ] CLAUDE.md has about 200 lines or fewer, and its File Map has 40 lines or
+- [x] CLAUDE.md has about 200 lines or fewer, and its File Map has 40 lines or
       fewer.
-- [ ] Each deleted CLAUDE.md paragraph has its content in the glossary, an ADR
+- [x] Each deleted CLAUDE.md paragraph has its content in the glossary, an ADR
       or a module header, or is listed under `## Comments`.
-- [ ] No doc of this repo links to a CLAUDE.md anchor that is gone. Each line
+- [x] No doc of this repo links to a CLAUDE.md anchor that is gone. Each line
       of `../burn-mamba` or `../burn-deltanet` that the change makes stale is
       listed under `## Comments`.
-- [ ] `cargo check` passes, and `cargo doc --no-deps` has no warnings.
-- [ ] The asd-ste100 lint (`ste-lint.py`) passes on CLAUDE.md.
+- [x] `cargo check` passes, and `cargo doc --no-deps` has no warnings.
+- [x] The asd-ste100 lint (`ste-lint.py`) passes on CLAUDE.md.
 
 ## Comments
+
+### What moved where
+
+I checked each paragraph of the old Architecture, Key Design Decisions and
+File Map against the glossary, the ADRs and the docs of the code. Three facts
+had no home. They moved into a module header:
+
+- `src/lib.rs`: `forward` equals `step` unrolled on the outputs, on the final
+  cache and on the gradients. For `RefBlock`, `reference/tests.rs` compares
+  the outputs and the final cache. (The old CLAUDE.md said that it asserts
+  the gradients too. No test there compares forward and step gradients. The
+  H-Net tests do, in `hnet/tests.rs`.)
+- `src/utils/graph.rs`: no other thread may do device work while a capture
+  records. The header points to `loader_device` for the cause. (The workers
+  build on the host only under `backend-flex`.)
+- `src/modules/model_config.rs`: `ModelConfigExt` is not behind
+  `examples-common`, because a consumer implements it in its library.
+
+None of the three holds a new term or a new decision.
+
+Some facts are in the doc of an item, not in a module header. They stay
+there, because the item is where a reader looks for them:
+
+- The gradient horizon and its straight-through carry: the doc of
+  `Layers::grad_horizon` (`layers.rs` has no module header). Also the
+  glossary and ADR-0006.
+- The reversed pass of a padded bidirectional pair reads the real tokens of
+  each row backwards: the doc of the pair forward (`bidi.rs:176`).
+- The read-back of class markers for a window (minus the cursor before the
+  call): `utils/class/mod.rs:224`.
+- `loader_device` (dataloader workers build on the host): its item doc in
+  `examples/device.rs`. The header of `utils/graph.rs` states the rule and
+  points to it.
+
+Two facts of the old Build section are now only in `Cargo.toml`, their source
+of truth. These are the features that `optim` implies (`burn/optim`,
+`burn/std`), and the crates that `examples-common` pulls in.
+- The matching of a `ProjSpec` through `BLOCK_CONTAINERS`: its item doc in
+  `optim/spec.rs`. Also ADR-0004.
+
+### New in CLAUDE.md
+
+These lines are not from the old CLAUDE.md:
+
+- The **Waiting** and **Memory** rules, and the `dcg` hook line: copied from
+  the Custom Commands of burn-mamba. The `dcg` hook is in the global
+  settings, so it applies to this repo too.
+- `cargo check --features examples-common` in the commands: the default
+  features do not check `examples`.
+- `mv` and `cp` in the Bash bullet (a decision of this ticket).
+- "A rare exception gets the name of its mechanism" in the block-agnostic
+  rule (from ADR-0002).
+
+### Stale lines in the consumers
+
+No doc of this repo links to a CLAUDE.md anchor. These consumer lines are now
+stale. A later session in each repo fixes them.
+
+burn-mamba (`CLAUDE.md`):
+
+- 16–22: "no name, no shape assumption, no doc reference" in burn-stack.
+  ADR-0002 lets the docs of burn-stack cite a family. The burn-mamba ticket 01
+  already plans this change.
+- 88–89 and 159: "see its File Map" for the generic containers. The File Map
+  of burn-stack now lists only directories and non-obvious files. Point to
+  `../burn-stack/GLOSSARY.md` and the module headers.
+- 491: "documented in `../burn-stack/CLAUDE.md`". The Architecture section is
+  gone. These features are in the glossary, the ADRs and the module headers
+  of burn-stack.
+- 566–575: "A change to a composition type updates `../burn-stack/CLAUDE.md`",
+  and the `tmp.md` rule. Now only a change that adds, deletes or renames a
+  directory or a listed file updates the File Map of burn-stack. It does so
+  in the same change.
+
+burn-mamba (`files.md`):
+
+- 11: "see its `CLAUDE.md`" for the generic containers. Same as line 491
+  above. (The burn-mamba ticket 01 moves `files.md` out of the repo.)
+
+burn-deltanet (`CLAUDE.md`):
+
+- 24–25: "a name, a shape assumption, or a doc reference". Same as ADR-0002
+  above.
+- 80–81: "has its own File Map". Same as burn-mamba 88–89.
+- 348–357: the same File Map and `tmp.md` rule as burn-mamba 566–575.
+
+burn-deltanet (`files.md`):
+
+- 8: "has its own" for the composition layer. Weak: burn-stack still has a
+  File Map, but it lists the containers only by directory.

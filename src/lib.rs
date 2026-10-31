@@ -41,8 +41,10 @@
 //! - `prime()`: `step()` without a user token. It emits the class
 //!   tokens/latents that wait for the next one.
 //!
-//! `forward()` from any cache equals `step()` unrolled from that same cache.
-//! A block family must keep its half of that contract.
+//! `forward()` from any cache equals `step()` unrolled from that same cache,
+//! on the outputs, on the final cache and on the gradients. The containers
+//! assume it. A block family must keep its half of that contract. For
+//! `RefBlock`, `reference/tests.rs` compares the outputs and the final cache.
 //!
 //! ## Where the pieces live
 //!

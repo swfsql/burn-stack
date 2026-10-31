@@ -34,6 +34,11 @@
 //! recording and leaves the stream in capture mode, so every later read in
 //! the process fails too.
 //!
+//! No other thread may do device work while a capture records. On CUDA, an
+//! upload from another thread invalidates the recording. Then the step runs
+//! eagerly, and no error shows it. See `examples::device::loader_device` for
+//! the cause, and for the device on which the examples build their batches.
+//!
 //! A stateless call (a fixed-shape `forward`) is the step with caches `()`:
 //! `|x, ()| (f(x), ())`. A training step is the step whose state is the
 //! parameters of the model, [`Weights`]: forward, backward, and an optimizer

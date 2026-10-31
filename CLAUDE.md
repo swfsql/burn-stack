@@ -1,503 +1,93 @@
 # CLAUDE.md
 
-Guidance for Claude Code (claude.ai/code) when working in this repository.
+burn-stack holds the block-agnostic containers of [Burn](https://github.com/tracel-ai/burn/)
+models: layers, layer stacks, networks, caches and their training helpers. A
+family connects through `Block`, `BlockConfig` and `CacheStack`. burn-mamba
+and burn-deltanet are its consumers.
 
-## What This Project Is
+## Where to look
 
-`burn-stack` is the block-generic composition layer on top of
-[Burn](https://github.com/tracel-ai/burn/). It holds everything *around* a
-sequence-mixing block:
+- `GLOSSARY.md`: the terms of the domain. Use them in code, docs, issues and
+  test names.
+- `docs/adr/`: the decisions with a trade-off. Read the ADRs of an area before
+  you change it.
+- The module header (`//!`) of each file: its mechanism and its math. The
+  header of `src/lib.rs` gives the composition hierarchy, the plug-in surface
+  and the three calls.
+- `docs/agents/`: how the agent skills use this repo (see
+  [Agent skills](#agent-skills)).
+- `../burn-mamba`, `../burn-deltanet`: the consumers. Their tests run the
+  containers with real blocks.
 
-- layers, (virtual-)layer stacks, bidirectional pairs,
-- latent/vocab networks, multi-gate residuals, class tokens,
-- schedules, the serialisable network shapes, the Muon plan.
-
-It holds **nothing** about a particular mixer.
-
-**It must stay family-agnostic.** Put no `mamba`, attention or convolution
-specifics here. A block plugs in through `Block` / `BlockConfig` /
-`CacheStack`. If a change needs a name, a shape assumption or a doc reference
-from one family, put it in the crate of that family.
-
-[`burn-mamba`](../burn-mamba) is its first consumer.
-
-## Build & Test Commands
+## Build and test
 
 ```bash
-cargo check                 # type-check the lib surface
-cargo check --all-targets   # + tests
-cargo test --lib -- --test-threads=1 # run tests (any backend; flex = CPU default)
-cargo doc --no-deps         # build docs
+cargo check                              # type-check the lib surface
+cargo check --all-targets                # + tests
+cargo check --features examples-common   # + the example scaffolding
+cargo test --lib -- --test-threads=1     # run the tests (flex = the CPU default)
+cargo doc --no-deps                      # build the docs
 ```
 
-- **Feature flags select the backend**:
-  `backend-{flex,flex-rayon,cpu,wgpu,webgpu,metal,vulkan,cuda,rocm,tch-cpu,
-  tch-gpu,remote,ndarray}` and `backend-ndarray-blas-*`. Use flex for checks
-  and tests (it is on by default). Each feature enables the matching
-  `burn/<backend>`. Several can be compiled in at once, and
-  `Device::default()` resolves which one to use (it reads `BURN_DEVICE`).
-- `autodiff`/`optim` are on by default. `optim` (Muon parameter groups)
-  implies `burn/optim` + `burn/std`. `cubecl`/`fusion` gate the per-backend
-  `BackendExt` impls that the macros emit. `check-nan`/`check-inf` enable the
-  `DENY_NAN`/`DENY_INF` guards. `dev-f16`/`dev-simd`/`dev-autotune` are
-  example/test conveniences.
-- A test takes its device from `utils::test_helpers::test_device()` (fp16
-  under `dev-f16`), never from `Device::default()`: the dtype defaults are
-  global, and the first tensor fixes them for the process. A tolerance goes
-  through `dtype_tol` (the fp32 value is unchanged), a check on values that
-  can be large compares with `max_rel_diff`, and a host read-back converts
-  (`try_into_vec_as`, not `try_to_vec`).
-- `test-helpers` exposes `utils::test_helpers` and `reference` to the
-  dev-dependencies of a downstream crate.
-- `examples-common` exposes `examples`. It pulls `burn/train` +
-  `burn/dataset` and the download/CLI/image/parquet/rand crates. A consumer
-  enables it in its **dev**-dependencies only. `ModelConfigExt` is
-  intentionally *not* behind it: consumers implement it in their own libs,
-  which cannot depend on a dev-only feature.
-- A consumer crate must **forward** every one of these features (see
-  `burn-mamba/Cargo.toml`). The `backend-*` cfgs are evaluated where
-  `impl_backend_ext_for_burn_backends!` expands, which is in the *calling*
-  crate.
+Feature flags (`Cargo.toml` has the full list):
 
-## Writing Style
+- A `backend-*` feature enables the matching `burn/<backend>`. `backend-flex`
+  is on by default. Use it for checks and tests. When the build has several
+  backends, `Device::default()` selects one (it reads `BURN_DEVICE`).
+- `autodiff` and `optim` (the Muon plan and the SGD) are on by default.
+- `cubecl` and `fusion` gate the per-backend `BackendExt` impls that the
+  macros emit. `check-nan` and `check-inf` enable the `DENY_NAN` and
+  `DENY_INF` guards. `dev-f16`, `dev-simd` and `dev-autotune` are for the
+  examples and the tests.
+- `test-helpers` exposes `utils::test_helpers` and `reference` to the
+  dev-dependencies of a consumer. `examples-common` exposes `examples`. A
+  consumer enables it in its dev-dependencies only.
+- A consumer forwards every feature (ADR-0002).
+
+Test-device rules:
+
+- A test takes its device from `utils::test_helpers::test_device()` (fp16
+  under `dev-f16`), not from `Device::default()`. The dtype defaults are
+  global, and the first tensor sets them for the process.
+- A tolerance goes through `dtype_tol` (the fp32 value does not change). A
+  check on values that can be large uses `max_rel_diff`. A read-back to the
+  host converts with `try_into_vec_as`, not `try_to_vec`.
+
+## Code rules
+
+- The code is block-agnostic: it has no family name and no shape assumption
+  of one family. A rare exception gets the name of its mechanism. The docs
+  can cite a family (ADR-0002).
+- Burn 0.22 fixes the high-level `Tensor` (so every `Module`) to its global
+  `Dispatch` backend. So the types of this crate have no backend generic. The
+  backend is a runtime `Device`, and autodiff and the dtype are properties of
+  the device. Only the custom-backward plumbing is generic over `B` (`F<B,D>`,
+  the `Backward<B,_>` nodes, the `Autodiff<B>` ext impls).
+- `#![warn(missing_docs)]` is on. Document each public item that you add.
+  `cargo check` and `cargo doc --no-deps` stay free of warnings.
+- Test a container against `RefBlock`, not a real family (ADR-0005). When the
+  container surface grows, `RefBlock` grows with it.
+
+## Docs
 
 - **Always load the `asd-ste100` skill** before you write code comments,
   rustdoc or markdown documents. Write all of them in its style.
-
-## Documentation Maintenance (CLAUDE.md)
-
-- Keep this file **as small as possible**, but still usable. Point to the
-  source (each module header carries the details). Do not copy it here. When
-  a source file changes, update its one entry. Do not grow this file.
-- **Never use this file as a changelog.** It describes the code as it *is
-  now*. It must not record individual changes, migrations, "used to be /
-  now", "verified by", dates, or PR history. If you find changelog-style
-  prose, delete it.
-- Always be **extremely succinct** when you add content to this file.
-- When a source file is added, removed or changed, prepare an update to its
-  entry in the [File Map](#file-map). A change that is specific to one mixer
-  family updates the CLAUDE.md of that family's crate instead. Important
-  rule: do this at the end of the work. If you have not read this file by
-  then, **do not** read it: the context is still big from the work, and
-  reading big files then is expensive. Instead, write a `tmp.md` file with the
-  new File Map entry and a short overview of the most important aspects of
-  the created/removed/updated files. After a full context reset (the user
-  triggers it), this file gets its update.
-- **Commits**: when a skill or the user tells you to commit (for example, at
-  the end of an implementation), commit your work to the current branch. Do
-  not push. When the user asks only for a commit message, write it as text
-  for the user to copy. A commit message has a title line and a short body,
-  and it ends with the `Co-Authored-By:` trailer.
-
-## File Map
-
-Tests are in a sibling `tests.rs` (or `<module>/tests.rs`). This map does not
-list them, except the contract suite.
-
-```text
-src/
-├─ lib.rs            crate root: module decls, prelude, DENY_NAN/DENY_INF guards
-├─ reference.rs      RefBlock: a minimal worked `Block` (a gated EMA mixer + its
-│                    CacheTensors), the test fixture of the crate.
-│                    `reference/tests.rs` is the container contract suite
-│                    (feature `test-helpers`)
-├─ modules/          composition + shared NN modules
-│  ├─ mod.rs         Block / BlockConfig traits (the whole plug-in surface).
-│  │                 block_forward_packed defaults to a panic (no packed rows)
-│  ├─ layer.rs       Layer<M>: Pre-LN block M(RMSNorm(·)) + optional norm2/mlp.
-│  │                 Returns the total delta of the layer (Layers adds the outer
-│  │                 residual). application(k): the view that application k runs
-│  │                 (LayerUntied)
-│  ├─ layers.rs      Layers<M>: virtual-layer stack over real weight sets.
-│  │                 grad_horizon truncates BPTT to a tracked-layer mask
-│  │                 (forward/step/prime cut alike). only_start_latents (the
-│  │                 capture gate). forward_packed shares the loop of forward
-│  │                 (forward_rows): the Start latents go into the opening slots.
-│  │                 zero_caches_2d/3d
-│  ├─ mlp.rs         GatedMlp: SwiGLU feed-forward interleaved with the mixer.
-│  │                 from_hidden_ratio = the Llama ⅔·ratio·d_model sizing rule
-│  ├─ model_config.rs ModelConfigExt: config → module + its Muon plan. The seam
-│  │                 that a model-agnostic driver builds against (consumers
-│  │                 impl it)
-│  ├─ multi_gate.rs  Multi-Gate Residuals (Standard | MultiGate): accumulate,
-│  │                 then mix
-│  ├─ network.rs     LatentNetwork (optional final norm) / VocabNetwork
-│  │                 (+ forward_packed; tokens are pairs (id, flag), the
-│  │                 flag channel: flag_embedding in, flag_head → the last
-│  │                 logit column). embed_pairs/apply_vocab_heads: the vocab
-│  │                 I/O, shared with HNetVocabNetwork
-│  ├─ shape.rs       NetworkShape (+ LatentShape/VocabShape/BidiShape): the
-│  │                 serialisable, block-free half of a model config. The
-│  │                 builders carry `C` and cannot derive Config, so the config
-│  │                 of a consumer is the pair `{ shape, block }`. init/muon_plan
-│  │                 over any BlockConfig
-│  ├─ bidi.rs        BidiLayers<M> + BidiLayerPair<M> + OutputMerge
-│  ├─ hnet/          HNet<E, M>: stages of Layers<E> around a main Layers<M>,
-│  │                 dynamic chunking between levels; mod.rs header = the math.
-│  │                 forward (right padding; reads the chunk counts to the
-│  │                 host) / step (StepMode: Masked = capturable, Gathered =
-│  │                 the chunk-starting rows only). No class markers, no packed
-│  │                 rows. routing.rs: Router (W_q prev row, W_k current row,
-│  │                 identity init, p > ½), RouterCache, Routing (+ ratio_loss).
-│  │                 chunk.rs: the index math (prefix_sum of b → source rows,
-│  │                 inner padding). smooth.rs: the EMA as a two-level segsum
-│  │                 scan. cache.rs: HNetCaches + row select/gather/merge over
-│  │                 CacheTensors. network.rs: HNetVocabNetwork (+ start rows:
-│  │                 forward_opened, prime). shape.rs: HNetShape/HNetVocabShape
-│  │                 (init over the cumulative residual depth, Muon plan
-│  │                 scoped per stack)
-│  ├─ cache.rs       CacheStack trait (+ per-slot inner/from_inner/device,
-│  │                 whole-stack detach() to carry state across a gradient
-│  │                 boundary). lift: the way back from `inner`, onto a device
-│  │                 with its checkpointing strategy.
-│  │                 CacheTensors: a pairwise TensorZip traversal per cache type
-│  │                 (into_owned_buffers, assign_in_place). Axis 0 of every
-│  │                 tensor is the batch. Impls: `()` = no
-│  │                 cache, `Vec`, `Tensor<D>`, a pair = state beside a cache
-│  ├─ activation/    silu, softplus, log_sigmoid (dtype-aware)
-│  ├─ norm/          rms_norm (also usable as QK-Norm), rms_norm_gated, rms_score.
-│  │                 f16/bf16 compute in f32 (upcast/downcast); ε = the
-│  │                 div_eps of the compute dtype (f64 stays f64)
-│  ├─ loss/          bce, cross_entropy, mse, l2warp (max-logit penalty, added
-│  │                 to the gradient only), each computed as the norms
-│  └─ misc/          gqa, segsum, split, sanity, prefix_sum (blocked: the values
-│                    of cumsum, not its quadratic cost on cubecl)
-├─ examples/         example scaffolding shared by the consumer crates
-│  │                 (feature `examples-common`, off by default, dev-only)
-│  ├─ cli.rs         AppArgs: every flag that the examples share (training-config
-│  │                 overrides with the optimizer, --no-graph, --resume, budget,
-│  │                 cadence), artifact dir, model/optim/config I/O (the optim
-│  │                 saved with its TrainingProgress, progress.json). A flag
-│  │                 replaces a loaded optimizer, but panics if that ignores a
-│  │                 saved optim state. The flags of one example, after `--`:
-│  │                 `extra` + `finish_extra`. StepFlags: --profile,
-│  │                 --max-vram, --vram-cleanup-every, --grad-checkpointing
-│  │                 (`training_device`)
-│  ├─ prof.rs        the phase timers of a training step (`prof` lines, with
-│  │                 the reserved and the `peak` MB)
-│  ├─ vram.rs        the --max-vram cap (`check` after a backward, the peak
-│  │                 for `prof`) + `cleanup` (its period; the queued pages
-│  │                 that `bytes_reserved` misses)
-│  ├─ session.rs     Session, what every epoch loop threads: TrainingProgress
-│  │                 (step, epoch, batch. A resumed epoch finishes from a fresh
-│  │                 shuffle), Budget, Cadence, MetricsLog (metrics.jsonl)
-│  ├─ device.rs      Device dtype configuration (`dev-f16`) + FloatElement.
-│  │                 loader_device (dataloader workers build on the host) +
-│  │                 batch_float/batch_int (the move of the loop to the device)
-│  ├─ trainer.rs     Trainer: one LossFn. It steps eagerly through the module
-│  │                 optimizer, or (plain SGD + graphs) is captured whole
-│  │                 (Weights + SgdConfig::step, the lr an input). Other shapes
-│  │                 step eagerly into the same weights
-│  ├─ training.rs    TrainingConfig + OptimizerConfig {fallback: AdamW | SGD,
-│  │                 optional Muon}, OptimizerKind (the four, `of` = their
-│  │                 defaults). Budget: the --max-batches / --max-seconds run
-│  │                 caps (not config state, the clock starts at the first step)
-│  ├─ mnist/         dataset.rs (download + batching), classify.rs (the epoch
-│  │                 loops + the MnistModel seam, `train_step` = the whole step
-│  │                 of a Trainer), render.rs (a digit beside its class
-│  │                 distribution, as text or PNG)
-│  └─ tiny_stories/  dataset.rs: character corpus (alphabet, whole-parquet
-│                    download + cased text cache, one story per item, batches
-│                    of (id, case flag) pairs padded to whole windows with a
-│                    per-slot `scored` count; cased tokens: UPPER, pair). Packed
-│                    train rows: pack_rows (first-fit over open rows, at the
-│                    PackLayout of the model), PackedStoriesDataset/Batcher,
-│                    TinyStoriesBatch::packed. Length buckets: bucket_batches
-│                    (the shortest slot that holds a story, one shape per
-│                    slot), probe_order (k batches of each slot first: a VRAM
-│                    probe meets every shape), BucketedStoriesDataset/Batcher
-│                    (an item = a batch).
-│                    lm.rs: TinyStoriesConfig (+ `pack`, `bucket`) + its
-│                    corpus-flag Overrides (--pack/--pack-rows/--pack-open/
-│                    --no-pack, --buckets/--bucket-chars/--no-bucket,
-│                    --bucket-probe), dataloaders_for (the validation is
-│                    never packed; a bucketed config validates whole
-│                    stories on its slots; a bucket probe keeps its order:
-│                    no shuffle, one worker),
-│                    lm_output_packed, the
-│                    FrontierGate, the epoch loops + the cache-carrying LmModel
-│                    seam. lm_output scores any extra output positions that the
-│                    model spliced in against the first character of the story,
-│                    and masks the padding out at the fixed window shape
-│                    (PAD_TARGET rows, the mean normalised on device,
-│                    PerCharLoss for validation). The loss of a character:
-│                    the id CE + the case BCE of a letter (case_nll); the
-│                    validation splits primary/case bits. Class markers are
-│                    offered, never assumed.
-│                    sample.rs: one prime/prefill/decode sampler over
-│                    VocabNetwork<M>. `decode`, the shared loop, draws the id
-│                    and the case of a letter on the device in f32 (the pair
-│                    is step state) and replays a
-│                    CapturedStep. A `Prefill`, held across prompts, feeds
-│                    right-padded fixed-shape chunks after a kept opening, with
-│                    one captured chunk for all
-├─ optim/            Muon parameter groups (feature `optim`): an allowlist, not
-│                    a denylist. + the capturable SGD
-│  ├─ mod.rs         MuonPlan: specs → ModuleOptimizer (FallbackConfig: AdamW |
-│  │                 SGD, + Muon groups)
-│  ├─ spec.rs        ProjSpec/ProjSegment: fused-weight column seams → ParamGroup
-│  │                 (`tiled`: one copy per application; `within`: more path
-│  │                 substrings that scope it to one stack). BLOCK_CONTAINERS =
-│  │                 the field names that store a block
-│  ├─ segmented.rs   Segmented: one optimizer per column block of a fused weight.
-│  │                 An SGD block is stateless and holds no state entry
-│  ├─ sgd.rs         SgdConfig: plain SGD (decay, clipping, no momentum). `init`
-│  │                 = the Sgd of Burn (`build` = its bare one). `step` = the
-│  │                 same op for op, with a `[1]` device LR: the one optimizer
-│  │                 that a captured step can replay
-│  └─ report.rs      MuonPlan::describe(&module): per-param optimizer assignment
-└─ utils/            lower-level plumbing
-   ├─ mod.rs         div_eps (per-dtype epsilon), upcast/downcast (f16/bf16 ↔ f32)
-   ├─ class/         ClassToken / ClassLatent placement (CLS-style registers) +
-   │                 ClassCursor(s): offsets + full-length hint, shared by
-   │                 forward/step/prime
-   ├─ packing.rs     Packed: packed rows (reset mask + opening slots for the
-   │                 Start latents), from_starts, place. bool_to_device (as ints:
-   │                 cubecl loads no Bool(Native) data)
-   ├─ padding.rs     Padding: the mask of a right-padded batch + the place of
-   │                 each row in the sequence of its slot. splice (class
-   │                 markers), in_slot_order (the rows of a block into slot
-   │                 order and back), reversed (bidi). tests.rs: every
-   │                 container against each slot run alone
-   ├─ schedule/      Schedule + BidiSchedule (virtual → real index mapping) +
-   │                 Applications (which application of its real layer each
-   │                 virtual layer is) + GradHorizon (which virtual layers
-   │                 back-propagate)
-   ├─ scheduler/     LR schedules (cosine + warmup, constant, linear) + Sequence
-   │                 (segments from a global step, each counting from its
-   │                 start: a whole run in one config)
-   ├─ backend_macros.rs  impl_backend_ext_for_burn_backends! /
-   │                     decl_autodiff_backend_ext!: per-backend BackendExt impls
-   ├─ combined_grad.rs   flatten/unflatten (y, final_state) for a custom backward
-   ├─ detach.rs          detach_params: cuts gradients, does NOT free memory
-   ├─ init.rs            InitPolicy: the reference LM init, applied after the
-   │                     build. N(0,std) on 2-D weights, zero biases, optional
-   │                     residual rescale. The bespoke params of a block do not
-   │                     change
-   ├─ fprim.rs           F<B,D>: rank-tagged FloatTensor-primitive wrapper
-   ├─ graph.rs           CapturedStep: a step captured once (the `capture` of
-   │                     burn) and replayed. A stable input (a StepInput: one
-   │                     tensor or a tuple) and cache buffers refreshed in place.
-   │                     Caches restored around `capture`. The graph is
-   │                     kept only if every buffer id survived (else eager).
-   │                     Stateless = caches `()`. WARMUP_STEPS.
-   │                     graph/weights.rs: Weights<M>, the params of a module as
-   │                     the caches of a training step
-   ├─ test_helpers.rs    test_device (fp16 under `dev-f16`), dtype_tol,
-   │                     max_abs_diff / max_rel_diff + grad-comparison macros
-   └─ untied.rs          UntiedParam + tile/view/retie: a parameter held once per
-                         application, copies side by side along an existing axis
-```
-
----
-
-## Architecture
-
-### The plug-in surface
-
-A block family supplies three impls and gets every container free:
-
-- **`Block`**: `block_forward` (chunked: training + prefill), `block_step`
-  (recurrent: decode), the zero-cache constructors, and `untied_params`
-  (empty when nothing is untied). Associated types: `Cache`, `Caches`,
-  `Options` (the per-call algorithm/chunk selector, `()` when there is nothing
-  to select).
-- **`BlockConfig`**: `d_model`, `init_block(n_applications, …)` (tiles what
-  it unties), `muon_projections`.
-- **`CacheStack`** on its `Caches`: slot count, move-in/move-out, and the
-  inner-backend hop that `grad_horizon` does.
-
-`Module + ModuleDisplay` are supertraits of `Block`, so the containers are
-themselves `Module`s (the derive of Burn requires `ModuleDisplay` of every
-module-typed generic). `Module::valid` lets `grad_horizon` move the stack to
-the inner backend.
-
-### Three execution modes
-
-- `forward()`: parallel/chunked.
-- `step()`: recurrent, O(state) per token, no growing KV cache.
-- `prime()`: `step()` without a user token. It emits the class tokens/latents
-  that wait for the next token, and returns the last one (`None` if there
-  were none).
-
-`forward()` from any cache equals `step()` unrolled from that same cache, on
-the outputs, the final cache **and** the gradients. The containers assume it,
-and a family must supply it. `reference/tests.rs` asserts it for `RefBlock`.
-
-A captured graph can replay a `step()` (`utils/graph.rs`, `CapturedStep`):
-
-- A replay reads the buffers that the capture saw. So the closure writes its
-  new cache back in place (`CacheTensors`, one per family).
-- The graph is kept only where that is verified (cubecl without fusion).
-- `capture` is `unsafe`: what the step reads beyond its arguments must stay
-  the same buffers.
-- A fixed-shape `forward` is the step with caches `()`.
-
-A training step is the step whose caches are the weights of the model
-(`Weights`): forward, backward and `optim::SgdConfig::step`, with the learning
-rate as an input. Only plain SGD replays. The optimizers of Burn bake host
-scalars (the rate, the bias correction of Adam) into a graph, and move their
-state between buffers (tracel-ai/burn#5779). `examples::trainer::Trainer`
-packages it. Its loss must keep the shapes of the batch (a mask, not a
-gather).
-
-No other thread may do device work while a capture records. cubecl gives each
-thread its own stream over one pool, and an upload from a worker invalidates
-the recording. This is silent: the step then runs eagerly. So dataloader
-workers build on the host (`examples::device::loader_device`), and the loops
-move each batch to the device.
-
-### Padded batches
-
-`forward()` (every container, and `Block::block_forward`) takes
-`pad: Option<Tensor<2, Bool>>`: `true` at padding, **right** padding per slot.
-A padded row is absent: the real outputs and the final cache of each slot are
-those of that slot run alone. A block sees only a right-padded mask, because
-the containers keep it so (`utils/padding.rs`):
-
-- `Start`/`Custom` take the padding of the token that they precede.
-- `Middle`/`End` land at the own length of each slot. The block then runs on
-  its rows gathered into slot order.
-- The reversed pass of bidi reads the real rows of each slot backwards.
-
-`Middle` + mask needs the whole sequence in one call. `End` works chunked.
-
-**Packed rows** (`utils/packing.rs`) are the other layout: whole sequences one
-after another in each slot. `forward_packed` (`Layers`, `VocabNetwork`) takes a
-reset mask. Each block restarts at a reset (`Block::block_forward_packed`), and
-the stack puts its `Start` latents into reserved opening slots, so the shapes
-do not change. The packer places the resets where the block accepts them.
-`RefBlock` skips padded rows and asserts the contract.
-
-### Virtual layers, bidirectional, class tokens, H-Net
-
-- **Virtual layers** (`utils/schedule/`): `Layers<M>` runs `n_virtual_layers`
-  logical passes over `n_real_layers` weight sets. Each virtual layer keeps
-  its own cache. `Schedule` maps virtual → real (`Cyclic`/`Stretched`/
-  `Custom`). `BidiSchedule` pairs forward/backward layers.
-- **Gradient horizon** (`grad_horizon: Some(GradHorizon)`): back-propagates
-  only *some* virtual layers (truncated BPTT). The others run on the inner
-  backend. `forward`/`step`/`prime` cut on the same layers. A shared weight
-  collects the gradient of its tracked applications only. It is a **mask**,
-  not one boundary:
-  - `Depth(K)` keeps the last `K` applications of every **real** layer. Under
-    `Cyclic` that is one top suffix. Under `Stretched` it is the tail of each
-    run (one cut per real layer). So every weight set trains.
-  - `Mask(Vec<bool>)` states the tracked layers directly. `Custom` takes it
-    (`Depth` panics on `Custom`).
-  - `GradHorizon::last(K, n)` is the plain suffix. It is the only form that
-    cuts a stack that shares no weights, where each real layer has a single
-    application.
-
-  What enters an untracked segment is re-attached *straight-through* where
-  the graph resumes (a value-zero term that restores an identity gradient
-  path). The reason is the stack **input**: it enters only at the bottom.
-  Without the re-attachment, a cut leaves the `in_proj`/embedding of a network
-  untrained. TRM/HRM avoid this: they inject the input again at every
-  recursion. This stack does not. Under `MultiGate`, the carry reaches every
-  stream. Class embeddings train at every level and on both sides of a cut (a
-  per-layer latent inside an untracked segment gets a tracked zero-valued
-  *ghost* row in the carry). They are learnable input rows, not part of the
-  transform of a layer.
-- **Bidirectional** (`modules/bidi.rs`): a pair runs a straight (→) and a
-  reversed (← through `flip`) pass. `OutputMerge` (`Mean` | `CatLinear`)
-  merges them. `BidiLayers<M>` stacks pairs of its own `Layer`s.
-  `BidiLayerPair<M>` is one pair as a standalone module.
-- **Class tokens/latents** (`utils/class/`): learnable `[CLS]`-style
-  embeddings spliced into the sequence. `ClassToken` is on a *network*,
-  `ClassLatent` on a *layer container*.
-  - `Start`(0)/`Middle`(`L/2`)/`Custom(k)` are emitted **before** the original
-    token at that index, uniformly. So a `Custom(k ≥ L)` never lands (unless
-    the caller streams past `L`, and even then it precedes the next token).
-    `End` alone **closes** the sequence, after its last token.
-  - Placement is streamed and identical for both calls. Each call takes an
-    optional `&mut ClassCursors`: one `full_len` hint + one cursor per level
-    (`network`/`stack`/`per_layer`). So a sequence can split into any number
-    of `forward` chunks and/or `step`s, and no marker moves.
-  - A cursor past a marker skips it (`Start` fires once). `Middle`/`End` panic
-    without the hint. A level gives the hint to the level above, grown by its
-    **landing** markers only (`landing_count`).
-  - `step` returns the **last** token that it emitted. `prime` takes no user
-    token (`End` is never primed).
-  - `None` keeps the defaults: for `forward`, this call is the whole
-    sequence. For `step`/`prime`, no injection.
-  - Read markers back through `class_*_output_indices` (for a chunk, minus
-    the pre-call cursor of the level).
-- **Multi-Gate Residuals** (`modules/multi_gate.rs`): `Layers<M>.residuals`
-  selects plain additive (`Standard`) or `MultiGate`. `MultiGate` keeps up to
-  `n_stream` streams, gated/attention-pooled between layers, in place of one
-  additive skip. The input is stream 1, and the first `n_stream−1` layers
-  **append** their output as a new stream. Only then does the gated mixing
-  start. It is a convex mean-pool, so it gives an `O(1)` output, where the
-  additive skip grows with depth. So a latent head wants `final_norm`. Class
-  markers ride along at every level. See the module header.
-- **Untied parameters** (`utils/untied.rs`): a real layer can hold some
-  parameters once per application, not tied: its `LayerUntied` pre-norms,
-  and those of its block that the config lists (`Block::untied_params`).
-  - The copies tile an existing axis from one draw. So an untied stack starts
-    as the tied one (the copy gradients sum to the tied gradient).
-  - Containers run `Layer::application(k)` (borrowed when nothing differs),
-    and size caches from view 0.
-  - A `grad_horizon` cut through an untying layer panics.
-  - Shapes `retie` after their `InitPolicy`.
-  - `ProjSpec::tiled` steps each copy alone.
-- **H-Net** (`modules/hnet/`): a hierarchy of stacks. A stage runs encoder →
-  router → keep the chunk-starting rows → inner network (the next stage or
-  the main network) → EMA + repeat + `STE(c)` + residual → decoder. Two block
-  families: `E` for every stage, `M` for the main network. `forward` = `step`
-  unrolled (outputs, caches, gradients). `step` runs the inner network on
-  some rows only, so it selects, gathers and merges cache rows through
-  `CacheTensors`.
-
----
-
-## Key Design Decisions
-
-- **No optimized kernels**: only the portable tensor ops of Burn, so one code
-  path runs on every backend.
-- **Dispatch backend (Burn 0.22+)**: the high-level `Tensor` (every `Module`)
-  is pinned to the global `Dispatch` backend, so library types are **not
-  backend-generic**. The backend is a runtime `Device`. Autodiff and dtype are
-  device properties. Only the custom-backward plumbing stays generic over `B`
-  (`F<B,D>`, `Backward<B,_>` nodes, `Autodiff<B>` ext impls).
-- **A no-grad region means the inner backend, not `detach`.** Burn registers
-  untracked ops in the graph anyway. So `detach` cuts gradients but
-  **retains every activation** (measured: 2765 MB vs 550 MB at 64 virtual
-  layers, see `utils/detach.rs`). `grad_horizon` runs its untracked segments
-  on `Module::valid(self)`. Three consequences:
-  - Lift back with `modules::lift`, never a bare `Tensor::from_inner`
-    (= `Tensor::autodiff`). `from_inner` enables autodiff also on a plain
-    tensor, and it resets the checkpointing strategy to `Disabled`. `inner`
-    and `lift` do nothing off autodiff. `.valid()` also turns off training
-    flags (dropout, …).
-  - Caches convert by hand: `Module::map` does nothing on plain `Tensor`
-    fields, which is all a cache holds.
-  - `is_require_grad` reports only `Requirement::Grad` leaves. So tests
-    assert gradient *reachability* (`is_tracked` is the graph-participation
-    probe).
-- **Muon sees split projections, the model does not.** The `Muon` of Burn
-  orthogonalises a whole 2-D weight. That is wrong for a fused `in_proj`
-  (independent maps that share one allocation), and it panics for rank ≠ 2.
-  So `optim` takes a per-family **allowlist** of `ProjSpec`s (the same column
-  widths that the `split_into` of the forward uses). `Segmented` steps each
-  block with its own optimizer. So each sub-matrix is orthogonalised and
-  shape-LR-adjusted alone, and the forward keeps its single fused GEMM.
-  - Per-head *scalar* channels, every 1-D/3-D tensor, and the boundary
-    weights (embedding, LM head, network in/out projections, class-token
-    tables) stay on the fallback (AdamW or plain SGD).
-  - A spec matches its container (`"block."`, the suffix of every
-    `BLOCK_CONTAINERS` entry) and its weight as **separate** path substrings,
-    and both must match. So one plan covers plain, virtual-layer and
-    bidirectional stacks, hand-written models, and a block that is an `enum`
-    (whose variant name is between the two).
-- **`#![warn(missing_docs)]`**: keep the crate free of warnings. Document the
-  public surface when you add it. `cargo doc --no-deps` must also be free of
-  warnings.
-- **`reference.rs` is load-bearing, not decoration.** It proves that the
-  containers need nothing family-specific. Extend it when you extend the
-  container surface. Do not use a real mixer to test a generic type.
-
----
+- Keep the docs small. Every session loads this file, so add a line here only
+  when every session needs it. A mechanism goes into the module header of its
+  file.
+- The docs describe the code as it is now. Delete changelog prose where you
+  find it: individual changes, migrations, "used to be / now", "verified by",
+  dates and PR history.
+- Update the [File Map](#file-map) in the change that adds, deletes or
+  renames a directory or a listed file. A new file whose name does not tell
+  what it holds also gets a line.
+- A new term goes to `GLOSSARY.md`, through the `/domain-modeling` skill. A
+  new decision with a trade-off goes to an ADR in `docs/adr/`.
+- **Commits**: when a skill or the user asks for a commit, commit to the
+  current branch. Do not push.
+  When the user asks only for a commit message, write it as text for the user
+  to copy. A commit message has a title line and a short body, and it ends
+  with the `Co-Authored-By:` trailer.
 
 ## Notation
 
@@ -517,6 +107,46 @@ suffix encodes its shape needs no extra comment. Lower-case = base dimensions
 | `l` | `chunk_len` | 64 … 256 |
 | `n` | `nchunks` | varies |
 
+## File Map
+
+One line for each directory and each file whose name does not tell what it
+holds. The tests of a module are in a sibling `tests.rs`.
+
+```text
+src/
+├─ reference.rs        RefBlock, the test block (ADR-0005) + the contract suite
+├─ modules/            the containers + shared NN modules. mod.rs: Block, BlockConfig
+│  ├─ layers.rs        Layers<M>: the layer stack (gradient horizon, packed rows)
+│  ├─ shape.rs         NetworkShape, …: the block-free half of a config (ADR-0007)
+│  ├─ cache.rs         CacheStack, CacheTensors, lift (back from the inner backend)
+│  ├─ hnet/            H-Net. mod.rs header = the math. One file for each part
+│  ├─ activation/      silu, softplus, log_sigmoid
+│  ├─ norm/            rms_norm, rms_norm_gated, rms_score
+│  ├─ loss/            bce, cross_entropy, mse, l2warp
+│  └─ misc/            gqa, segsum, split, sanity, prefix_sum
+├─ optim/              the Muon plan (feature `optim`). mod.rs: MuonPlan
+│  ├─ spec.rs          ProjSpec: the sub-projections of a fused projection
+│  ├─ segmented.rs     Segmented: one optimizer for each sub-projection
+│  ├─ sgd.rs           SgdConfig: the plain SGD that a captured step can replay
+│  └─ report.rs        MuonPlan::describe: the optimizer of each parameter
+├─ utils/              plumbing. mod.rs: div_eps, upcast/downcast
+│  ├─ class/           class markers: ClassToken, ClassLatent, ClassCursors
+│  ├─ schedule/        layer schedules, Applications, GradHorizon
+│  ├─ scheduler/       LR schedules (Lr)
+│  ├─ graph.rs         CapturedStep. graph/weights.rs: Weights (the training step)
+│  ├─ fprim.rs         F<B,D>: the primitive wrapper of a custom backward
+│  ├─ combined_grad.rs two outputs in one autodiff node (a custom backward)
+│  └─ init.rs          InitPolicy: the reference LM init
+└─ examples/           example scaffolding of the consumers (feature `examples-common`)
+   ├─ cli.rs           AppArgs: the shared flags, the artifact I/O
+   ├─ session.rs       Session: TrainingProgress, Cadence, MetricsLog
+   ├─ training.rs      TrainingConfig, OptimizerConfig, Budget
+   ├─ device.rs        the dtype setup, loader_device, batch_float/batch_int
+   ├─ prof.rs          the phase timers of a training step
+   ├─ mnist/           dataset, classify (the epoch loops), render
+   └─ tiny_stories/    dataset (packing, buckets), lm (the LM loops), sample
+```
+
 ## Custom Commands
 
 - `rg`: available.
@@ -527,7 +157,20 @@ suffix encodes its shape needs no extra comment. Lower-case = base dimensions
   - No `python - <<'PY'`, no `sed -i`, no `cat > file <<'EOF'`. Always use
     `Edit`s.
   - Bash stays the tool for *reading* and *inspecting* (`cat`, `sed -n`, `rg`,
-    `grep`) and for throwaway files outside the crate (for example, in `/tmp`).
+    `grep`). It also moves and copies whole files (`mv`, `cp`), and makes
+    throwaway files outside the crate (for example, in `/tmp`).
+- A dangerous-command-guard hook (`dcg`) checks each Bash command. It also
+  blocks a `>` redirect to a path that holds a variable. Use a literal path or
+  a script file.
+- **Waiting**: some commands or waits can take more than ~1 min: a build, a
+  run, a chain of runs, or one part of a chain. For these, do not hold the
+  turn. Use no foreground loop (`until`, `while`), no `sleep` and no long
+  `timeout`. Watch the job in the background, then return the turn to the
+  user. A `Monitor` is the best watch. A background waiter script or
+  `run_in_background` is also correct. The watch also reports each failure
+  state (for example, a crash).
+- **Memory**: ask the user before you write to the auto-memory. Show the
+  change that you propose, and write it only after the user approves it.
 
 ## Agent skills
 

@@ -11,7 +11,9 @@
 //! `ModelConfigExt` names exactly those two. So the artifact load and the
 //! optimizer construction can be written once, against `C: ModelConfigExt`.
 //!
-//! Consumers implement it on their own network configs. The trait is tiny on
+//! Consumers implement it on their own network configs, in their libraries.
+//! So it is not behind the `examples-common` feature: a library cannot use a
+//! feature that only its dev-dependencies enable. The trait is tiny on
 //! purpose, because both methods normally forward to an inherent method.
 
 use burn::prelude::*;
