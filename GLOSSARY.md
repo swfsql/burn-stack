@@ -179,6 +179,11 @@ _Avoid_: lane, depth-stream
 The residual scheme that keeps several residual streams between layers and
 mixes them with gates.
 
+**β gate**:
+The gate of one residual stream in Multi-Gate Residuals. It sets how far that
+stream moves towards the output of a layer.
+_Avoid_: mixer
+
 ### Bidirectional stacks
 
 **Bidirectional pair**:

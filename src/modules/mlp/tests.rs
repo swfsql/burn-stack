@@ -52,7 +52,7 @@ fn value_half_precedes_gate_half() {
 /// is what lets [`Layer`](crate::modules::Layer) reuse one module for both
 /// calls.
 #[test]
-fn step_matches_the_matching_forward_row() {
+fn step_matches_the_matching_forward_position() {
     let device = test_device();
     let (d_model, d_intermediate, batch, seq) = (16, 128, 2, 4);
     let mlp = GatedMlpConfig::new(d_model, d_intermediate).init(&device);
@@ -65,10 +65,10 @@ fn step_matches_the_matching_forward_row() {
     let full = mlp.forward(x.clone());
 
     for t in 0..seq {
-        let row: Tensor<2> = x.clone().narrow(1, t, 1).squeeze_dim::<2>(1);
+        let x_t: Tensor<2> = x.clone().narrow(1, t, 1).squeeze_dim::<2>(1);
         let expected: Tensor<2> = full.clone().narrow(1, t, 1).squeeze_dim::<2>(1);
         assert!(
-            max_abs_diff(mlp.forward(row), expected) < dtype_tol(1e-5),
+            max_abs_diff(mlp.forward(x_t), expected) < dtype_tol(1e-5),
             "position {t} disagrees"
         );
     }

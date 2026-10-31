@@ -4,7 +4,7 @@ use crate::utils::{Applications, GradHorizon, Schedule};
 use crate::utils::class::{
     assert_full_len_known, class_chunk_plan, class_emb_table, class_emb_width,
     class_marker_output_indices, class_prime_plan, class_row, init_class_emb,
-    insert_class_markers_padded, landing_count, splice_class_rows,
+    insert_class_markers_padded, landing_count, splice_class_embeddings,
 };
 use crate::utils::{ClassCursor, ClassCursors, ClassLatent, Packed, Padding};
 use burn::module::Param;
@@ -542,8 +542,8 @@ where
                     layer.class_latents_emb.as_ref(),
                     x.dims()[2],
                 );
-                x = splice_class_rows(x, &plan, &emb);
-                streams = streams.map(|s| splice_class_rows(s, &plan, &emb));
+                x = splice_class_embeddings(x, &plan, &emb);
+                streams = streams.map(|s| splice_class_embeddings(s, &plan, &emb));
                 // Keep the straight-through carry aligned with `x`: splice
                 // **ghost latents** at the latent positions. A ghost latent has
                 // value zero like the rest of the straight-through carry, but
@@ -559,7 +559,7 @@ where
                         emb.dims()[1],
                     );
                     let ghost = tracked.clone() - tracked.detach();
-                    splice_class_rows(st, &plan, &ghost)
+                    splice_class_embeddings(st, &plan, &ghost)
                 });
             }
 
@@ -784,7 +784,7 @@ where
 
         // MultiGate: one stream set per token, seeded (like `forward`'s) with
         // the token itself as the single stream. Empty for the Standard path.
-        let mut carried: Vec<Tensor<3>> = match has_mg {
+        let mut stream_sets: Vec<Tensor<3>> = match has_mg {
             false => Vec::new(),
             true => stream
                 .iter()
@@ -811,9 +811,9 @@ where
         for pos in 0..n {
             // The backend hops that `forward` makes, in the shape of a token
             // stream. They are before the empty-layer `continue` below only as
-            // a defense: `carried` is empty exactly when `stream` is empty, so
-            // a skipped layer has nothing to hop either way. But this keeps the
-            // hops independent of the skip condition.
+            // a defense: `stream_sets` is empty exactly when `stream` is empty,
+            // so a skipped layer has nothing to hop either way. But this keeps
+            // the hops independent of the skip condition.
             let track = tracked.as_ref().is_none_or(|t| t[pos]);
             match (st.is_some(), track) {
                 // Entering an untracked span: take the straight-through carry,
@@ -826,14 +826,14 @@ where
                             .collect(),
                     );
                     stream = stream.into_iter().map(Tensor::inner).collect();
-                    carried = carried.into_iter().map(Tensor::inner).collect();
+                    stream_sets = stream_sets.into_iter().map(Tensor::inner).collect();
                 }
                 // Leaving one: lift what it produced back onto the autodiff
                 // backend, as fresh graph roots, and re-attach the
                 // straight-through carry.
                 (true, true) => {
                     stream = stream.into_iter().map(|t| lift(t, &device)).collect();
-                    carried = carried.into_iter().map(|t| lift(t, &device)).collect();
+                    stream_sets = stream_sets.into_iter().map(|t| lift(t, &device)).collect();
                     let st = st.take().expect("inside an untracked span");
                     debug_assert_eq!(
                         st.len(),
@@ -844,9 +844,9 @@ where
                     // each token brings its own `[batch, k, d]` stream set and
                     // adds the straight-through carry of the pooled token into
                     // all of them.
-                    if !carried.is_empty() {
-                        debug_assert_eq!(carried.len(), st.len(), "one stream set per token");
-                        carried = carried
+                    if !stream_sets.is_empty() {
+                        debug_assert_eq!(stream_sets.len(), st.len(), "one stream set per token");
+                        stream_sets = stream_sets
                             .into_iter()
                             .zip(&st)
                             .map(|(c, s)| {
@@ -920,7 +920,8 @@ where
             }
             let emitted = stream.len() + plan.len();
             let mut next: Vec<Tensor<2>> = Vec::with_capacity(emitted);
-            let mut next_carried: Vec<Tensor<3>> = Vec::with_capacity(mg.map_or(0, |_| emitted));
+            let mut next_stream_sets: Vec<Tensor<3>> =
+                Vec::with_capacity(mg.map_or(0, |_| emitted));
             // One token through the layer, then its residual: the plain additive
             // skip, or the Multi-Gate mix into the streams of that token. A
             // suppressed skip moves the token straight in (no clone/add).
@@ -984,10 +985,10 @@ where
             };
             let mut push = |(out, s): (Tensor<2>, Option<Tensor<3>>), carry: Option<Tensor<2>>| {
                 next.push(out);
-                next_carried.extend(s);
+                next_stream_sets.extend(s);
                 st_next.extend(carry);
             };
-            let mut tokens_streams = carried.into_iter();
+            let mut tokens_streams = stream_sets.into_iter();
             let mut st_tokens = st.take().map(Vec::into_iter);
             let mut plan = plan.into_iter().peekable();
             for (t, token) in stream.into_iter().enumerate() {
@@ -1019,7 +1020,7 @@ where
                 false => cache.map(|c| M::Caches::cache_from_inner(c, &device)),
             };
             stream = next;
-            carried = next_carried;
+            stream_sets = next_stream_sets;
             k = k_next;
         }
         // The stack ended inside an untracked span: lift what it hands back and

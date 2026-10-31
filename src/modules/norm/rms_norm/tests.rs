@@ -27,7 +27,7 @@ fn a_half_input_computes_the_formula_at_each_scale() {
         v.into_iter().map(f64::from).collect()
     };
     for dtype in [FloatDType::F16, FloatDType::BF16] {
-        let step = dtype.finfo().epsilon;
+        let machine_eps = dtype.finfo().epsilon;
         for scale in [0.0f32, 1e-7, 1e-5, 1e-3, 1e-1, 1.0, 1e2, 3e3] {
             for width in [1usize, 19, 152, 1024] {
                 let norm = RmsNormConfig::new(width).init(&device.clone().autodiff());
@@ -56,11 +56,11 @@ fn a_half_input_computes_the_formula_at_each_scale() {
                     }
                 }
                 assert!(
-                    err_y <= 2.0 * step * size_y,
+                    err_y <= 2.0 * machine_eps * size_y,
                     "{dtype:?}, scale {scale}, width {width}: the output is off by {err_y:.2e} (size {size_y:.2e})"
                 );
                 assert!(
-                    err_g <= 2.0 * step * size_g,
+                    err_g <= 2.0 * machine_eps * size_g,
                     "{dtype:?}, scale {scale}, width {width}: the gradient is off by {err_g:.2e} (size {size_g:.2e})"
                 );
             }

@@ -63,9 +63,12 @@ fn an_f16_penalty_keeps_the_loss_and_reaches_the_logits() {
     assert_eq!(reported, 3.5, "the reported loss");
     let g = host(z.val().grad(&wrapped.backward()).expect("the penalty reaches the logits"));
     let expected = [300.0 * c / 2.0, 0.0, 0.0, 5.0 * c / 2.0, 0.0, 0.0];
-    let step = FloatDType::F16.finfo().epsilon;
+    let machine_eps = FloatDType::F16.finfo().epsilon;
     for (i, (got, want)) in g.iter().zip(expected).enumerate() {
-        assert!((got - want).abs() <= step * want, "max 300, position {i}: {got} vs {want}");
+        assert!(
+            (got - want).abs() <= machine_eps * want,
+            "max 300, position {i}: {got} vs {want}"
+        );
     }
 
     let (batch, seq, vocab) = (8, 1024, 4);
@@ -76,10 +79,13 @@ fn an_f16_penalty_keeps_the_loss_and_reaches_the_logits() {
     let grads = l2_warp(loss, z.val(), c).backward();
     let g = host(z.val().grad(&grads).expect("the penalty reaches the logits"));
     let want = c / (batch * seq) as f64 * 10.0;
-    let half_step = 2f64.powi(-25);
+    let half_spacing = 2f64.powi(-25);
     for (i, got) in g.iter().enumerate() {
         let want = if i % vocab == 0 { want } else { 0.0 };
-        assert!((got - want).abs() <= half_step, "B·T = 8192, position {i}: {got:e} vs {want:e}");
+        assert!(
+            (got - want).abs() <= half_spacing,
+            "B·T = 8192, position {i}: {got:e} vs {want:e}"
+        );
     }
 }
 

@@ -22,7 +22,7 @@
 //! - `Middle` and `End` sit at `len / 2` and `len` of each slot. They are
 //!   spliced at their batch-wide position like the rest, and [`Padding`]
 //!   records where each row sits in the sequence of its own slot. A block then
-//!   runs on the rows gathered into that order ([`Padding::in_slot_order`]),
+//!   runs on the rows gathered into that order ([`Padding::in_row_order`]),
 //!   right-padded again, and its output is scattered back.
 //! - `End` also works across chunks. It lands in the closing chunk, after the
 //!   slots that ended earlier have carried their state through padding
@@ -43,7 +43,7 @@ use burn::tensor::IndexingUpdateOp;
 ///
 /// It is built from a right-padded mask ([`Self::new`]). The containers
 /// advance it through every class-marker splice ([`Self::splice`]), and run
-/// each block through [`Self::in_slot_order`]. Its tensors live on the inner
+/// each block through [`Self::in_row_order`]. Its tensors live on the inner
 /// backend: no gradient ever flows through them.
 #[derive(Clone, Debug)]
 pub struct Padding {
@@ -208,13 +208,15 @@ impl Padding {
         }
     }
 
-    /// Run `f` (a block) on `x_bsd`, with its rows in the order of each slot
-    /// and the matching right-padded mask. Return its output in the batch-wide
-    /// order again (the second output of `f`, a cache, is untouched).
+    /// Run `f` (a block) on `x_bsd`, with its positions in the order of each
+    /// row and the matching right-padded mask. Return its output in the
+    /// batch-wide order again (the second output of `f`, a cache, is
+    /// untouched).
     ///
-    /// While every row is already in the order of its slot, this is a no-op
-    /// wrapper. Otherwise it is a gather on the way in and one on the way out.
-    pub fn in_slot_order<C>(
+    /// While every position is already in the order of its row, this is a
+    /// no-op wrapper. Otherwise it is a gather on the way in and one on the
+    /// way out.
+    pub fn in_row_order<C>(
         &self,
         x_bsd: Tensor<3>,
         f: impl FnOnce(Tensor<3>, Tensor<2, Bool>) -> (Tensor<3>, C),
@@ -265,7 +267,7 @@ impl Padding {
 /// Splice one column per plan entry (`cols_bk`, `[batch, plan.len()]`, in plan
 /// order) into `x_bs` along its row axis, before the row that each entry
 /// names. This is the per-slot counterpart of
-/// [`splice_class_rows`](crate::utils::class::splice_class_rows).
+/// [`splice_class_embeddings`](crate::utils::class::splice_class_embeddings).
 fn splice_columns<K>(x_bs: Tensor<2, K>, plan: &[(usize, usize)], cols_bk: Tensor<2, K>) -> Tensor<2, K>
 where
     K: burn::tensor::kind::Basic,

@@ -131,36 +131,40 @@ has a different meaning from the _Avoid_ entry:
 
 ### Identifiers that conflict with a glossary term
 
-These stay for a later decision:
+No later ticket renames identifiers (tickets 03 to 05 only list them). So
+this ticket renamed these:
 
-- `Padding::in_slot_order` (`utils/padding.rs`): "slot" for a row of a batch.
-- `block_forward_is_chunkable_through_the_cache` (`reference/tests.rs`):
-  "chunk" for a window.
-- `step_matches_the_matching_forward_row` (`mlp/tests.rs`): "row" for a
-  position.
-- `an_untied_stack_is_the_unshared_stack_of_its_application_views` and its
-  local `unshared` (`reference/tests.rs`): "unshared".
-- `carried` in `Layers::cascade` (`layers.rs`): it holds the MultiGate stream
-  sets of the tokens, not the straight-through carry (that is `st`). A reader
-  can confuse the two.
-- `splice_class_rows` (`utils/class`): it splices rows of an embedding table
-  into the time axis, so each spliced row becomes a position.
+| Old name | New name | Where |
+|---|---|---|
+| `Padding::in_slot_order` | `in_row_order` | `utils/padding.rs` and its callers |
+| `splice_class_rows` | `splice_class_embeddings` | `utils/class/mod.rs` and its callers |
+| `carried`, `next_carried` | `stream_sets`, `next_stream_sets` | `Layers::cascade` |
+| `block_forward_is_chunkable_through_the_cache` | `block_forward_splits_into_windows_through_the_cache` | `reference/tests.rs` |
+| `an_untied_stack_is_the_unshared_stack_of_its_application_views`, local `unshared` | `an_untied_stack_equals_the_stack_of_its_application_views`, `view_stack` | `reference/tests.rs` |
+| `step_matches_the_matching_forward_row`, local `row` | `step_matches_the_matching_forward_position`, `x_t` | `mlp/tests.rs` |
+| locals `step`, `half_step` | `machine_eps`, `half_spacing` | the tests of the losses and the norms |
+
+The renamed functions have no caller in burn-mamba or burn-deltanet. The
+docs of the two renamed functions now use the glossary terms. The rest of the
+prose of `utils/` stays for ticket 04.
+
+One identifier stays for a decision of the user:
+
 - `init_bias_step` (`MultiGateResidualConfig`, `ResidualsConfig::MultiGate`):
   "step" for the offset between the gate biases of two streams. The prose
-  says "offset".
-- The locals `step` and `half_step` in the tests of the losses and the norms
-  (`loss/{bce,cross_entropy,l2warp}/tests.rs`,
-  `norm/{rms_norm,rms_norm_gated}/tests.rs`): "step" for the machine epsilon
-  of a dtype. The prose says "machine epsilon".
-- The local `row` in `step_matches_the_matching_forward_row`
-  (`mlp/tests.rs`): "row" for a position. Its message says "position".
+  says "offset". The field is part of the serialized config, burn-mamba and
+  burn-deltanet set it, and their saved config generators write it as a key.
+
+burn-mamba has a copy of the untied-stack test with the old names
+(`src/unified/tests/untied.rs`: `assert_untied_stack_is_its_unshared_views`,
+the local `unshared`). A later session in burn-mamba renames it.
 
 ### Choices that this sweep made
 
 - The old docs called the per-stream sigmoid gate of MGR the "mixer". But
   "mixer" is an _Avoid_ term for a block. So the prose now calls it the
-  **β gate**, after `w_beta` and `b_beta`. "β gate" is not in `GLOSSARY.md`.
-  Add it through `/domain-modeling` under Residuals, or pick another name.
+  **β gate**, after `w_beta` and `b_beta`. `GLOSSARY.md` has the term under
+  Residuals, with "mixer" under _Avoid_.
 - The glossary names only the end of an untracked span (**cut**). The prose
   now says "backend hop" for both the entry and the cut, where it counts both
   (`reference/tests.rs`, `Layers::cascade`). The entry has no glossary term.
@@ -178,7 +182,8 @@ These stay for a later decision:
 
 ### A doc that does not match its test
 
-`class_latents_receive_gradients` (`reference/tests.rs`) has the doc "A
+`class_latents_receive_gradients` (`reference/tests.rs`) had the doc "A
 per-layer class latent is a learnable input". The test sets
 `LayersBuilder::class_latents`, which are the class latents of the stack, not
-of a layer. Decide which side is the intent: the doc or the test.
+of a layer. The user chose the test as the intent. The doc now says "A class
+latent of the stack".

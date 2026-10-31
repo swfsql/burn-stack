@@ -51,9 +51,9 @@ fn a_half_input_gives_the_formula_at_small_activations() {
                     size = size.max(want.abs());
                 }
             }
-            let step = dtype.finfo().epsilon;
+            let machine_eps = dtype.finfo().epsilon;
             assert!(
-                err <= 2.0 * step * size,
+                err <= 2.0 * machine_eps * size,
                 "{dtype:?}, norm_before_gate {norm_before_gate}: off by {err:.2e} (size {size:.2e})"
             );
         }

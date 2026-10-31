@@ -439,7 +439,7 @@ pub fn insert_class_markers_padded<M: ClassMarker>(
         return (x, padding);
     }
     let padding = padding.map(|p| p.splice(&plan, markers, whole, who));
-    (splice_class_rows(x, &plan, &class_emb_table(markers, emb, width)), padding)
+    (splice_class_embeddings(x, &plan, &class_emb_table(markers, emb, width)), padding)
 }
 
 /// The class-marker embedding table (`[markers.len(), width]`), checked against
@@ -461,15 +461,15 @@ pub fn class_emb_table<M: ClassMarker>(
     emb
 }
 
-/// The tensor half of [`insert_class_markers`]: splice the rows a
+/// The tensor half of [`insert_class_markers`]: splice the embeddings that a
 /// [`class_chunk_plan`] selected into `x` along its **sequence axis 1**,
-/// broadcasting each row over every other axis.
+/// broadcasting each embedding over every other axis.
 ///
 /// It is rank-generic, so the same placement lands in a plain
-/// `[batch, sequence, width]` chunk and in the Multi-Gate residual streams
+/// `[batch, sequence, width]` window and in the Multi-Gate residual streams
 /// `[batch, sequence, n_stream, width]`. A class marker must enter *every*
 /// stream, because the streams carry the residual.
-pub fn splice_class_rows<const D: usize>(
+pub fn splice_class_embeddings<const D: usize>(
     x: Tensor<D>,
     plan: &[(usize, usize)],
     emb: &Tensor<2>,

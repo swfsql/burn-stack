@@ -211,10 +211,10 @@ where
         Some(padding) => {
             let x_rev = reverse_norm.forward(x.clone());
             let x = straight_norm.forward(x);
-            let (x, straight_cache) = padding.in_slot_order(x, |x, pad_bs| {
+            let (x, straight_cache) = padding.in_row_order(x, |x, pad_bs| {
                 straight_block.block_forward(x, straight_cache, options.clone(), Some(pad_bs))
             });
-            let (x_rev, reverse_cache) = padding.reversed().in_slot_order(x_rev, |x_rev, pad_bs| {
+            let (x_rev, reverse_cache) = padding.reversed().in_row_order(x_rev, |x_rev, pad_bs| {
                 reverse_block.block_forward(x_rev, reverse_cache, options, Some(pad_bs))
             });
             (x, straight_cache, x_rev, reverse_cache)

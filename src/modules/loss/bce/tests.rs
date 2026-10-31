@@ -26,7 +26,10 @@ fn a_small_probability_keeps_its_loss() {
         assert_eq!(got.dtype(), want_dtype, "{dtype:?}: the dtype of the loss");
         let got = got.into_data().try_into_vec_as::<f64>().unwrap()[0];
         let want = -(p0 + eps).ln();
-        let step = dtype.finfo().epsilon;
-        assert!((got - want).abs() <= 2.0 * step * want, "{dtype:?}: loss {got} vs {want}");
+        let machine_eps = dtype.finfo().epsilon;
+        assert!(
+            (got - want).abs() <= 2.0 * machine_eps * want,
+            "{dtype:?}: loss {got} vs {want}"
+        );
     }
 }

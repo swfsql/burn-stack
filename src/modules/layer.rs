@@ -238,7 +238,7 @@ impl<M: Block> Layer<M> {
     ///
     /// `pad` marks the padded positions of a right-padded batch (`None` ⇒ no
     /// padding). The block runs on the positions of each row in the order of
-    /// that row (see [`Padding::in_slot_order`]). Everything else here is per
+    /// that row (see [`Padding::in_row_order`]). Everything else here is per
     /// position.
     pub fn forward(
         &self,
@@ -251,7 +251,7 @@ impl<M: Block> Layer<M> {
         let normed = self.norm.forward(x);
         let (h1, cache) = match pad {
             None => self.block.block_forward(normed, cache, options, None),
-            Some(pad) => pad.in_slot_order(normed, |normed, pad_bs| {
+            Some(pad) => pad.in_row_order(normed, |normed, pad_bs| {
                 self.block.block_forward(normed, cache, options, Some(pad_bs))
             }),
         };

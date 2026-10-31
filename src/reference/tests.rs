@@ -78,7 +78,7 @@ fn block_forward_equals_step_unrolled() {
 /// `forward` over the whole sequence. Prefill followed by decode relies on
 /// this.
 #[test]
-fn block_forward_is_chunkable_through_the_cache() {
+fn block_forward_splits_into_windows_through_the_cache() {
     let device = test_device();
     let block = block_config().init(&device);
     let x = randn3(2, 6, &device);
@@ -516,7 +516,7 @@ fn class_token_placement_is_the_same_for_forward_and_step() {
     assert_eq!(Tensor::cat(ys, 1).dims(), [1, sequence, 2]);
 }
 
-/// A per-layer class latent is a learnable input: it must train.
+/// A class latent of the stack is a learnable input: it must train.
 #[test]
 fn class_latents_receive_gradients() {
     let device = test_device().autodiff();
@@ -578,12 +578,12 @@ impl ModuleMapper for Jitter {
 /// in `forward` and in `step`. The test first adds noise to the copies, so a
 /// read of the wrong copy shows.
 #[test]
-fn an_untied_stack_is_the_unshared_stack_of_its_application_views() {
+fn an_untied_stack_equals_the_stack_of_its_application_views() {
     let device = test_device();
     let layers = untied_builder().init(&device).map(&mut Jitter);
     let n = layers.n_virtual_count();
     let apps = Schedule::Cyclic.applications(n, 2);
-    let unshared = Layers {
+    let view_stack = Layers {
         n_real_layers: n,
         n_virtual_layers: None,
         real_layers: (0..n)
@@ -597,7 +597,7 @@ fn an_untied_stack_is_the_unshared_stack_of_its_application_views() {
     let x = randn3(2, 4, &device);
 
     let (y, _) = layers.forward(x.clone(), None, (), None, None);
-    let (want, _) = unshared.forward(x.clone(), None, (), None, None);
+    let (want, _) = view_stack.forward(x.clone(), None, (), None, None);
     assert!(max_abs_diff(y.clone(), want) < dtype_tol(TOL));
 
     let mut caches = None;
