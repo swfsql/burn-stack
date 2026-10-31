@@ -36,7 +36,8 @@ fn the_reported_loss_is_unchanged() {
 /// - A max logit of 300 (its square overflows f16) leaves the reported loss
 ///   unchanged, and the gradient is `c/(B·T) · z_max` to one f16 rounding.
 /// - At `B·T = 8192` and the default factor, the gradient
-///   `c/(B·T) · 10 ≈ 1.2·10⁻⁷` is within half a subnormal step of its value.
+///   `c/(B·T) · 10 ≈ 1.2·10⁻⁷` differs from its value by at most half the
+///   spacing of the f16 subnormals.
 ///   In f16, the backward chain (`c/2`, then `/(B·T)`) would give 0.
 #[test]
 #[cfg_attr(

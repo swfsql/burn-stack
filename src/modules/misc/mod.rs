@@ -7,5 +7,5 @@ pub mod prefix_sum;
 pub mod sanity;
 /// Stable segment-sum → 1-semiseparable mask (log-space prefix-sum differences).
 pub mod segsum;
-/// Typed-array variant of `split_with_sizes` for clean destructuring.
+/// Typed-array form of `split_with_sizes` for clean destructuring.
 pub mod split;

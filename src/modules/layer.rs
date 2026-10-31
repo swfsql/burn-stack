@@ -9,19 +9,19 @@ use burn::module::Param;
 use burn::prelude::*;
 use std::borrow::Cow;
 
-/// A single Pre-LN block wrapper that computes `M(RMSNorm(x))`. It does
-/// **not** apply the residual. The enclosing [`Layers`] owns that decision:
-/// add the input back, suppress it on the first/last layer, or thread it
-/// through Multi-Gate streams. So no input clone or zero-add is wasted when no
-/// residual is wanted.
+/// A single Pre-LN wrapper around one block. It computes `M(RMSNorm(x))`. It
+/// does **not** apply the residual. The enclosing [`Layers`] owns that
+/// decision: add the input back, suppress it on the first/last layer, or
+/// thread it through the residual streams of MGR. So no input clone or
+/// zero-add is wasted when no residual is wanted.
 ///
 /// With [`Self::mlp`] set, the layer also runs a second Pre-LN sub-block, a
 /// SwiGLU feed-forward (see [`GatedMlp`]). It has a residual of its own,
 /// *inside* the layer. This is why the methods below return the **total
-/// delta** of the layer, not the mixer output:
+/// delta** of the layer, not the block output:
 ///
 /// ```text
-///   h₁ = M(norm(x))                     the mixer sub-block
+///   h₁ = M(norm(x))                     the block
 ///   h₂ = mlp(norm2(x + h₁))             the feed-forward sub-block
 ///   return h₁ + h₂                      so that Layers' `x + delta` is
 ///                                       (x + h₁) + h₂ — both residuals
@@ -31,7 +31,7 @@ use std::borrow::Cow;
 /// the `ignore_first/last_residual` ablations. So these ablations govern only
 /// the outer add. The inner residual of the feed-forward is part of the
 /// sub-block and always applies. Without an `mlp`, the delta is just `h₁`, and
-/// nothing changes for a block family that has no feed-forward.
+/// nothing changes for a family that has no feed-forward.
 ///
 /// A layer can have its own [`ClassLatent`]s, placed from a [`ClassCursor`]:
 ///
@@ -54,13 +54,13 @@ use std::borrow::Cow;
 pub struct Layer<M: Module> {
     /// Pre-norm applied before the inner block.
     pub norm: RmsNorm,
-    /// The inner mixer block.
+    /// The block of this layer.
     pub block: M,
     /// Pre-norm of the feed-forward sub-block. `Some` exactly when [`Self::mlp`]
     /// is `Some` (`norm2` in the reference checkpoints).
     pub norm2: Option<RmsNorm>,
-    /// Optional SwiGLU feed-forward sub-block run after the mixer, with its own
-    /// residual. `None` ⇒ the layer is mixer-only.
+    /// Optional SwiGLU feed-forward sub-block run after the block, with its own
+    /// residual. `None` ⇒ the layer has only its block.
     pub mlp: Option<GatedMlp>,
     /// Positions of this layer's class latents (empty ⇒ none).
     #[module(skip)]
@@ -83,7 +83,7 @@ pub struct Layer<M: Module> {
 /// untiable parameters of the block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum LayerUntied {
-    /// The pre-norm gain of the mixer ([`Layer::norm`]).
+    /// The pre-norm gain of the block ([`Layer::norm`]).
     Norm,
     /// The pre-norm gain of the feed-forward ([`Layer::norm2`]). Needs
     /// [`Layer::mlp`].
@@ -180,15 +180,15 @@ impl<M: Block> Layer<M> {
         crate::utils::untied::retie(self, &params, n_applications)
     }
 
-    /// Splice the class latents of this layer into the chunk `x` (no-op when
-    /// there are none), and advance `class` past the chunk.
+    /// Splice the class latents of this layer into the window `x` (no-op when
+    /// there are none), and advance `class` past the window.
     ///
     /// This is public, so a caller that drives a bare [`Layer`] can make the
     /// sequence longer itself (and add the matching residual) before it calls
-    /// [`Self::forward`]. `None` cursors ⇒ this chunk is the whole sequence.
+    /// [`Self::forward`]. `None` cursors ⇒ this window is the whole sequence.
     /// [`Layers`] splices the latents of its layers itself, because under
-    /// [`MultiGate`](crate::modules::MultiGate) residuals the same rows must
-    /// also enter the carried streams.
+    /// [`MultiGate`](crate::modules::MultiGate) residuals the same latents must
+    /// also enter every residual stream.
     pub fn insert_latents(&self, x: Tensor<3>, class: Option<&mut ClassCursor>) -> Tensor<3> {
         let mut whole = ClassCursor::whole(x.dims()[1]);
         let cursor = class.unwrap_or(&mut whole);
@@ -202,8 +202,8 @@ impl<M: Block> Layer<M> {
     }
 
     /// The layer input, kept only when the feed-forward sub-block needs it for
-    /// its inner residual. Otherwise `None`, so the mixer-only path still moves
-    /// `x` straight into the pre-norm with no clone.
+    /// its inner residual. Otherwise `None`, so a layer with no feed-forward
+    /// still moves `x` straight into the pre-norm with no clone.
     fn mlp_residual<const D: usize>(&self, x: &Tensor<D>) -> Option<Tensor<D>> {
         self.mlp.as_ref().map(|_| x.clone())
     }
@@ -211,7 +211,7 @@ impl<M: Block> Layer<M> {
     /// Completes the total delta of the layer: `h₁ ↦ h₁ + mlp(norm2(x + h₁))`.
     ///
     /// `residual` is what [`Self::mlp_residual`] captured. So `None` here means
-    /// that there is no feed-forward, and the delta is the mixer output alone.
+    /// that there is no feed-forward, and the delta is the block output alone.
     fn add_mlp_delta<const D: usize>(
         &self,
         residual: Option<Tensor<D>>,
@@ -229,16 +229,17 @@ impl<M: Block> Layer<M> {
         h1 + h2
     }
 
-    /// Full-sequence Pre-LN block **without** the outer residual. Returns the
-    /// total delta of the layer: `M(RMSNorm(x))`, plus the contribution of the
-    /// feed-forward sub-block when [`Self::mlp`] is set (see the type docs).
+    /// The Pre-LN forward of a window, **without** the outer residual. Returns
+    /// the total delta of the layer: `M(RMSNorm(x))`, plus the contribution of
+    /// the feed-forward sub-block when [`Self::mlp`] is set (see the type docs).
     ///
     /// The caller owns any class-latent insertion ([`Self::insert_latents`]) and
     /// the outer residual.
     ///
-    /// `pad` marks the padded rows of a right-padded batch (`None` ⇒ none). The
-    /// block runs on the rows of each slot in the order of that slot (see
-    /// [`Padding::in_slot_order`]). Everything else here is per row.
+    /// `pad` marks the padded positions of a right-padded batch (`None` ⇒ no
+    /// padding). The block runs on the positions of each row in the order of
+    /// that row (see [`Padding::in_slot_order`]). Everything else here is per
+    /// position.
     pub fn forward(
         &self,
         x: Tensor<3>,
@@ -258,8 +259,8 @@ impl<M: Block> Layer<M> {
     }
 
     /// [`Self::forward`] over packed rows (see [`crate::utils::packing`]). The
-    /// block restarts at each reset of `packed`. Everything else here is per
-    /// row.
+    /// block starts again from a zero cache at each reset of `packed`.
+    /// Everything else here is per position.
     pub fn forward_packed(
         &self,
         x: Tensor<3>,
@@ -275,7 +276,7 @@ impl<M: Block> Layer<M> {
         (self.add_mlp_delta(residual, h1), cache)
     }
 
-    /// Single-token Pre-LN block step **without** the residual.
+    /// The Pre-LN step of one token, **without** the residual.
     ///
     /// `class` is the class-latent cursor of this layer. With `Some`, every
     /// latent whose position falls on this token gets a step of its own,

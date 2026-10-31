@@ -4,10 +4,10 @@ use burn::tensor::Distribution;
 use crate::utils::test_helpers::test_device;
 
 /// A half-precision input gives the value of the f64 formula, in both orders
-/// of the gate, to two steps of its dtype. The inputs have the size of the
-/// output norm of a Mamba-2 block at init (gate first): `mean((x·SiLU(z))²)`
-/// is about `4·10⁻³`. There, an `ε` of `7.1·10⁻⁴` (the [`div_eps`] of f16)
-/// changes the output by 6–9%.
+/// of the gate, to two machine epsilons of its dtype. The inputs have the size
+/// of the output norm of a Mamba-2 block at init (gate first):
+/// `mean((x·SiLU(z))²)` is about `4·10⁻³`. There, an `ε` of `7.1·10⁻⁴` (the
+/// [`div_eps`] of f16) changes the output by 6–9%.
 ///
 /// [`div_eps`]: crate::utils::div_eps
 #[test]
@@ -61,9 +61,9 @@ fn a_half_input_gives_the_formula_at_small_activations() {
 }
 
 /// The backward of gated RMSNorm must stay finite when the normalised input
-/// (the output `y` of a mixer) collapses to zero norm on a slice. This is the
+/// (the output `y` of a block) collapses to zero norm on a slice. This is the
 /// exact NaN localised in a training run (`d_y` arrived NaN at the backward of
-/// the mixer). The root cause is the same as for the ungated
+/// the block). The root cause is the same as for the ungated
 /// [`RmsNorm`](crate::modules::norm::rms_norm): `div_eps` guards the forward
 /// division, but not the `1/(2√·)` backward of the `sqrt` node.
 #[test]
@@ -72,7 +72,7 @@ fn rms_norm_gated_gradient_finite_on_collapsed_slice() {
     let (batch, seq, d_model) = (2, 3, 8);
     let norm = RmsNormGatedConfig::new(d_model).init(&device.clone().autodiff());
 
-    // The normalised input (mixer output) has one token collapsed to zero
+    // The normalised input (block output) has one token collapsed to zero
     // norm. The gate `z` stays healthy.
     let normal = Tensor::<3>::random(
         [batch, seq - 1, d_model],

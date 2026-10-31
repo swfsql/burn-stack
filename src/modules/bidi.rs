@@ -4,7 +4,7 @@
 //! and merges them with an [`OutputMerge`]. [`BidiLayers`] stacks such pairs
 //! of its own [`Layer`]s with a
 //! [`BidiSchedule`](crate::utils::BidiSchedule). [`BidiLayerPair`] is one pair
-//! as a standalone module. The block itself does not change: only the
+//! as a standalone module. The block itself does not change: only the layer
 //! schedule and the combination of its two passes are bidirectional. This is
 //! written once for all families. The merge is family-agnostic
 //! (`RmsNorm`/`Linear` over `Tensor<3>`).
@@ -26,11 +26,12 @@ use burn::prelude::*;
 #[derive(Module, Debug)]
 pub struct NoOp;
 
-/// How the two directions of a bidirectional pair are combined.
+/// How a bidirectional pair merges the outputs of its straight pass and its
+/// reversed pass.
 #[allow(clippy::large_enum_variant)]
 #[derive(Module, Debug)]
 pub enum OutputMerge {
-    /// Element-wise average of the two directions (no parameters).
+    /// Element-wise average of the two passes (no parameters).
     Mean(NoOp),
     /// Concatenate along the feature axis and project back down with a learnable
     /// `[2 · d_model, d_model]` linear layer.
@@ -38,7 +39,7 @@ pub enum OutputMerge {
 }
 
 impl OutputMerge {
-    /// Merge the two directional outputs (each `[batch, sequence, d_model]`).
+    /// Merge the outputs of the two passes (each `[batch, sequence, d_model]`).
     pub fn forward(&self, straight: Tensor<3>, reverse: Tensor<3>) -> Tensor<3> {
         let [batch, sequence, d_model] = straight.dims();
         assert_eq!(straight.dims(), reverse.dims());
@@ -85,7 +86,7 @@ impl OutputMergeConfig {
 }
 
 /// A single bidirectional pair as a standalone module: a straight (→) and a
-/// reversed (←) Pre-LN block, with merged outputs. It does **not** apply the
+/// reversed (←) Pre-LN pass, with merged outputs. It does **not** apply the
 /// residual. The caller adds it (or suppresses it), as [`BidiLayers`] does
 /// for its own pairs. This mirrors the [`Layer`] / [`Layers`] split.
 #[derive(Module, Debug)]
@@ -98,11 +99,11 @@ pub struct BidiLayerPair<M: Module> {
     pub straight_block: M,
     /// The block run right-to-left (over the flipped sequence).
     pub reverse_block: M,
-    /// Merge strategy combining the two directions.
+    /// The merge of the two passes.
     pub output_merge: OutputMerge,
     /// Positions of the class latents of this pair, spliced in before either
-    /// direction runs (both directions, and the residual, see the longer
-    /// sequence). Empty ⇒ none.
+    /// pass runs (both passes, and the residual, see the longer sequence).
+    /// Empty ⇒ none.
     #[module(skip)]
     pub class_latents: Vec<ClassLatent>,
     /// The class-latent embeddings of this pair, `[num_class_latents, d_model]`.
@@ -113,9 +114,9 @@ impl<M: Block> BidiLayerPair<M>
 where
     M::Options: Clone,
 {
-    /// Splice the class latents of this pair into the chunk `x` (no-op when
-    /// there are none), and advance `class` past the chunk. `padding` follows
-    /// the splice. `None` ⇒ this chunk is the whole sequence.
+    /// Splice the class latents of this pair into the window `x` (no-op when
+    /// there are none), and advance `class` past the window. `padding` follows
+    /// the splice. `None` ⇒ this window is the whole sequence.
     fn insert_latents(
         &self,
         x: Tensor<3>,
@@ -134,12 +135,12 @@ where
         )
     }
 
-    /// `[batch, sequence, d_model]` → `[batch, sequence, d_model]`, plus the two
-    /// updated direction caches. (`sequence` grows by the class-latent count.)
-    /// Returns the merged directions **without** the residual: the caller adds
-    /// it.
+    /// `[batch, sequence, d_model]` → `[batch, sequence, d_model]`, plus the
+    /// updated caches of the two passes. (`sequence` grows by the class-latent
+    /// count.) Returns the merged passes **without** the residual: the caller
+    /// adds it.
     ///
-    /// `pad` marks a right-padded batch (`None` ⇒ none), as in
+    /// `pad` marks a right-padded batch (`None` ⇒ no padding), as in
     /// [`BidiLayers::forward`].
     pub fn forward(
         &self,
@@ -166,15 +167,15 @@ where
     }
 }
 
-/// The straight + reverse + merge computation of a bidirectional pair, over
-/// **borrowed** sub-modules.
+/// The straight pass, the reversed pass and the merge of a bidirectional pair,
+/// over **borrowed** sub-modules.
 ///
 /// [`BidiLayers`] calls this directly on its real layers (or their application
 /// views, when they untie anything). It does not build a transient
 /// [`BidiLayerPair`].
 ///
-/// Under `padding`, the reversed read is the **real** rows of each slot
-/// backwards ([`Padding::reversed`]), not the flipped batch, whose padding
+/// Under `padding`, the reversed pass reads the **real** tokens of each row in
+/// reverse order ([`Padding::reversed`]), not the flipped batch, whose padding
 /// would then lead.
 #[allow(clippy::too_many_arguments)]
 fn bidi_pair_forward<M: Block>(
@@ -196,15 +197,15 @@ where
 
     let (x, straight_cache, x_rev, reverse_cache) = match padding {
         None => {
-            // x reads >x₀>x₁>…, and x_rev (flipped) reads the sequence
-            // backwards.
+            // x reads >x₀>x₁>…, and x_rev (flipped) reads the sequence in
+            // reverse order.
             let x_rev = x.clone().flip([1]);
             let x = straight_norm.forward(x);
             let x_rev = reverse_norm.forward(x_rev);
             let (x, straight_cache) =
                 straight_block.block_forward(x, straight_cache, options.clone(), None);
             let (x_rev, reverse_cache) = reverse_block.block_forward(x_rev, reverse_cache, options, None);
-            // Re-align the reversed read.
+            // Re-align the output of the reversed pass.
             (x, straight_cache, x_rev.flip([1]), reverse_cache)
         }
         Some(padding) => {
@@ -226,13 +227,14 @@ where
     (merged, straight_cache, reverse_cache)
 }
 
-/// A stack of bidirectional [`Layer`] pairs with optional virtual-layer
-/// scheduling: one struct for every [`Block`] family.
+/// A stack of bidirectional [`Layer`] pairs with an optional layer schedule.
+/// One struct for every family.
 #[derive(Module, Debug)]
 pub struct BidiLayers<M: Module> {
     /// Number of real (weight-bearing) layers. Must be even (used in pairs).
     pub n_real_layers: usize,
-    /// Optional `(n_virtual_layers, schedule)` for weight-sharing.
+    /// Optional layer schedule `(n_virtual_layers, schedule)`, for
+    /// weight-sharing.
     #[module(skip)]
     pub n_virtual_layers: Option<(usize, BidiSchedule)>,
     /// The weight-bearing layers, length `n_real_layers`.
@@ -241,7 +243,7 @@ pub struct BidiLayers<M: Module> {
     pub ignore_first_residual: bool,
     /// Zero the residual of the last virtual pair when `true`.
     pub ignore_last_residual: bool,
-    /// One direction-merge per real pair, length `n_real_layers / 2`.
+    /// One merge per real pair, length `n_real_layers / 2`.
     pub outputs_merge: Vec<OutputMerge>,
     /// How residuals are threaded between **pairs** (plain additive vs
     /// Multi-Gate). The MGR unit is the pair: one module per real/virtual pair.
@@ -267,7 +269,7 @@ where
         class_marker_output_indices(&self.class_latents, orig_len)
     }
 
-    /// Splice the class latents of this stack into the chunk `x` (no-op when
+    /// Splice the class latents of this stack into the window `x` (no-op when
     /// there are none), and advance the stack-level cursor.
     fn insert_latents(
         &self,
@@ -288,12 +290,13 @@ where
         out
     }
 
-    /// Seed the MultiGate streams from a full-sequence input: the **single**
-    /// stream `x` as `[batch, sequence, 1, d_model]`. The first pairs widen it
-    /// to `n_stream` (see [`MultiGate`](crate::modules::MultiGate)). Returns
-    /// `None` for the Standard path. `x` already carries the stack-level class
-    /// latents (spliced before the seed), so they seed the streams like any
-    /// other token.
+    /// Seed the residual streams of MultiGate from the input of a window: the
+    /// **single** stream `x` as `[batch, sequence, 1, d_model]`. The first
+    /// pairs widen it to `n_stream` (see
+    /// [`MultiGate`](crate::modules::MultiGate)). Returns `None` for the
+    /// Standard path. `x` already carries the stack-level class latents
+    /// (spliced before the seed), so they seed the streams like any other
+    /// token.
     fn multi_gate_streams_seed(&self, x: &Tensor<3>) -> Option<Tensor<4>> {
         matches!(&self.residuals, Residuals::MultiGate(_)).then(|| x.clone().unsqueeze_dim::<4>(2))
     }
@@ -305,17 +308,17 @@ where
     ///
     /// - [`Residuals::Standard`]: the input skip is added per pair (unless it
     ///   is suppressed).
-    /// - [`Residuals::MultiGate`]: no skip. Up to `n_stream` parallel streams
+    /// - [`Residuals::MultiGate`]: no skip. Up to `n_stream` residual streams
     ///   carry the residual between pairs, and `x` seeds the first one. Each
     ///   pair reads their attention-pooled aggregate as input. Its merged
     ///   output either *becomes* a new stream (while fewer than `n_stream`
     ///   exist) or is gated into every stream (see [`MultiGate`]).
     ///
-    /// `pad` (`[batch, sequence]`, `true` at padding, `None` ⇒ none) marks a
-    /// right-padded batch. Each slot comes out as its own sequence would come
-    /// out alone. Both directions read only its real rows, and the reversed
-    /// direction starts from the last row of the slot, not of the batch (see
-    /// [`crate::utils::padding`]).
+    /// `pad` (`[batch, sequence]`, `true` at padding, `None` ⇒ no padding)
+    /// marks a right-padded batch. Each row comes out as its own sequence
+    /// would come out alone. Both passes read only its real tokens. The
+    /// reversed pass starts from the last real token of the row, not from the
+    /// last position of the batch (see [`crate::utils::padding`]).
     ///
     /// [`MultiGate`]: crate::modules::MultiGate
     pub fn forward(
@@ -357,7 +360,7 @@ where
         let apps = bidi_applications(&self.n_virtual_layers, self.n_real_layers);
 
         let mut slots = caches.into_slots();
-        // MultiGate carries up to `n_stream` parallel streams: the input is the
+        // MultiGate carries up to `n_stream` residual streams: the input is the
         // first, and the early pairs append the rest. Standard threads the
         // single tensor `x` directly, and `streams` stays `None`.
         let mut streams = self.multi_gate_streams_seed(&x);
@@ -372,8 +375,8 @@ where
                 } else {
                     (straight_i, reverse_i)
                 };
-            // Each direction as its own application of its real layer sees it,
-            // if that layer unties anything.
+            // Each pass as its own application of its real layer sees it, if
+            // that layer unties anything.
             let straight_layer = self.real_layers[straight_idx].application(apps.index[straight_i]);
             let reverse_layer = self.real_layers[reverse_idx].application(apps.index[reverse_i]);
 
@@ -396,10 +399,10 @@ where
             // latents are already spliced. The pairs carry none of their own.
             //
             // The pair returns its merged transform `F_l` without the residual.
-            // The merge is a per-real-pair weight set (`n_real_layers / 2` of
-            // them). So the *real* pair `straight_idx / 2` indexes it, not the
-            // virtual pair `i`. It shares weights under virtual scheduling,
-            // like the blocks (and like the MGR real-pair index below). In the
+            // Each real pair has its own merge (`n_real_layers / 2` of them).
+            // So the *real* pair `straight_idx / 2` indexes it, not the virtual
+            // pair `i`. It shares weights under a layer schedule, like the
+            // blocks (and like the MGR real-pair index below). In the
             // non-virtual case `straight_idx == i * 2`, so this is `i`.
             let (merged, sc, rc) = bidi_pair_forward(
                 &straight_layer.norm,
@@ -428,7 +431,7 @@ where
                 }
                 Residuals::MultiGate(mg) => {
                     let s = streams.take().unwrap();
-                    // A skipped residual is β ≡ 1 in the mixer (`new_streams =
+                    // A skipped residual is the β gate at β ≡ 1 (`new_streams =
                     // F_l`), and the aggregator then collapses to `F_l`. Both
                     // branches take a shortcut to that result (as in
                     // `Layers::forward`). The MGR unit is the pair: virtual pair
@@ -438,8 +441,8 @@ where
                         x = merged;
                         streams = Some(s);
                     } else if first {
-                        // Drop the input seed: restart from `F_0` alone (the
-                        // accumulation phase refills the streams).
+                        // Drop the input seed: start again from `F_0` alone
+                        // (the accumulation phase refills the streams).
                         streams = Some(merged.clone().unsqueeze_dim::<4>(2));
                         x = merged;
                     } else {
@@ -466,7 +469,7 @@ where
 pub struct BidiLayersBuilder<C> {
     /// Number of real (weight-bearing) layers (must be even).
     pub n_real_layers: usize,
-    /// Optional virtual-layer scheduling.
+    /// Optional layer schedule `(n_virtual_layers, schedule)`.
     pub n_virtual_layers: Option<(usize, BidiSchedule)>,
     /// Shared block config.
     pub block: C,
@@ -533,7 +536,7 @@ impl<C: BlockConfig> BidiLayersBuilder<C> {
 }
 
 /// The [`Applications`] of a bidirectional stack of `n_real_layers` under this
-/// optional virtual scheduling (none ⇒ each real layer applied once).
+/// optional layer schedule (none ⇒ each real layer applied once).
 fn bidi_applications(
     n_virtual_layers: &Option<(usize, BidiSchedule)>,
     n_real_layers: usize,

@@ -1,7 +1,7 @@
 //! Contract tests for the block-generic containers, composed over
 //! [`RefBlock`](super::RefBlock).
 //!
-//! The point is coverage that is *independent of any mixer family*. If these
+//! The point is coverage that is *independent of any family*. If these
 //! tests pass, the containers do not secretly depend on something that a real
 //! block happens to provide. They pin the properties that every family relies
 //! on:
@@ -74,8 +74,9 @@ fn block_forward_equals_step_unrolled() {
     assert!(max_abs_diff(cache_fwd.state_bd, cache.unwrap().state_bd) < dtype_tol(TOL));
 }
 
-/// A `forward` split into two chunks, threading the cache, equals one `forward`
-/// over the whole sequence. This is what prefill-then-decode relies on.
+/// A `forward` split into two windows, threading the cache, equals one
+/// `forward` over the whole sequence. Prefill followed by decode relies on
+/// this.
 #[test]
 fn block_forward_is_chunkable_through_the_cache() {
     let device = test_device();
@@ -94,7 +95,7 @@ fn block_forward_is_chunkable_through_the_cache() {
 // ---------------------------------------------------------------------------
 
 /// `Layers::forward` equals `Layers::step` unrolled: the container threads
-/// caches per (virtual) layer, and does not reorder or drop any.
+/// caches per virtual layer, and does not reorder or drop any.
 #[test]
 fn layers_forward_equals_step_unrolled() {
     let device = test_device();
@@ -117,7 +118,7 @@ fn layers_forward_equals_step_unrolled() {
 
 /// An `mlp` on the layer adds a second, *inner* residual. The layer returns its
 /// total delta, so the single outer add of the stack must reproduce
-/// `(x + mixer) + mlp(norm2(x + mixer))`.
+/// `(x + h₁) + mlp(norm2(x + h₁))`, with `h₁` the output of the block.
 #[test]
 fn layer_mlp_reproduces_two_separate_residuals() {
     use crate::modules::GatedMlpConfig;
@@ -143,9 +144,9 @@ fn layer_mlp_reproduces_two_separate_residuals() {
     assert!(max_abs_diff(got, want) < dtype_tol(TOL));
 }
 
-/// Virtual layers reuse one real weight set. 6 virtual over 2 real must hold
-/// exactly 2 weight sets and 6 cache slots, and reach the gradient of every
-/// real layer.
+/// Virtual layers reuse the weights of a real layer. 6 virtual over 2 real
+/// must hold exactly 2 real layers and 6 cache slots, and reach the gradient
+/// of every real layer.
 #[test]
 fn virtual_layers_share_weights_and_keep_one_cache_each() {
     let device = test_device().autodiff();
@@ -212,10 +213,10 @@ fn grad_horizon_cuts_the_prefix_but_not_the_input() {
     );
 }
 
-/// A stretched schedule gives each real layer one contiguous run of virtual
-/// layers. So a horizon must cut and lift back **once per real layer**, with
-/// the tail of every run tracked. A single top suffix would leave every real
-/// layer except the topmost with no gradient.
+/// A stretched layer schedule gives each real layer one contiguous run of
+/// virtual layers. So a horizon must cut and lift back **once per real
+/// layer**, with the tail of every run tracked. A single top suffix would
+/// leave every real layer except the topmost with no gradient.
 #[test]
 fn grad_horizon_stretched_trains_every_real_layer() {
     let device = test_device().autodiff();
@@ -223,7 +224,7 @@ fn grad_horizon_stretched_trains_every_real_layer() {
         .require_grad();
 
     // 8 virtual over 3 real: runs [0,1,2], [3,4,5], [6,7]. `Depth(1)` tracks
-    // {2, 5, 7}, so the stack crosses the boundary three times.
+    // {2, 5, 7}, so the stack has three cuts.
     let build = || LayersBuilder {
         n_virtual_layers: Some((8, Schedule::Stretched)),
         ..layers_builder(3)
@@ -257,15 +258,15 @@ fn grad_horizon_stretched_trains_every_real_layer() {
     for (i, l) in cut.real_layers.iter().enumerate() {
         assert!(
             l.block.in_proj.weight.val().grad(&grads).is_some(),
-            "real layer {i} must keep a tracked application under a stretched schedule",
+            "real layer {i} must keep a tracked application under a stretched layer schedule",
         );
     }
 }
 
 /// The mask can alternate arbitrarily. Only the layers that it tracks collect
 /// a gradient, and `forward` still equals `step` unrolled through every one of
-/// those boundaries. This holds under both residual schemes, and the
-/// Multi-Gate streams make the same hop as the tokens.
+/// those backend hops. This holds under both residual schemes, and the
+/// residual streams of Multi-Gate make the same hop as the tokens.
 #[test]
 fn grad_horizon_mask_alternates_and_keeps_forward_step_parity() {
     let device = test_device().autodiff();
@@ -292,7 +293,7 @@ fn grad_horizon_mask_alternates_and_keeps_forward_step_parity() {
         let mut cut = build();
         cut.real_layers = uncut.real_layers.clone();
         cut.residuals = uncut.residuals.clone();
-        // Tracked, cut, tracked, cut, … — four boundaries.
+        // Tracked, untracked, tracked, untracked, …: four backend hops.
         let mask = vec![true, false, true, false, false, true];
         cut.grad_horizon = Some(GradHorizon::Mask(mask.clone()));
         let (y_cut, _) = cut.forward(x.clone(), None, (), None, None);
@@ -301,7 +302,7 @@ fn grad_horizon_mask_alternates_and_keeps_forward_step_parity() {
             "an alternating mask changes the graph, never the values",
         );
 
-        // `forward` = `step` unrolled must also survive the boundaries. The
+        // `forward` = `step` unrolled must also survive the hops. The
         // cascade takes them one token stream at a time.
         let mut caches = None;
         let mut ys = Vec::new();
@@ -343,8 +344,8 @@ fn grad_horizon_keeps_the_checkpointing_strategy() {
     let grads = y.sum().backward();
     assert!(x.grad(&grads).is_some(), "the input crosses every cut");
 
-    // The backward above consumed the graph of the caches, so they carry on
-    // detached (Burn has no `retain_graph`).
+    // The backward above consumed the graph of the caches, so the step takes
+    // them detached (Burn has no `retain_graph`).
     let x_t = x.narrow(1, 0, 1).squeeze_dim::<2>(1);
     let (y_t, _) = layers.step(x_t, Some(caches.detach()), None);
     let _ = y_t.sum().backward();
@@ -369,8 +370,8 @@ fn detach_keeps_the_device_of_each_slot() {
 }
 
 /// A class latent of an **untracked** layer still trains. It is a learnable
-/// *input row*, not part of the transform of that layer. So it rides the
-/// straight-through carry as a value-zero ghost row. The mask here also ends
+/// *input*, not part of the transform of that layer. So it rides the
+/// straight-through carry as a value-zero ghost latent. The mask here also ends
 /// untracked, so the stack lifts its output at the very top.
 #[test]
 fn grad_horizon_ghosts_an_untracked_layers_class_latent() {
@@ -390,7 +391,7 @@ fn grad_horizon_ghosts_an_untracked_layers_class_latent() {
         .expect("latent table");
     assert!(
         emb.val().grad(&grads).is_some(),
-        "an untracked layer's class latent trains through its ghost row",
+        "an untracked layer's class latent trains through its ghost latent",
     );
     assert!(
         layers.real_layers[0].block.in_proj.weight.val().grad(&grads).is_none(),
@@ -404,7 +405,7 @@ fn grad_horizon_ghosts_an_untracked_layers_class_latent() {
 
 /// Multi-Gate swaps the additive skip for a convex mean-pool over `k` streams,
 /// so the output stays `O(1)` in depth where the additive skip grows. Both
-/// modes must still satisfy forward/step parity.
+/// residual schemes must still satisfy forward/step parity.
 #[test]
 fn multi_gate_forward_equals_step_and_stays_bounded() {
     let device = test_device();
@@ -511,11 +512,11 @@ fn class_token_placement_is_the_same_for_forward_and_step() {
     }
     // `step` returns the last token that it emitted. So the marker is folded
     // into the state of the first step, and does not come out as an extra
-    // output row.
+    // output position.
     assert_eq!(Tensor::cat(ys, 1).dims(), [1, sequence, 2]);
 }
 
-/// A per-layer class latent is a learnable input row: it must train.
+/// A per-layer class latent is a learnable input: it must train.
 #[test]
 fn class_latents_receive_gradients() {
     let device = test_device().autodiff();
@@ -572,10 +573,10 @@ impl ModuleMapper for Jitter {
     }
 }
 
-/// An untied stack is the *unshared* stack of its application views. Virtual
-/// layer `i` runs application `index[i]` of its real layer, in `forward` and
-/// in `step`. The test first adds noise to the copies, so a read of the wrong
-/// copy shows.
+/// An untied stack equals the stack of its application views, with no weight
+/// sharing. Virtual layer `i` runs application `index[i]` of its real layer,
+/// in `forward` and in `step`. The test first adds noise to the copies, so a
+/// read of the wrong copy shows.
 #[test]
 fn an_untied_stack_is_the_unshared_stack_of_its_application_views() {
     let device = test_device();
@@ -796,7 +797,7 @@ fn muon_plan_matches_only_existing_rank_2_weights() {
 
 /// An untied projection is one matrix per application. Muon orthogonalises
 /// each copy on its own, and the plan gives the untied weight to that
-/// per-copy step.
+/// per-copy update.
 #[cfg(feature = "optim")]
 #[test]
 fn muon_steps_an_untied_projection_one_copy_at_a_time() {

@@ -5,8 +5,8 @@
 //! shared neural pieces they are built from (activations, norms, losses, small
 //! tensor helpers).
 //!
-//! Everything here is parameterised by the mixer block `M: `[`Block`]. A family
-//! of sequence-mixing blocks implements this one trait to join this stack.
+//! Everything here is parameterised by the block `M: `[`Block`]. A family
+//! implements this trait to join the crate.
 //!
 //! The [`shape`] types are their *serializable* counterparts
 //! ([`NetworkShape`]/[`LatentShape`]/[`VocabShape`]/[`BidiShape`]): the same
@@ -22,9 +22,9 @@ pub mod activation;
 pub mod bidi;
 /// The per-network cache collection trait ([`CacheStack`]).
 pub mod cache;
-/// A single Pre-LN residual layer wrapping one mixer block ([`Layer`]).
+/// A single Pre-LN residual layer around one block ([`Layer`]).
 pub mod layer;
-/// The (virtual-)layer stack over real weight sets ([`Layers`]).
+/// The layer stack: virtual layers over real layers ([`Layers`]).
 pub mod layers;
 /// Loss functions (binary cross-entropy, cross-entropy, mean squared error,
 /// the L2-warp penalty).
@@ -32,10 +32,11 @@ pub mod loss;
 /// Tensor helpers: `segsum`, `gqa`, `prefix_sum`, typed `split`, and
 /// `sanity` guards.
 pub mod misc;
-/// H-Net: a hierarchy of block stacks with dynamic chunking between levels
-/// ([`HNet`]).
+/// H-Net: layer stacks at several resolutions, with dynamic chunking between
+/// stages ([`HNet`]).
 pub mod hnet;
-/// The SwiGLU feed-forward block interleaved with the mixer ([`GatedMlp`]).
+/// The SwiGLU feed-forward sub-block that follows the block of a layer
+/// ([`GatedMlp`]).
 pub mod mlp;
 /// The config → module interface of a generic training loop
 /// ([`ModelConfigExt`]).
@@ -79,21 +80,21 @@ pub use network::{
     LatentNetwork, LatentNetworkBuilder, VocabNetwork, VocabNetworkBuilder,
 };
 
-/// The mixer-block interface the generic [`Layer`]/[`Layers`] delegate to.
+/// The interface of a block. The generic [`Layer`] and [`Layers`] call it.
 ///
-/// Implement it once per block family (a selective SSM, an attention variant,
-/// a gated convolution, …). Then every container in this crate applies
-/// unchanged: layers, virtual stacks, bidirectional pairs, latent/vocab
-/// networks, class tokens, the Muon plan.
+/// Implement it once for each family (a selective SSM, a form of attention, a
+/// gated convolution, …). Then every container in this crate applies
+/// unchanged: layers, layer stacks, bidirectional pairs, latent/vocab
+/// networks, class markers, the Muon plan.
 ///
 /// `ModuleDisplay` is a supertrait, so that the generic containers are
 /// themselves `Module`s (the derive of Burn requires it of every module-typed
 /// generic). The `valid` of `Module` lets
 /// [`Layers::grad_horizon`](crate::modules::Layers::grad_horizon) move the
-/// stack to the inner backend for its untracked segments. A
+/// stack to the inner backend for its untracked spans. A
 /// `#[derive(Module)]` block satisfies both.
 pub trait Block: Module + burn::module::ModuleDisplay {
-    /// Per-block streaming cache (one layer's worth of state).
+    /// The cache of one block (the state of one layer).
     type Cache;
     /// The per-network cache collection for this family.
     type Caches: CacheStack<Cache = Self::Cache>;
@@ -101,15 +102,15 @@ pub trait Block: Module + burn::module::ModuleDisplay {
     /// [`Self::block_forward`]. `()` for a block with nothing to select.
     type Options;
 
-    /// Full-sequence (chunked) pass — training / prefill.
+    /// The forward: the parallel call over a window, for training and prefill.
     ///
-    /// `pad` (`[batch, sequence]`, `true` at padding, `None` ⇒ every row real)
-    /// is **right** padding: in every slot, it follows all of the real rows. A
-    /// padded row is absent. The outputs of the real rows and the returned
-    /// cache are exactly those of the real rows of the slot run alone, which
-    /// is `step` unrolled over them. The output of a padded row is
-    /// unspecified. The containers keep the mask right-padded, whatever class
-    /// markers they splice (see [`crate::utils::padding`]).
+    /// `pad` (`[batch, sequence]`, `true` at padding, `None` ⇒ no padding) is
+    /// **right** padding: in every row, it follows all of the real tokens. A
+    /// padded position is absent. The outputs of the real tokens and the
+    /// returned cache are exactly those of the real tokens of the row run
+    /// alone, which is `step` unrolled over them. The output of a padded
+    /// position is unspecified. The containers keep the mask right-padded,
+    /// whatever class markers they splice (see [`crate::utils::padding`]).
     fn block_forward(
         &self,
         x: Tensor<3>,
@@ -118,18 +119,18 @@ pub trait Block: Module + burn::module::ModuleDisplay {
         pad: Option<Tensor<2, Bool>>,
     ) -> (Tensor<3>, Self::Cache);
 
-    /// [`Self::block_forward`] over **packed** rows: in each slot, several
-    /// sequences one after another (see [`crate::utils::packing`]).
+    /// [`Self::block_forward`] over **packed** rows: each row holds several
+    /// segments, one after another (see [`crate::utils::packing`]).
     ///
-    /// `reset` (`[batch, sequence]`) is `true` at the first row of each
-    /// sequence. At that row, the block restarts from a zero cache. The rows
-    /// before the first reset of a slot continue from `cache`. The output of
-    /// each sequence is that of the sequence run alone from a zero cache. The
-    /// returned cache is that of the last sequence of each slot.
+    /// `reset` (`[batch, sequence]`) is `true` at the first token of each
+    /// segment. At that position, the block starts again from a zero cache.
+    /// The positions before the first reset of a row continue from `cache`.
+    /// The output of each segment is that of the segment run alone from a zero
+    /// cache. The returned cache is that of the last segment of each row.
     ///
-    /// A block can accept a reset only at some rows (for example, at a chunk
-    /// start). The caller places the resets there. The default panics: a
-    /// block that does not override it takes no packed rows.
+    /// A block can accept a reset only at some positions (for example, at the
+    /// start of a chunk). The caller places the resets there. The default
+    /// panics: a block that does not override it takes no packed rows.
     fn block_forward_packed(
         &self,
         x: Tensor<3>,
@@ -141,7 +142,7 @@ pub trait Block: Module + burn::module::ModuleDisplay {
         panic!("this block takes no packed rows (it does not implement `block_forward_packed`)");
     }
 
-    /// Single-token recurrent step — decoding.
+    /// The step: the recurrent call over one token of each row, for decode.
     fn block_step(&self, x: Tensor<2>, cache: Option<Self::Cache>) -> (Tensor<2>, Self::Cache);
 
     /// Build `n_virtual` zero caches sized for a `[batch, sequence, d_model]` input.
@@ -172,8 +173,9 @@ pub trait BlockConfig: Config {
     /// parameter is built once. A config that unties nothing ignores the count.
     fn init_block(&self, n_applications: usize, device: &Device) -> Self::Block;
 
-    /// The 2-D weights of the block that Muon can own, and where their fused
-    /// columns split. See [`crate::optim`] for what is (and is not) listed.
+    /// The 2-D weights of the block that Muon can own, and the sub-projections
+    /// of each fused projection. See [`crate::optim`] for what is (and is not)
+    /// listed.
     #[cfg(feature = "optim")]
     fn muon_projections(&self) -> Vec<crate::optim::ProjSpec>;
 }

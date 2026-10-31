@@ -10,13 +10,14 @@ use crate::utils::{ClassCursor, ClassCursors, ClassLatent, Packed, Padding};
 use burn::module::Param;
 use burn::prelude::*;
 
-/// A stack of [`Layer`]s with optional virtual-layer scheduling — one struct for
-/// every [`Block`] family.
+/// The layer stack: [`Layer`]s with an optional layer schedule. One struct for
+/// every family.
 #[derive(Module, Debug)]
 pub struct Layers<M: Module> {
     /// Number of real (weight-bearing) layers.
     pub n_real_layers: usize,
-    /// Optional `(n_virtual_layers, schedule)` for weight-sharing.
+    /// Optional layer schedule `(n_virtual_layers, schedule)`, for
+    /// weight-sharing.
     #[module(skip)]
     pub n_virtual_layers: Option<(usize, Schedule)>,
     /// The weight-bearing layers, length `n_real_layers`.
@@ -34,20 +35,20 @@ pub struct Layers<M: Module> {
     pub class_latents: Vec<ClassLatent>,
     /// The stack-level class-latent embeddings, `[num_class_latents, d_model]`.
     pub class_latents_emb: Option<Param<Tensor<2>>>,
-    /// Back-propagate only **some** of the (virtual) layers. The other layers
-    /// run without an autodiff graph. `None` (the default) tracks the whole
-    /// stack.
+    /// The gradient horizon: back-propagate only **some** of the virtual
+    /// layers. The other layers run without an autodiff graph. `None` (the
+    /// default) tracks the whole stack.
     ///
-    /// This is the truncated-BPTT knob of TRM/HRM-style deep recursion. When
+    /// The horizon follows the deep recursion of TRM and HRM. When
     /// `n_virtual_layers` is far above `n_real_layers`, the tracking of every
     /// pass is what runs out of memory. Both papers back-propagate only a
     /// suffix: TRM one full recursion, HRM-Text a horizon `K` warmed from 2 to
     /// 5. The horizon counts **from the top**, so it keeps its meaning when the
-    /// stack depth changes, and a training loop can move it per step.
+    /// stack depth changes, and a training loop can move it per training step.
     ///
     /// [`GradHorizon::Depth`]`(K)` counts `K` from the top of every **real**
     /// layer (its last `K` applications), not from the top of the stack. The
-    /// [`Schedule`] decides which virtual layers these are:
+    /// layer schedule ([`Schedule`]) decides which virtual layers these are:
     ///
     /// - [`Schedule::Cyclic`] spreads the applications of a real layer evenly.
     ///   They are the top `K · n_real_layers` virtual layers, and the stack
@@ -67,7 +68,7 @@ pub struct Layers<M: Module> {
     /// `GradHorizon::last(K, n)`.
     ///
     /// Under weight sharing, the same real layer serves both sides of a cut.
-    /// The untracked segments run an inner-backend copy, so each weight still
+    /// The untracked spans run an inner-backend copy, so each weight still
     /// receives gradient, but only from its tracked applications.
     ///
     /// The stack **input** is the exception, on purpose. It enters at the
@@ -77,46 +78,48 @@ pub struct Layers<M: Module> {
     /// because they re-inject the input at every recursion. This stack reads
     /// it once.
     ///
-    /// So every boundary re-attaches the input *straight-through*: a
-    /// value-zero term restores an identity gradient path. Under
+    /// So every cut re-attaches the input *straight-through*: a value-zero
+    /// term restores an identity gradient path. Under
     /// [`Residuals::Standard`] this is not a guess. It is the exact leading
-    /// term of `∂(x + Σ F_l)/∂x`, and the rest is the segment that the cut
-    /// chose not to differentiate. The carry holds what enters an untracked
-    /// segment, not only the stack input. So the tracked layers *below* a cut
-    /// keep their gradient path to the layers above it.
+    /// term of `∂(x + Σ F_l)/∂x`, and the rest is the untracked span that the
+    /// cut chose not to differentiate. The straight-through carry holds what
+    /// enters an untracked span, not only the stack input. So the tracked
+    /// layers *below* a cut keep their gradient path to the layers above it.
     ///
     /// Under [`MultiGate`](crate::modules::MultiGate), the residual lives in
-    /// the depth-streams, not in the token. So **every** carrier gets the
-    /// identity path:
+    /// the residual streams, not in the token. So **every** residual stream
+    /// gets the identity path:
     ///
     /// - At the bottom of the stack, this is exact. The seed stream is the
-    ///   input and the pool is convex, so an identity segment leaves all `k`
+    ///   input and the pool is convex, so an identity span leaves all `k`
     ///   streams equal to the input. A correction of only the pooled token
     ///   would leave the contribution of the streams out of the gradient of
     ///   the input. Under the carry-biased gate init that MGR is built for,
     ///   that contribution is most of the gradient.
-    /// - A cut that opens *inside* the stack (a stretched schedule takes one
-    ///   per real layer) has streams that already differ. It carries the
-    ///   pooled token into each of them. A carry per stream would be the exact
-    ///   identity. But a segment also *widens* the streams as it accumulates,
-    ///   so no stream is there to pair a carry with. Every stream still
-    ///   receives gradient, routed by the convex aggregation that produced the
-    ///   token, not one-to-one.
+    /// - A cut that opens *inside* the stack (a stretched layer schedule takes
+    ///   one per real layer) has streams that already differ. It adds the
+    ///   straight-through carry of the pooled token to each of them. One
+    ///   straight-through carry per stream would be the exact identity. But an
+    ///   untracked span also *widens* the streams as it accumulates, and the
+    ///   streams that it adds have no straight-through carry of their own.
+    ///   Every stream still receives gradient, routed by the convex
+    ///   aggregation that produced the token, not one-to-one.
     ///
     /// In every case, the values do not change.
     ///
-    /// **Every class embedding trains**, at all three levels and on both sides
-    /// of a cut:
+    /// **Every class embedding trains**, at all three marker levels and on
+    /// both sides of a cut:
     ///
     /// - The [`ClassToken`]s of a network and the [`ClassLatent`]s of this
-    ///   stack ride the carry, because the carry is taken *after* they are
-    ///   spliced.
-    /// - A per-[`Layer`] latent inside an untracked segment gets a **ghost**
-    ///   row in the carry (value zero, taken from the tracked table).
+    ///   stack ride the straight-through carry, because the loop takes it
+    ///   *after* they are spliced.
+    /// - A per-[`Layer`] latent inside an untracked span gets a **ghost
+    ///   latent** in the straight-through carry (value zero, taken from the
+    ///   tracked table).
     ///
-    /// They are learnable *input rows*, not part of the transform of a layer
-    /// (the transform stays undifferentiated below the cut). Anything else
-    /// would leave a silently dead parameter.
+    /// They are learnable *inputs*, not part of the transform of a layer (the
+    /// transform stays undifferentiated below the cut). Anything else would
+    /// leave a silently dead parameter.
     ///
     /// [`ClassToken`]: crate::utils::ClassToken
     /// [`ClassLatent`]: crate::utils::ClassLatent
@@ -153,7 +156,7 @@ where
             && self.real_layers.iter().all(|l| l.class_latents.iter().all(start))
     }
 
-    /// Splice the class latents of this stack into the chunk `x` (no-op when
+    /// Splice the class latents of this stack into the window `x` (no-op when
     /// there are none), and advance the stack-level cursor. `padding` follows
     /// the splice.
     fn insert_latents(
@@ -175,7 +178,7 @@ where
         out
     }
 
-    /// Number of (virtual) layers this stack runs.
+    /// Number of virtual layers that this stack runs.
     pub fn n_virtual_count(&self) -> usize {
         self.n_virtual_layers
             .as_ref()
@@ -184,7 +187,7 @@ where
     }
 
     /// The zero caches that [`Self::step`] starts from when it gets `None`:
-    /// one slot per virtual layer, sized for a `[batch, d_model]` input.
+    /// one cache per virtual layer, sized for a `[batch, d_model]` input.
     pub fn zero_caches_2d(&self, x: &Tensor<2>) -> M::Caches {
         self.real_layers[0].application(0).block.zero_caches_2d(x, self.n_virtual_count())
     }
@@ -257,7 +260,7 @@ where
         tracked.iter().any(|t| !t).then_some(tracked)
     }
 
-    /// Full-sequence pass through every (virtual) layer.
+    /// The forward of a window through every virtual layer.
     ///
     /// [`Layer`] returns only its delta: `F_l = Block(RMSNorm(·))`, plus the
     /// contribution of the feed-forward sub-block when the layer has one. This
@@ -265,7 +268,7 @@ where
     ///
     /// - [`Residuals::Standard`]: each layer adds the input skip (unless it is
     ///   suppressed).
-    /// - [`Residuals::MultiGate`]: no skip. Up to `n_stream` parallel streams
+    /// - [`Residuals::MultiGate`]: no skip. Up to `n_stream` residual streams
     ///   carry the residual, and `x` seeds the first one. Each layer reads
     ///   their attention-pooled aggregate as input. Its output either
     ///   *becomes* a new stream (while fewer than `n_stream` exist) or is
@@ -273,29 +276,30 @@ where
     ///
     /// `ignore_first/last_residual` apply to **both** paths:
     ///
-    /// - A skipped first residual restarts the residual carry from the output
-    ///   of the first layer. The layer reads the input but does not carry it.
+    /// - A skipped first residual starts the residual again from the output
+    ///   of the first layer. The layer reads the input, but its output does
+    ///   not contain the input.
     /// - A skipped last residual makes the stack output the transform `F_l` of
-    ///   the last layer alone (no input-dependent carry).
+    ///   the last layer alone (no residual from the input).
     ///
     /// `class` places the stack-level and the per-layer class latents. `None`
     /// takes `x` as the whole sequence, so every latent lands in this call.
-    /// Pass the same [`ClassCursors`] to consecutive chunks to split the
+    /// Pass the same [`ClassCursors`] to consecutive windows to split the
     /// sequence without a move of any latent (see [`ClassCursors`]).
     ///
     /// Both residual paths host the latents. A per-layer latent is spliced
     /// into the token sequence. Under MultiGate, it is also spliced into every
-    /// carried stream. The aggregator over the resulting identical streams
-    /// reproduces the row. So the layer above reads it back exactly as the
+    /// residual stream. The aggregator over the resulting identical streams
+    /// reproduces the latent. So the layer above reads it back exactly as the
     /// additive skip passes it.
     ///
-    /// `pad` (`[batch, sequence]`, `true` at padding, `None` ⇒ none) marks a
-    /// right-padded batch. Every slot comes out as its own sequence would come
-    /// out alone: the outputs of its real rows, and its caches. Every class
-    /// latent is placed against the length of that slot (see
-    /// [`crate::utils::padding`]). The rows still come back in the batch-wide
-    /// order, with the class latents where the plan for the padded length
-    /// puts them.
+    /// `pad` (`[batch, sequence]`, `true` at padding, `None` ⇒ no padding)
+    /// marks a right-padded batch. Every row comes out as its own sequence
+    /// would come out alone: the outputs of its real tokens, and its caches.
+    /// Every class latent is placed against the length of that row (see
+    /// [`crate::utils::padding`]). The positions still come back in the
+    /// batch-wide order, with the class latents where the plan for the padded
+    /// length puts them.
     ///
     /// [`MultiGate`]: crate::modules::MultiGate
     /// [`Layer`]: crate::modules::Layer
@@ -311,14 +315,14 @@ where
     }
 
     /// [`Self::forward`] over packed rows (see [`crate::utils::packing`]). At
-    /// each reset of `packed`, every layer restarts from a zero cache. The
-    /// rows before the first reset of a slot continue from `caches`.
+    /// each reset of `packed`, every layer starts again from a zero cache. The
+    /// positions before the first reset of a row continue from `caches`.
     ///
     /// The stack puts its class latents into the opening slots of each
-    /// sequence, in place of the input rows. So the output has the shape of
+    /// segment, in place of the input tokens. So the output has the shape of
     /// `x`. Every class latent of the stack must be a `Start`. A layer cannot
     /// have class latents of its own, because a splice would move the resets.
-    /// The returned caches are those of the last sequence of each slot.
+    /// The returned caches are those of the last segment of each row.
     pub fn forward_packed(
         &self,
         x: Tensor<3>,
@@ -355,7 +359,7 @@ where
         self.forward_rows(x, caches, options, class, padding, None)
     }
 
-    /// One layer of the stack, over padded rows or over packed rows.
+    /// One layer of the stack, over a padded batch or over packed rows.
     fn run_layer(
         layer: &Layer<M>,
         x: Tensor<3>,
@@ -422,10 +426,10 @@ where
         // never through a bare `Tensor::from_inner`. `from_inner` would enable
         // autodiff also on a plain tensor, and would reset the checkpointing
         // strategy (see `lift`). `Module::valid` also turns off the training
-        // flags (dropout, …) of a block that has them. So an untracked segment
+        // flags (dropout, …) of a block that has them. So an untracked span
         // runs such a block in eval mode.
         //
-        // The mask is not a single boundary. It can turn off and on again any
+        // The mask can have more than one cut. It can turn off and on again any
         // number of times (once per real layer under `Schedule::Stretched`, see
         // `grad_horizon`). Each transition is a full hop of everything that the
         // loop carries.
@@ -434,60 +438,63 @@ where
         let device = self.stack_device();
         let mut slots = caches.into_slots();
         // Straight-through carry (see `grad_horizon`): a value-**zero** tracked
-        // tensor that stands in for what entered the current untracked
-        // segment. The loop adds it back where the graph resumes, so
-        // everything below keeps an identity gradient path across the segment.
-        // It is `Some` exactly while inside such a segment. It must be added on
-        // the autodiff side of the boundary. An earlier add would make it a
-        // tracked input to an untracked layer: a backend mismatch, and the end
-        // of the memory saving.
+        // tensor that stands in for what entered the current untracked span.
+        // The loop adds it back where the graph resumes, so everything below
+        // keeps an identity gradient path across the span. It is `Some`
+        // exactly while inside such a span. It must be added on the autodiff
+        // side of the cut. An earlier add would make it a tracked input to an
+        // untracked layer: a backend mismatch, and the end of the memory
+        // saving.
         //
         // It shadows the **shape** of `x`, not its value. The class latents of
-        // an untracked layer make the sequence longer, and the carry takes
-        // ghost rows at those same positions (see the splice below).
+        // an untracked layer make the sequence longer, and the straight-through
+        // carry takes ghost latents at those same positions (see the splice
+        // below).
         let mut st: Option<Tensor<3>> = None;
 
-        // MultiGate carries up to `n_stream` parallel streams: the input is the
+        // MultiGate carries up to `n_stream` residual streams: the input is the
         // first, and the early layers append the rest. Standard threads the
         // single tensor `x` directly, and `streams` stays `None`.
         let mut streams = self.multi_gate_streams_seed(&x);
         let apps = self.applications();
 
-        // `i` is the virtual-layer index (schedule, cut boundary, residual
-        // flags). The slot lookup is incidental. The bound stays `n`, so a
-        // mis-sized cache stack still panics.
+        // `i` is the virtual-layer index (layer schedule, cut, residual flags).
+        // The slot lookup is incidental. The bound stays `n`, so a mis-sized
+        // cache stack still panics.
         #[allow(clippy::needless_range_loop)]
         for i in 0..n {
             let track = tracked.as_ref().is_none_or(|t| t[i]);
             match (st.is_some(), track) {
-                // Entering an untracked segment: everything that crosses into
-                // it goes down to the inner backend. The tokens and their
-                // MultiGate streams go here, the cache slot of this layer below.
+                // Entering an untracked span: everything that crosses into it
+                // goes down to the inner backend. The tokens and their residual
+                // streams go here. The cache slot of this layer goes below.
                 (false, false) => {
                     st = Some(x.clone() - x.clone().detach());
                     x = x.inner();
                     streams = streams.map(Tensor::inner);
                 }
                 // Leaving one: lift what it produced back onto the autodiff
-                // backend, as fresh graph roots, and re-attach the carry.
+                // backend, as fresh graph roots, and re-attach the
+                // straight-through carry.
                 (true, true) => {
                     x = lift(x, &device);
                     streams = streams.map(|s| lift(s, &device));
-                    let st = st.take().expect("inside an untracked segment");
-                    // Under MultiGate, the residual lives in the streams, not
-                    // in the token. So *every* carrier gets the identity path:
-                    // that is what "the segment behaved like identity" means
-                    // there. Below the first layer, this is exact. The seed
-                    // stream is the input and the pool is convex, so an
-                    // identity segment leaves all `k` streams equal to the
-                    // input. The pooled `x` is not counted twice: its route
-                    // from the input runs through an aggregator whose softmax
-                    // weights sum to one. At a boundary further up, the streams
-                    // already differ, and the carry is that of the pooled token
-                    // alone. Exactness would need one carry per stream, and a
-                    // segment that accumulates new streams has nothing to pair
-                    // it with. Either way, the gradient reaches every stream
-                    // through that same convex aggregation. See `grad_horizon`.
+                    let st = st.take().expect("inside an untracked span");
+                    // Under MultiGate, the residual lives in the residual
+                    // streams, not in the token. So *every* stream gets the
+                    // identity path. That is what "the span behaved like
+                    // identity" means there. Below the first layer, this is
+                    // exact. The seed stream is the input and the pool is
+                    // convex, so an identity span leaves all `k` streams equal
+                    // to the input. The pooled `x` is not counted twice: its
+                    // route from the input runs through an aggregator whose
+                    // softmax weights sum to one. At a cut further up, the
+                    // streams already differ, and the straight-through carry is
+                    // that of the pooled token alone. Exactness would need one
+                    // straight-through carry per stream, and a span that
+                    // accumulates new streams has nothing to pair it with.
+                    // Either way, the gradient reaches every stream through
+                    // that same convex aggregation. See `grad_horizon`.
                     streams = streams.map(|s| {
                         let dims = s.dims();
                         s + st.clone().unsqueeze_dim::<4>(2).expand(dims)
@@ -506,9 +513,9 @@ where
             // The layer as its own application sees it, if the layer unties
             // anything.
             let layer = this.real_layers[real].application(apps.index[i]);
-            // The slot makes the same hop as its layer. A cache from a tracked
-            // segment goes down with an untracked layer, because Burn cannot
-            // mix backends within an op. It goes back up below.
+            // The cache slot makes the same hop as its layer. A tracked cache
+            // goes down with an untracked layer, because Burn cannot mix
+            // backends within an op. It goes back up below.
             let cache = slots[i].take().unwrap();
             let cache = match track {
                 true => cache,
@@ -518,9 +525,9 @@ where
             let last = self.ignore_last_residual && i + 1 == n;
 
             // Splice the class latents of this layer into the sequence. Under
-            // MultiGate, also splice them into every carried stream, because
+            // MultiGate, also splice them into every residual stream, because
             // the residual lives there. The (convex, all-scores-equal)
-            // aggregator reproduces a row that is in all `k` streams exactly.
+            // aggregator reproduces a latent that is in all `k` streams exactly.
             // So the layer above reads the latent back just as the Standard
             // skip passes it.
             let mut cursor = ClassCursor::at(class.per_layer[i], full);
@@ -537,13 +544,14 @@ where
                 );
                 x = splice_class_rows(x, &plan, &emb);
                 streams = streams.map(|s| splice_class_rows(s, &plan, &emb));
-                // Keep the carry aligned with `x`: splice **ghost** rows at the
-                // latent positions. A ghost row has value zero like the rest of
-                // the carry, but it comes from the *tracked* table. So the class
-                // latents of a prefix layer keep an identity gradient path,
-                // exactly as the stack input does. They are learnable input
-                // rows, not part of the transform of the layer. The transform
-                // stays undifferentiated below the cut.
+                // Keep the straight-through carry aligned with `x`: splice
+                // **ghost latents** at the latent positions. A ghost latent has
+                // value zero like the rest of the straight-through carry, but
+                // it comes from the *tracked* table. So the class latents of a
+                // prefix layer keep an identity gradient path, exactly as the
+                // stack input does. They are learnable inputs, not part of the
+                // transform of the layer. The transform stays undifferentiated
+                // below the cut.
                 st = st.map(|st| {
                     let tracked = class_emb_table(
                         &self.real_layers[real].class_latents,
@@ -581,8 +589,8 @@ where
                         Self::run_layer(&layer, x, cache, options.clone(), padding.as_ref(), packed);
                     slots[i] = Some(c_);
                     let s = streams.take().unwrap();
-                    // A skipped residual here drops every carried stream. The
-                    // MGR gets the same result when it forces the mixer gate to
+                    // A skipped residual here drops every residual stream. The
+                    // MGR gets the same result when it forces the β gate to
                     // β ≡ 1 (`new_streams = out`): the aggregator over the
                     // resulting identical streams collapses to `F_l`. Both
                     // branches take a shortcut to that result.
@@ -592,8 +600,8 @@ where
                         x = out;
                         streams = Some(s);
                     } else if first {
-                        // Drop the input seed: restart the streams from `F_0`
-                        // alone (the accumulation phase refills them).
+                        // Drop the input seed: start the streams again from
+                        // `F_0` alone (the accumulation phase refills them).
                         streams = Some(out.clone().unsqueeze_dim::<4>(2));
                         x = out;
                     } else {
@@ -614,18 +622,19 @@ where
                 slots[i] = slots[i].take().map(|c| M::Caches::cache_from_inner(c, &device));
             }
         }
-        // The stack ended inside an untracked segment (its top layers were cut):
-        // lift the output and re-attach the carry, exactly as the in-loop
-        // boundary does. The streams are not returned, so they stay below.
+        // The stack ended inside an untracked span (its top layers were cut).
+        // Lift the output and re-attach the straight-through carry, exactly as
+        // a cut inside the loop does. The streams are not returned, so they
+        // stay below.
         if let Some(st) = st.take() {
             x = lift(x, &device) + st;
         }
         (x, M::Caches::from_slots(slots))
     }
 
-    /// Seed the MultiGate streams from a full-sequence input: the **single**
-    /// stream `x` as `[batch, sequence, 1, d_model]`. The layers below
-    /// `n_stream` widen it (see [`MultiGate`](crate::modules::MultiGate)).
+    /// Seed the residual streams of MultiGate from the input of a window: the
+    /// **single** stream `x` as `[batch, sequence, 1, d_model]`. The layers
+    /// below `n_stream` widen it (see [`MultiGate`](crate::modules::MultiGate)).
     /// Returns `None` for the Standard path. `x` already carries the
     /// stack-level class latents, so they seed the streams like any other
     /// token.
@@ -633,9 +642,9 @@ where
         matches!(&self.residuals, Residuals::MultiGate(_)).then(|| x.clone().unsqueeze_dim::<4>(2))
     }
 
-    /// Single-token step through every (virtual) layer.
+    /// The step of one token through every virtual layer.
     ///
-    /// `class` drives two independent class-latent levels:
+    /// `class` drives two independent marker levels:
     ///
     /// - the stack-level [`Self::class_latents`] (`class.stack`), spliced once
     ///   below the first layer, exactly as in `forward`,
@@ -718,7 +727,7 @@ where
     }
 
     /// Thread `stream` (the tokens that enter the bottom layer) up through
-    /// every (virtual) layer. Each layer splices its own class latents into
+    /// every virtual layer. Each layer splices its own class latents into
     /// what it receives, adds its residual, and gives the result to the next
     /// layer. Returns what leaves the top layer. `slots` holds the advanced
     /// caches.
@@ -738,9 +747,9 @@ where
     /// it run the same sequence as that `step` alone.
     ///
     /// Under [`Residuals::MultiGate`], the residual is not in the token but in
-    /// the depth-streams of that token. So each element of `stream` comes with
-    /// its `[batch, k, d_model]` stream set. The set is rebuilt per token and
-    /// never crosses steps, exactly as the `[batch, sequence, k, d_model]`
+    /// the residual streams of that token. So each element of `stream` comes
+    /// with its `[batch, k, d_model]` stream set. The set is rebuilt per token
+    /// and never crosses steps, exactly as the `[batch, sequence, k, d_model]`
     /// streams of [`Self::forward`] are a per-position construct.
     fn cascade(
         &self,
@@ -757,20 +766,20 @@ where
         // The same mask as in `forward`, layer for layer. An untracked virtual
         // layer runs on an inner-backend copy of the stack, so it builds no
         // graph (see `grad_horizon`). Everything that crosses into an untracked
-        // segment goes down with it: the token stream, its MultiGate stream
-        // sets, and the cache slots of those layers. The loop lifts them back
-        // where the graph resumes, as many times as the mask alternates. As in
-        // `forward`, the mask exists only on an autodiff backend, and every lift
-        // goes through `lift` onto the device of the stack.
+        // span goes down with it: the token stream, its sets of residual
+        // streams, and the cache slots of those layers. The loop lifts them
+        // back where the graph resumes, as many times as the mask alternates.
+        // As in `forward`, the mask exists only on an autodiff backend, and
+        // every lift goes through `lift` onto the device of the stack.
         let tracked = self.grad_tracked(n);
         let inner_stack = tracked.is_some().then(|| Module::valid(self));
         let device = self.stack_device();
         // The straight-through carry of `forward`, one entry per token of the
-        // stream that enters the current untracked segment (see
-        // `grad_horizon`). It is `Some` exactly while inside such a segment.
-        // It can open empty. A `prime` whose cut layers receive no token has no
-        // input to carry a gradient back to. It has only its own class latents,
-        // and the ghost rows below cover them.
+        // stream that enters the current untracked span (see `grad_horizon`).
+        // It is `Some` exactly while inside such a span. It can open empty. A
+        // `prime` whose cut layers receive no token has no input that a
+        // gradient can reach. It has only its own class latents, and the ghost
+        // latents below cover them.
         let mut st: Option<Vec<Tensor<2>>> = None;
 
         // MultiGate: one stream set per token, seeded (like `forward`'s) with
@@ -796,19 +805,19 @@ where
             .as_deref()
             .and_then(|c| c.full_len)
             .map(|l| l + landing_count(&self.class_latents, l));
-        // `pos` is the virtual-layer index (schedule, cut boundary). The slot
+        // `pos` is the virtual-layer index (layer schedule, cut). The slot
         // lookup is incidental.
         #[allow(clippy::needless_range_loop)]
         for pos in 0..n {
-            // The boundaries that `forward` crosses, in the shape of a token
+            // The backend hops that `forward` makes, in the shape of a token
             // stream. They are before the empty-layer `continue` below only as
             // a defense: `carried` is empty exactly when `stream` is empty, so
             // a skipped layer has nothing to hop either way. But this keeps the
-            // boundary independent of the skip condition.
+            // hops independent of the skip condition.
             let track = tracked.as_ref().is_none_or(|t| t[pos]);
             match (st.is_some(), track) {
-                // Entering an untracked segment: take the carry, then send the
-                // stream (and its MultiGate stream sets) down.
+                // Entering an untracked span: take the straight-through carry,
+                // then send the stream (and its sets of residual streams) down.
                 (false, false) => {
                     st = Some(
                         stream
@@ -820,15 +829,21 @@ where
                     carried = carried.into_iter().map(Tensor::inner).collect();
                 }
                 // Leaving one: lift what it produced back onto the autodiff
-                // backend, as fresh graph roots, and re-attach the carry.
+                // backend, as fresh graph roots, and re-attach the
+                // straight-through carry.
                 (true, true) => {
                     stream = stream.into_iter().map(|t| lift(t, &device)).collect();
                     carried = carried.into_iter().map(|t| lift(t, &device)).collect();
-                    let st = st.take().expect("inside an untracked segment");
-                    debug_assert_eq!(st.len(), stream.len(), "carry tracks the stream");
-                    // Every carrier, as in `forward`. Under MultiGate, each
-                    // token brings its own `[batch, k, d]` stream set and takes
-                    // the carry of the pooled token into all of them.
+                    let st = st.take().expect("inside an untracked span");
+                    debug_assert_eq!(
+                        st.len(),
+                        stream.len(),
+                        "the straight-through carry tracks the stream"
+                    );
+                    // Every residual stream, as in `forward`. Under MultiGate,
+                    // each token brings its own `[batch, k, d]` stream set and
+                    // adds the straight-through carry of the pooled token into
+                    // all of them.
                     if !carried.is_empty() {
                         debug_assert_eq!(carried.len(), st.len(), "one stream set per token");
                         carried = carried
@@ -883,8 +898,8 @@ where
             full = full.map(|l| l + landing_count(&layer.class_latents, l));
             // The stream count that this layer leaves, as in `forward`. A
             // suppressed last residual leaves the streams untouched. A
-            // suppressed first residual restarts them from `F_0`. Otherwise the
-            // accumulation phase appends one until `n_stream` is reached.
+            // suppressed first residual starts them again from `F_0`. Otherwise
+            // the accumulation phase appends one until `n_stream` is reached.
             let k_next = match mg {
                 None => 1,
                 Some(_) if last => k,
@@ -896,7 +911,7 @@ where
                 continue; // nothing reaches this layer, and it adds nothing
             }
 
-            // The slot makes the same hop as its layer (see `forward`).
+            // The cache slot makes the same hop as its layer (see `forward`).
             // `Layer::step_one` fills an empty slot on the backend of the
             // tokens.
             let mut cache = slots[pos].take();
@@ -924,12 +939,12 @@ where
                 };
                 let s = tok_streams.expect("MultiGate carries one stream set per token");
                 let (out, c) = layer.step_one(token, cache);
-                // As in `forward`, a skipped residual is β ≡ 1 in the mixer
+                // As in `forward`, a skipped residual is the β gate at β ≡ 1
                 // (`new_streams = F_l`). The aggregator then collapses to `F_l`.
                 if last {
                     (out, Some(s), c) // the output depends only on `F_l`
                 } else if first {
-                    // Drop the input seed: restart the streams from `F_0` alone.
+                    // Drop the input seed: start the streams again from `F_0`.
                     (out.clone(), Some(out.unsqueeze_dim::<3>(1)), c)
                 } else {
                     let mgr = &mg.layers[mg.module_index(pos, real)];
@@ -941,9 +956,10 @@ where
                     (h, Some(s), c)
                 }
             };
-            // A class latent enters the token sequence *and* every stream (see
-            // `forward`). Identical streams score alike. So the aggregator
-            // reproduces the row, and the layer above reads it back unchanged.
+            // A class latent enters the token sequence *and* every residual
+            // stream (see `forward`). Identical streams score alike. So the
+            // aggregator reproduces the latent, and the layer above reads it
+            // back unchanged.
             let row = |i: usize| {
                 let emb = layer.class_latents_emb.as_ref();
                 let width = class_emb_width(emb);
@@ -951,12 +967,13 @@ where
                 let s = mg.map(|_| r.clone().unsqueeze_dim::<3>(1).expand([batch, k, width]));
                 (r, s)
             };
-            // The carry comes along. It takes a **ghost** row wherever a class
-            // latent is emitted. The row has value zero, so the carry stays
-            // index-aligned with the output of this layer. But the row is
-            // tracked, so the latent trains (see `grad_horizon`). The row is
-            // built on demand, not cloned from the carry. So a layer whose
-            // stream is empty still ghosts its own latents.
+            // The straight-through carry comes along. It takes a **ghost
+            // latent** wherever a class latent is emitted. The ghost latent has
+            // value zero, so the straight-through carry stays index-aligned
+            // with the output of this layer. But the ghost latent is tracked,
+            // so the class latent trains (see `grad_horizon`). The ghost latent
+            // is built on demand, not cloned from the straight-through carry.
+            // So a layer whose stream is empty still ghosts its own latents.
             let carry_active = st.is_some();
             let mut st_next: Vec<Tensor<2>> =
                 Vec::with_capacity(if carry_active { emitted } else { 0 });
@@ -1005,10 +1022,15 @@ where
             carried = next_carried;
             k = k_next;
         }
-        // The stack ended inside an untracked segment: lift what it hands back
-        // and re-attach the carry, exactly as the in-loop boundary does.
+        // The stack ended inside an untracked span: lift what it hands back and
+        // re-attach the straight-through carry, exactly as a cut inside the
+        // loop does.
         if let Some(st) = st.take() {
-            debug_assert_eq!(st.len(), stream.len(), "carry tracks the stream");
+            debug_assert_eq!(
+                st.len(),
+                stream.len(),
+                "the straight-through carry tracks the stream"
+            );
             stream = stream
                 .into_iter()
                 .map(|t| lift(t, &device))
@@ -1129,7 +1151,7 @@ impl<M: Block> Layers<M> {
 }
 
 /// The [`Applications`] of a stack of `n_real_layers` under this optional
-/// virtual scheduling (none ⇒ each real layer applied once).
+/// layer schedule (none ⇒ each real layer applied once).
 fn stack_applications(
     n_virtual_layers: &Option<(usize, Schedule)>,
     n_real_layers: usize,
@@ -1145,7 +1167,7 @@ fn stack_applications(
 pub struct LayersBuilder<C> {
     /// Number of real (weight-bearing) layers.
     pub n_real_layers: usize,
-    /// Optional virtual-layer scheduling.
+    /// Optional layer schedule `(n_virtual_layers, schedule)`.
     pub n_virtual_layers: Option<(usize, Schedule)>,
     /// Shared block config.
     pub block: C,
@@ -1159,10 +1181,10 @@ pub struct LayersBuilder<C> {
     pub residuals: ResidualsConfig,
     /// Optional SwiGLU feed-forward sub-block per layer, with its own pre-norm
     /// and residual (`d_intermediate > 0` in the reference configs). `None` ⇒
-    /// mixer-only layers.
+    /// each layer has only its block.
     pub mlp: Option<GatedMlpConfig>,
-    /// Back-propagate only some of the (virtual) layers (see
-    /// [`Layers::grad_horizon`]). `None` ⇒ track the whole stack.
+    /// The gradient horizon: back-propagate only some of the virtual layers
+    /// (see [`Layers::grad_horizon`]). `None` ⇒ track the whole stack.
     pub grad_horizon: Option<GradHorizon>,
     /// The parameters of the layer itself that are held once per application,
     /// not tied (see [`Layer::application`]). The block config names those of
@@ -1171,7 +1193,7 @@ pub struct LayersBuilder<C> {
 }
 
 impl<C: BlockConfig> LayersBuilder<C> {
-    /// Builder with no virtual scheduling, no class latents, residuals enabled.
+    /// Builder with no layer schedule, no class latents, residuals enabled.
     pub fn new(n_real_layers: usize, block: C) -> Self {
         Self {
             n_real_layers,
@@ -1194,21 +1216,21 @@ impl<C: BlockConfig> LayersBuilder<C> {
         self
     }
 
-    /// Back-propagate only some of the (virtual) layers (see
-    /// [`Layers::grad_horizon`]). `None` tracks the whole stack.
+    /// Set the gradient horizon: back-propagate only some of the virtual
+    /// layers (see [`Layers::grad_horizon`]). `None` tracks the whole stack.
     pub fn with_grad_horizon(mut self, grad_horizon: Option<GradHorizon>) -> Self {
         self.grad_horizon = grad_horizon;
         self
     }
 
-    /// Interleave a SwiGLU feed-forward sub-block after each layer's mixer
-    /// (see [`Layer`]). `None` keeps layers mixer-only.
+    /// Add a SwiGLU feed-forward sub-block after the block of each layer (see
+    /// [`Layer`]). `None` keeps only the block in each layer.
     pub fn with_mlp(mut self, mlp: Option<GatedMlpConfig>) -> Self {
         self.mlp = mlp;
         self
     }
 
-    /// Set the optional virtual-layer scheduling.
+    /// Set the optional layer schedule.
     pub fn with_n_virtual_layers(mut self, n: Option<(usize, Schedule)>) -> Self {
         self.n_virtual_layers = n;
         self
@@ -1247,7 +1269,7 @@ impl<C: BlockConfig> LayersBuilder<C> {
             .map(|(l, _)| *l)
             .unwrap_or(self.n_real_layers);
         // Each real layer holds its untied copies for as many applications as
-        // the schedule gives it.
+        // the layer schedule gives it.
         let real_layers = stack_applications(&self.n_virtual_layers, self.n_real_layers)
             .count
             .into_iter()

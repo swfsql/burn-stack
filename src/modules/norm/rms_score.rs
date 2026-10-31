@@ -3,13 +3,13 @@
 //!
 //! It is the scoring primitive of
 //! [`MultiGateResidual`](crate::modules::MultiGateResidual), which scores the
-//! depth-*streams* that it pools. It is public, so that a downstream container
-//! that mixes some other set of parallel items (a pool of streaming caches,
-//! for example) can weight them by the same rule, not by a new projection from
-//! `d_model`. A query dotted against RMS-normalised *content* is scale-free in
-//! the content and needs no temperature. The normalisation fixes the scale at
-//! which the query reads, and the query itself learns how sharp the resulting
-//! mixture is.
+//! residual *streams* that it pools. It is public, so that a downstream
+//! container that mixes some other set of parallel items (a pool of streaming
+//! caches, for example) can weight them by the same rule, not by a new
+//! projection from `d_model`. A query dotted against RMS-normalised *content*
+//! is scale-free in the content and needs no temperature. The normalisation
+//! fixes the scale at which the query reads, and the query itself learns how
+//! sharp the resulting mixture is.
 //!
 //! The RMS denominator is constant along the feature axis, so it is folded
 //! *out* of the reduction. [`normed_score`](crate::modules::normed_score)

@@ -1,22 +1,22 @@
 //! # burn-stack: block-generic layer/network composition on Burn
 //!
 //! Everything *around* a sequence-mixing block: the Pre-LN residual
-//! [`Layer`](modules::Layer), the (virtual-)layer [`Layers`](modules::Layers)
-//! stack, bidirectional pairs, latent/vocabulary networks, multi-stream gated
-//! residuals, class tokens, virtual-layer scheduling, and the Muon parameter
-//! groups over fused projections.
+//! [`Layer`](modules::Layer), the layer stack [`Layers`](modules::Layers),
+//! bidirectional pairs, latent/vocabulary networks, multi-stream gated
+//! residuals, class markers, layer schedules, and the Muon plan over fused
+//! projections.
 //!
-//! The crate knows nothing about any particular mixer. A family joins it with
+//! The crate knows nothing about any particular family. A family joins it with
 //! two traits:
 //!
-//! - [`Block`](modules::Block): `block_forward` (chunked, for training and
+//! - [`Block`](modules::Block): `block_forward` (parallel, for training and
 //!   prefill), `block_step` (recurrent, for decoding), and the zero-cache
 //!   constructors, plus the associated `Cache` / `Caches` / `Options` types.
 //! - [`BlockConfig`](modules::BlockConfig): `d_model`, `init_block`, and the
 //!   Muon-eligible projections of the block.
 //!
 //! Its cache collection also implements [`CacheStack`](modules::CacheStack),
-//! which is all that the generic loops need: one slot per (virtual) layer,
+//! which is all that the generic loops need: one cache per virtual layer,
 //! plus the backend hop of
 //! [`Layers::grad_horizon`](modules::Layers::grad_horizon).
 //!
@@ -25,21 +25,21 @@
 //! ```text
 //! VocabNetwork<M>   embedding → Layers<M> → final RMSNorm → LM head → logits
 //! LatentNetwork<M>  in_proj → Layers<M> → [norm_f] → out_proj (continuous I/O)
-//! Layers<M>         a stack of N (virtual) layers over R real weight sets
+//! Layers<M>         a stack of N virtual layers over R real layers
 //! Layer<M>          Pre-LN sub-blocks: Block(RMSNorm(x)), then the optional
-//!                   SwiGLU MLP over norm2; Layers owns the outer residual
-//! M: Block          the mixer core, supplied by the caller
+//!                   SwiGLU MLP over norm2. Layers owns the outer residual
+//! M: Block          the block of a family, supplied by the caller
 //! ```
 //!
-//! ## Three execution modes
+//! ## Three calls
 //!
 //! Every layer and network (except the forward-only bidirectional stack) has
-//! three modes:
+//! three calls:
 //!
-//! - `forward()`: parallel/chunked, for training and prefill,
+//! - `forward()`: parallel, for training and prefill,
 //! - `step()`: recurrent, token-by-token decode, O(state)/token,
-//! - `prime()`: `step()` without a user token. It emits the class
-//!   tokens/latents that wait for the next one.
+//! - `prime()`: `step()` without a user token. It emits the class markers
+//!   that wait for the next token.
 //!
 //! `forward()` from any cache equals `step()` unrolled from that same cache,
 //! on the outputs, on the final cache and on the gradients. The containers
@@ -50,10 +50,10 @@
 //!
 //! - [`modules`]: the composition types and the shared NN modules
 //!   (activations, norms, losses, small tensor helpers).
-//! - [`utils`]: virtual-layer/LR scheduling, class tokens, padding, graph
-//!   capture, and the custom-backward plumbing that a family needs to
+//! - [`utils`]: layer schedules and LR schedules, class markers, padding,
+//!   captured steps, and the custom-backward plumbing that a family needs to
 //!   register its own kernels.
-//! - [`optim`]: Muon parameter groups over fused projection weights.
+//! - [`optim`]: the Muon plan over fused projections.
 //! - `examples` (feature `examples-common`): the CLI/training/dataset
 //!   scaffolding that the `examples/` directories of the consumer crates
 //!   share.

@@ -1,6 +1,7 @@
-//! The SwiGLU feed-forward block between sequence mixers: the channel mixer of
-//! the Llama macro architecture. The reference linear-attention models keep it
-//! as is. The reference SSMs make it optional (with `d_intermediate > 0`).
+//! The SwiGLU feed-forward sub-block that follows the block of a layer. It
+//! mixes the channels of each token, as in the Llama macro architecture. The
+//! reference linear-attention models keep it as is. The reference SSMs make it
+//! optional (with `d_intermediate > 0`).
 //!
 //! ```text
 //!   [v | g] = fc1(x)            split of the `2·hidden` output along the last dim

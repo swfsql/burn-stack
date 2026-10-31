@@ -56,7 +56,7 @@ where
         class_marker_output_indices(&self.class_tokens, orig_len)
     }
 
-    /// Splice the class tokens of this network into the chunk `x` (no-op when
+    /// Splice the class tokens of this network into the window `x` (no-op when
     /// there are none), and advance the network-level cursor.
     fn insert_tokens(
         &self,
@@ -77,18 +77,19 @@ where
         out
     }
 
-    /// `in_proj → layers → out_proj` over a full sequence
+    /// `in_proj → layers → out_proj` over a window
     /// (`[batch, sequence, input_size]` → `[batch, sequence (+ class tokens),
     /// output_size]`).
     ///
     /// `class` places the class tokens of this network *and* the class latents
     /// of the inner stack. `None` takes `x` as the whole sequence. The same
-    /// [`ClassCursors`] given to consecutive chunks places every marker exactly
-    /// where a single call over the concatenated sequence would place it.
+    /// [`ClassCursors`] given to consecutive windows places every marker
+    /// exactly where a single call over the concatenated sequence would place
+    /// it.
     ///
-    /// `pad` marks a right-padded batch (`None` ⇒ none), as in
+    /// `pad` marks a right-padded batch (`None` ⇒ no padding), as in
     /// [`Layers::forward`]. The class tokens are also placed against the length
-    /// of each slot.
+    /// of each row.
     pub fn forward(
         &self,
         x: Tensor<3>,
@@ -113,9 +114,9 @@ where
         (x, caches)
     }
 
-    /// Single-token step (`[batch, input_size]` → `[batch, output_size]`).
+    /// The step of one token (`[batch, input_size]` → `[batch, output_size]`).
     ///
-    /// `class` drives all three class levels at once: the
+    /// `class` drives all three marker levels at once: the
     /// [`Self::class_tokens`] of this network (`class.network`), plus the
     /// cursors of the inner [`Layers::step`] (`class.stack`, `class.per_layer`).
     ///
@@ -165,11 +166,11 @@ where
         (out, caches)
     }
 
-    /// Step the class tokens/latents that this network has waiting for its next
-    /// user token, with **no** user token. So the call needs no input data.
+    /// Step the class markers that this network has waiting for its next user
+    /// token, with **no** user token. So the call needs no input data.
     ///
     /// This is the opening half of [`Self::step`] on its own, at all three
-    /// class levels. Each class token of the network that is due now runs a
+    /// marker levels. Each class token of the network that is due now runs a
     /// full pass (so the layers splice their latents around it exactly as in
     /// `step`). After them, the call flushes what the stack still has waiting
     /// for its next token ([`Layers::prime`]). So a `prime` followed by a
@@ -207,8 +208,8 @@ where
                 caches = Some(c);
             }
         }
-        // The levels of the stack can still hold latents that wait for the
-        // next token to reach them. The class tokens above just went past.
+        // The marker levels of the stack can still hold latents that wait for
+        // the next token to reach them. The class tokens above just went past.
         let saved = class.enter(&self.class_tokens);
         let (y, caches) = self.layers.prime(batch, caches, Some(&mut *class));
         class.leave(saved);
@@ -296,10 +297,10 @@ impl<C: BlockConfig> LatentNetworkBuilder<C> {
 /// vocab)`.
 ///
 /// This is the token-LM counterpart of [`LatentNetwork`]. Both are built on
-/// the shared [`Layers`] core. They differ in three things:
+/// the shared layer stack ([`Layers`]). They differ in three things:
 ///
-/// - the I/O boundary: a token `Embedding` and a vocab logit head, not two
-///   latent `Linear`s,
+/// - the input and output maps: a token `Embedding` and a vocab logit head,
+///   not two latent `Linear`s,
 /// - the final pre-head [`RmsNorm`]: always present here, optional there,
 /// - the class tokens: only [`LatentNetwork`] has network-level ones.
 ///
@@ -336,7 +337,7 @@ impl<M: Block> VocabNetwork<M>
 where
     M::Options: Clone,
 {
-    /// Full-sequence pass: token pairs `[batch, sequence, 2]` → logits
+    /// The forward of a window: token pairs `[batch, sequence, 2]` → logits
     /// `[batch, sequence, padded_vocab + 1]`. `class` places the class latents
     /// of the inner stack (`None` ⇒ `x` is the whole sequence), and `pad` marks
     /// a right-padded batch (see [`Layers::forward`]).
@@ -354,10 +355,11 @@ where
         (self.apply_heads(x), caches)
     }
 
-    /// [`Self::forward`] over packed rows: token pairs `[batch, rows, 2]` →
-    /// logits `[batch, rows, padded_vocab + 1]`, with every sequence of a slot
-    /// restarted at its reset (see [`Layers::forward_packed`]). The token of
-    /// an opening slot is not read: the stack puts its class latent there.
+    /// [`Self::forward`] over packed rows: token pairs `[batch, sequence, 2]` →
+    /// logits `[batch, sequence, padded_vocab + 1]`. Every segment of a row
+    /// starts again from a zero cache at its reset (see
+    /// [`Layers::forward_packed`]). The token of an opening slot is not read:
+    /// the stack puts its class latent there.
     pub fn forward_packed(
         &self,
         x: Tensor<3, Int>,
@@ -371,7 +373,7 @@ where
         (self.apply_heads(x), caches)
     }
 
-    /// Single-token step: token pairs `[batch, 2]` → logits
+    /// The step of one token: token pairs `[batch, 2]` → logits
     /// `[batch, padded_vocab + 1]`.
     ///
     /// The vocab network has no class tokens of its own (they would duplicate
@@ -429,7 +431,7 @@ where
 
 /// Embed token pairs `[batch, sequence, 2]` → `[batch, sequence, d_model]`:
 /// the embedding of the id, plus `flag_embedding` where the flag is 1. The
-/// input boundary of every vocab network of this crate.
+/// input map of every vocab network of this crate.
 pub(crate) fn embed_pairs(
     embedding: &Embedding,
     flag_embedding: &Param<Tensor<1>>,
@@ -447,8 +449,8 @@ pub(crate) fn embed_pairs(
 
 /// Project `[batch, sequence, d_model]` → `[batch, sequence, padded_vocab +
 /// 1]`: the vocab logits, then the flag logit. `lm_head = None` ties the
-/// head to the transposed embedding. The output boundary of every vocab
-/// network of this crate.
+/// head to the transposed embedding. The output map of every vocab network of
+/// this crate.
 pub(crate) fn apply_vocab_heads(
     embedding: &Embedding,
     lm_head: Option<&Linear>,

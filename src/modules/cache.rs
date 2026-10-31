@@ -1,9 +1,9 @@
 //! The per-network cache collection trait, and the pairwise tensor visitor
 //! that a captured step uses to write its cache back.
 //!
-//! A [`Block`] family supplies its own `Caches` type.
-//! The generic containers need only indexed access to one slot per (virtual)
-//! layer, plus the backend hop of `grad_horizon`.
+//! A family supplies its own `Caches` type. The generic containers need only
+//! indexed access to one cache slot per virtual layer, plus the backend hop of
+//! `grad_horizon`.
 //! [`CapturedStep`](crate::utils::graph::CapturedStep) also needs
 //! [`CacheTensors`]: every tensor of a cache, visited pairwise with the
 //! matching tensor of another cache.
@@ -36,7 +36,7 @@ pub fn lift<const D: usize>(tensor: Tensor<D>, device: &Device) -> Tensor<D> {
 pub trait CacheStack: Sized {
     /// The per-layer cache element.
     type Cache;
-    /// Number of per-(virtual-)layer slots.
+    /// Number of slots: one per virtual layer.
     fn slot_count(&self) -> usize;
     /// Move each slot into an `Option`, so the loop can `take` without a clone.
     fn into_slots(self) -> Vec<Option<Self::Cache>>;
@@ -45,10 +45,9 @@ pub trait CacheStack: Sized {
     /// Move one cache slot **to** the inner (non-autodiff) backend.
     ///
     /// [`Layers::grad_horizon`](crate::modules::Layers::grad_horizon) needs it,
-    /// because its untracked segments run on the inner backend. A cache from a
-    /// tracked segment must come down with them, for two reasons: the segment
-    /// must build no graph, and the dispatch of Burn cannot mix backends
-    /// within one op.
+    /// because its untracked spans run on the inner backend. A tracked cache
+    /// must come down with them, for two reasons: the span must build no
+    /// graph, and the dispatch of Burn cannot mix backends within one op.
     ///
     /// Each family writes it by hand, not with a derive, because
     /// [`Module::map`] is a **no-op on plain `Tensor` fields** (Burn implements
@@ -76,8 +75,8 @@ pub trait CacheStack: Sized {
 
     /// Round-trip **every** slot through the inner backend. The cache keeps
     /// its values and loses the graph that produced it. So a caller can carry
-    /// state across a gradient boundary (truncated BPTT) without the
-    /// activations of the previous segment.
+    /// the state into the next window without the activations of the previous
+    /// window (truncated BPTT).
     ///
     /// `detach` alone would cut the gradients but free nothing, because Burn
     /// still registers an untracked op (see
@@ -116,26 +115,25 @@ pub trait TensorZip {
 /// hand-written). The two operations that a captured step needs follow from
 /// it.
 ///
-/// A captured graph replays against the exact device buffers that its closure
+/// A captured step replays against the exact device buffers that its closure
 /// touched. But `step` is functional: it returns new cache tensors, so a
-/// replayed step would keep reading the capture-time state. So the captured
-/// closure ends with a call of [`assign_in_place`](Self::assign_in_place) on
-/// the stable cache, which copies the new cache into the stable buffers.
+/// replay would keep reading the capture-time state. So the captured closure
+/// ends with a call of [`assign_in_place`](Self::assign_in_place) on the
+/// stable cache, which copies the new cache into the stable buffers.
 /// `slice_assign` runs in place on a buffer that no other tensor shares. So
-/// the graph records the copies, and each replay advances the state itself
-/// (see [`CapturedStep`](crate::utils::graph::CapturedStep)).
+/// the captured step records the copies, and each replay advances the state
+/// itself (see [`CapturedStep`](crate::utils::graph::CapturedStep)).
 ///
 /// It is in place **only while** the destination buffers are unshared. This
 /// is what [`into_owned_buffers`](Self::into_owned_buffers) is for: the cache
 /// of a step can hold views into a shared buffer (a `narrow` of a wider
 /// tensor). A shared destination does not give a wrong value (`slice_assign`
-/// copies). But a replayed graph keeps writing the buffer that the capture
-/// saw.
+/// copies). But each replay keeps writing the buffer that the capture saw.
 ///
 /// **Axis 0 of every tensor is the batch.** A container that runs a network on
 /// some rows only (the `step` of [`HNet`](crate::modules::HNet)) selects,
 /// gathers and merges the rows of a cache through this traversal. So a cache
-/// must hold no tensor that is shared by the slots of a batch. The two caches
+/// must hold no tensor that is shared by the rows of a batch. The two caches
 /// that a traversal pairs can then also differ in batch size.
 pub trait CacheTensors: Clone {
     /// Pair every tensor of `self` with the matching one of `other` through

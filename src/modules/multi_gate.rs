@@ -1,10 +1,9 @@
 //! Multi-Gate Residuals (MGR): a depth-wise residual scheme that replaces the
 //! plain additive skip of a [`Layers`] stack.
 //!
-//! MGR keeps up to **`n_stream` parallel streams** `sᵢ`, not one residual
-//! stream. The stack input is stream 1. The streams then grow and mix in two
-//! phases (paper §"Our Architecture"), with one [`MultiGateResidual`] per
-//! layer:
+//! MGR keeps up to **`n_stream` residual streams** `sᵢ`, not one. The stack
+//! input is stream 1. The streams then grow and mix in two phases (paper
+//! §"Our Architecture"), with one [`MultiGateResidual`] per layer:
 //!
 //! * **Accumulation**: while fewer than `n_stream` streams exist, the layer
 //!   output `F_l` is *appended* as a new stream
@@ -16,7 +15,7 @@
 //!
 //! Both phases end in the same aggregator, and both are convex (norm-bounded):
 //!
-//! 1. **Mixer** (independent sigmoid gate): a per-stream gate `βᵢ`
+//! 1. **β gate** (independent sigmoid gate): a per-stream gate `βᵢ`
 //!    interpolates each stream towards the current layer output `F_l`:
 //!    `sᵢ' = (1−βᵢ)·sᵢ + βᵢ·F_l`, with
 //!    `βᵢ = σ( (w⁽ᵝ⁾ · RMSNorm(sᵢ))/√d + b⁽ᵝ⁾ᵢ )`.
@@ -27,7 +26,7 @@
 //! Both `w` vectors are learnable in `ℝ^d` (init zero), the RMSNorm has no
 //! parameters, and `b⁽ᵝ⁾` is a per-stream learnable bias. Only the
 //! **independent** (sigmoid) gate is implemented. The competitive (softmax)
-//! variant of the paper is omitted.
+//! gate of the paper is omitted.
 //!
 //! A seed of every stream with a *copy* of the stack input would be a symmetry
 //! that the model can never break. Identical streams give identical scores,
@@ -37,9 +36,9 @@
 //! MGR is purely **point-wise over `(batch, sequence)`**. The streams evolve
 //! only along *depth*, never along the sequence. So `forward` over a sequence
 //! equals `step` unrolled token by token, and `step` carries no extra state
-//! (each token rebuilds its own depth-streams).
+//! (each token rebuilds its own residual streams).
 //!
-//! **Class tokens / latents.** A class marker spliced into the sequence enters
+//! **Class markers.** A class marker spliced into the sequence enters
 //! the token stream *and* every residual stream at that position (`k` copies
 //! of the one embedding row). Identical streams score alike, so the aggregator
 //! (a convex combination) reproduces the row exactly. The marker reaches the
@@ -63,18 +62,19 @@
 //! contribution of every layer small (`σ(b) ∝ 1/√L`). The streams then differ
 //! only by their seeds. [`MultiGateResidualConfig::init_bias_step`] instead
 //! spreads the initial biases over the streams, from an update-biased stream
-//! to a carry-biased one. So the set covers several depth-timescales from step
-//! zero. `0` keeps the uniform init of the paper.
+//! to a carry-biased one. So the set covers several depth-timescales from the
+//! first training step. `0` keeps the uniform init of the paper.
 //!
-//! **Output scale.** Every step here is a convex combination, and the
+//! **Output scale.** Every operation here is a convex combination, and the
 //! aggregator is a *mean* over the `n` streams. So the stack output stays
 //! `O(1)`, where a plain additive skip grows it with depth (`x + Σ F_l`),
 //! measured at ~15× larger for a 16-layer stack. Neither scale is wrong for
 //! what follows. But a head initialised for one scale sees the other far off
 //! its range, and to close that gap by training `out_proj` alone takes many
-//! steps. A norm before the head removes the problem. [`VocabNetwork`] always
-//! has one. On a [`LatentNetwork`], it is the opt-in [`final_norm`]. Prefer to
-//! enable it when you pair MGR with a latent head, or expect a slow start.
+//! training steps. A norm before the head removes the problem.
+//! [`VocabNetwork`] always has one. On a [`LatentNetwork`], it is the opt-in
+//! [`final_norm`]. Prefer to enable it when you pair MGR with a latent head,
+//! or expect a slow start.
 //!
 //! [`VocabNetwork`]: crate::modules::network::VocabNetwork
 //! [`LatentNetwork`]: crate::modules::network::LatentNetwork
@@ -88,15 +88,15 @@ use burn::nn::Initializer;
 use burn::prelude::*;
 use burn::tensor::activation::{sigmoid, softmax};
 
-/// The Multi-Gate Residual parameters of one layer: the mixer query `w⁽ᵝ⁾` +
+/// The Multi-Gate Residual parameters of one layer: the β-gate query `w⁽ᵝ⁾` +
 /// bias `b⁽ᵝ⁾`, and the aggregator (AttnPool) query `w⁽ᵅ⁾`.
 #[derive(Module, Debug)]
 pub struct MultiGateResidual {
-    /// Mixer query `w⁽ᵝ⁾ ∈ ℝ^d` (the per-stream sigmoid gate), `[d_model]`.
+    /// β-gate query `w⁽ᵝ⁾ ∈ ℝ^d` (the per-stream sigmoid gate), `[d_model]`.
     pub w_beta: Param<Tensor<1>>,
     /// Aggregator query `w⁽ᵅ⁾ ∈ ℝ^d` (the AttnPool softmax), `[d_model]`.
     pub w_alpha: Param<Tensor<1>>,
-    /// Per-stream mixer gate bias `b⁽ᵝ⁾`, `[n_stream]`.
+    /// Per-stream β-gate bias `b⁽ᵝ⁾`, `[n_stream]`.
     pub b_beta: Param<Tensor<1>>,
     /// Model width `d`.
     #[module(skip)]
@@ -149,7 +149,7 @@ impl MultiGateResidual {
         // The query vector broadcasts on the feature axis: `[1, …, 1, d_model]`.
         let w_beta = self.w_beta.val().unsqueeze::<R>();
 
-        // Mixer: independent per-stream sigmoid gate, `β`: `[…, n_stream, 1]`.
+        // β gate: independent per-stream sigmoid gate, `β`: `[…, n_stream, 1]`.
         let beta = sigmoid(self.normed_score(streams.clone(), w_beta) + b_beta);
         // Lerp `(1−β)·streams + β·layer_output` (equal to the
         // `streams + β·(layer_output − streams)` of the paper). This form
@@ -194,7 +194,7 @@ impl MultiGateResidual {
         (alpha * streams).sum_dim(stream_axis)
     }
 
-    /// Full-sequence mix + pool.
+    /// Mix + pool over every position of a window.
     ///
     /// - `layer_output`: the transform `F_l` of this layer,
     ///   `[batch, sequence, d_model]`
@@ -222,7 +222,7 @@ impl MultiGateResidual {
     }
 
     /// Accumulation phase of [`Self::forward`]: `layer_output` becomes a
-    /// **new** stream, not a mix into the existing ones (the mixer gate is not
+    /// **new** stream, not a mix into the existing ones (the β gate is not
     /// used). Valid only while `streams` holds fewer than `n_stream` streams.
     ///
     /// - `layer_output`: the transform `F_l` of this layer,
@@ -267,7 +267,7 @@ pub struct MultiGateResidualConfig {
     #[config(default = 0.0)]
     pub init_bias: f64,
     /// Per-stream offset on top of [`Self::init_bias`]. Stream `i` starts at
-    /// `init_bias + i · init_bias_step`. So a negative step gives the streams
+    /// `init_bias + i · init_bias_step`. So a negative offset gives the streams
     /// **different timescales**: from an update-biased first stream to a
     /// carry-biased last one. `0` (the default) starts them all equal, as the
     /// paper prescribes.
@@ -277,7 +277,7 @@ pub struct MultiGateResidualConfig {
 
 impl MultiGateResidualConfig {
     /// The depth-adaptive gate bias of the paper, for the independent
-    /// (sigmoid) mixer: `−ln( √(L/21)·(e³+1) − n )`. `L = n_mixing_layers` is
+    /// (sigmoid) β gate: `−ln( √(L/21)·(e³+1) − n )`. `L = n_mixing_layers` is
     /// the number of layers that *lerp* (the stack depth minus the `n−1`
     /// accumulating layers), and `n = n_stream`.
     ///
@@ -351,7 +351,7 @@ pub enum Residuals {
     /// Plain Pre-LN additive residual: the stack adds the skip connection of
     /// each [`Layer`](crate::modules::Layer).
     Standard(NoOp),
-    /// Multi-Gate Residuals: `n_stream` parallel streams with per-layer gated
+    /// Multi-Gate Residuals: `n_stream` residual streams with per-layer gated
     /// mixing + attention pooling.
     MultiGate(MultiGate),
 }
@@ -379,8 +379,8 @@ pub enum ResidualsConfig {
 }
 
 impl ResidualsConfig {
-    /// Build the runtime [`Residuals`] for a stack of `n_real_layers` real weight
-    /// sets unrolled over `n_virtual_layers` (virtual) passes. The MGR module
+    /// Build the runtime [`Residuals`] for a stack of `n_real_layers` real
+    /// layers unrolled over `n_virtual_layers` virtual layers. The MGR module
     /// count follows `per_virtual_layer` (one per virtual layer vs one per real
     /// layer).
     pub fn init(

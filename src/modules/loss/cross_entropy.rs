@@ -1,6 +1,6 @@
 //! Cross-entropy loss accepting floating-point target distributions.
 //!
-//! A lighter variant of [`burn::nn::loss::CrossEntropyLoss`]: it takes soft
+//! A lighter form of [`burn::nn::loss::CrossEntropyLoss`]: it takes soft
 //! float targets (one-hot, soft labels, or raw logits) rather than integer
 //! class indices, and drops padding/weights/label-smoothing.  `output_logits`
 //! and `target_logits` control whether each side is normalised (log-softmax /
@@ -44,7 +44,7 @@ impl CrossEntropyLossConfig {
 
 /// Calculate the cross-entropy loss from the output logits and the targets.
 ///
-/// Unlike the full [`burn::nn::loss::CrossEntropyLoss`], this variant accepts
+/// Unlike the full [`burn::nn::loss::CrossEntropyLoss`], this loss accepts
 /// floating-point targets (e.g. one-hot, soft label distributions, or un-normalized logits)
 /// rather than integer class indices, and omits padding, per-class weights, and label smoothing.
 ///

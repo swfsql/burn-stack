@@ -6,8 +6,8 @@ use crate::utils::test_helpers::test_device;
 /// A half-precision input computes the formula `x / √(mean(x²) + ε)` with the
 /// `ε` of f32, the dtype that it computes in, at each scale of a row: zero,
 /// the subnormals of f16, and up to the top of its range. The forward and the
-/// gradient are finite, and each is within two steps of the dtype of the f64
-/// formula.
+/// gradient are finite. Each differs from the f64 formula by at most two
+/// machine epsilons of the dtype, relative to its size.
 ///
 /// A row near zero is the limit case of the backward. Its gradient is about
 /// `|h|/√ε ≈ 3500·|h|`, and f16 holds that for the `|h| ≤ 5` here. The gradient
@@ -106,8 +106,8 @@ fn an_f64_input_computes_in_f64() {
 /// to zero on CUDA. The forward guards the *division* (`rms + div_eps`). But
 /// the backward of the `sqrt` node is `1/(2·√(mean x²))`, singular at zero
 /// unless the epsilon is *inside* the root. Regression guard for a
-/// training-run NaN, localised to this op (the incoming `d_y` of the mixer
-/// backward).
+/// training-run NaN, localised to this op (the incoming `d_y` of the backward
+/// of the block).
 #[test]
 fn rms_norm_gradient_finite_on_collapsed_slice() {
     let device = test_device();

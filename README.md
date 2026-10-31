@@ -3,27 +3,27 @@
 Block-generic layer/network composition on [Burn](https://github.com/tracel-ai/burn/).
 
 It holds everything *around* a sequence-mixing block, and nothing that belongs
-to a particular one:
+to a particular family:
 
 ```text
 VocabNetwork<M>   embedding → Layers<M> → final RMSNorm → LM head → logits
 LatentNetwork<M>  in_proj → Layers<M> → [norm_f] → out_proj   (continuous I/O)
 BidiLayers<M>     paired straight (→) / reversed (←) stacks, merged per pair
-Layers<M>         N (virtual) layers over R real weight sets
+Layers<M>         N virtual layers over R real layers
 Layer<M>          Pre-LN sub-blocks: Block(RMSNorm(x)), then the optional
                   SwiGLU MLP over norm2. Layers owns the outer residual
-M: Block          the mixer core, supplied by you
+M: Block          the block of a family, supplied by you
 ```
 
 It also has the parts that those need:
 
 - multi-stream gated residuals (Multi-Gate),
-- `[CLS]`-style class tokens/latents with streamed placement,
-- virtual-layer and LR schedules,
-- a truncated-BPTT gradient horizon,
+- class markers (class tokens and class latents) with streamed placement,
+- layer schedules and LR schedules,
+- a gradient horizon,
 - fp16-stable norms/activations,
 - losses,
-- Muon parameter groups over fused projection weights.
+- the Muon plan over fused projections.
 
 ## Plugging a block in
 
@@ -31,13 +31,13 @@ Implement two traits and one cache trait:
 
 ```rust
 impl Block for MyBlock {
-    type Cache = MyCache;              // the streaming state of one layer
+    type Cache = MyCache;              // the cache of one layer
     type Caches = MyCaches;            // one slot per virtual layer: CacheStack
     type Options = ();                 // per-call algorithm/chunk selector
 
     fn block_forward(&self, x: Tensor<3>, cache: Option<MyCache>, options: (),
         pad: Option<Tensor<2, Bool>>)  // `true` at right padding
-        -> (Tensor<3>, MyCache) { … }  // chunked: training + prefill
+        -> (Tensor<3>, MyCache) { … }  // parallel: training + prefill
     fn block_step(&self, x: Tensor<2>, cache: Option<MyCache>)
         -> (Tensor<2>, MyCache) { … }  // recurrent: decode
     fn zero_caches_3d(&self, x: &Tensor<3>, n_virtual: usize) -> MyCaches { … }
@@ -53,7 +53,7 @@ impl BlockConfig for MyBlockConfig {
 }
 ```
 
-`src/reference.rs` is a complete worked example (a gated EMA mixer). The test
+`src/reference.rs` is a complete worked example (a gated EMA block). The test
 suite of this crate composes it, so the tests exercise the containers without
 a dependency on a real family.
 
@@ -62,9 +62,9 @@ a dependency on a real family.
 - `forward()` from any cache equals `step()` unrolled from that same cache: on
   the outputs, on the final cache, and on the gradients. The containers rely
   on it, and your block must supply it.
-- `pad` marks **right** padding per slot. A padded row is absent: the real
-  outputs and the returned cache of each slot are those of that slot run
-  alone.
+- `pad` marks **right** padding per row. A padded position is absent: the
+  outputs of the real tokens and the returned cache of each row are those of
+  that row run alone.
 - `prime()` is `step()` without a user token. It emits the class markers that
   wait for the next token.
 

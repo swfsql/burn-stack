@@ -7,9 +7,10 @@
 //! generic. A split of the block leaves plain, block-*independent* structs
 //! that can:
 //!
-//! - [`NetworkShape`] is the whole stack: depth, virtual scheduling,
-//!   residuals, the feed-forward, the init policy.
-//! - [`LatentShape`] / [`VocabShape`] add only their own I/O boundary to it.
+//! - [`NetworkShape`] is the whole stack: depth, layer schedule, residuals,
+//!   the feed-forward, the init policy.
+//! - [`LatentShape`] / [`VocabShape`] add only their own input and output maps
+//!   to it.
 //! - [`BidiShape`] is the bidirectional counterpart.
 //!
 //! The serializable model config of a family is then the pair
@@ -19,7 +20,7 @@
 //! describes what any stack in any consumer crate does:
 //!
 //! ```text
-//!   NetworkShape   depth, virtual layers, grad horizon, residuals, class
+//!   NetworkShape   depth, virtual layers, gradient horizon, residuals, class
 //!                  latents, the SwiGLU MLP, untied norms, the global init policy
 //!   LatentShape    + input_size / output_size / final_norm / class tokens
 //!   VocabShape     + vocab_size / vocab padding / tied LM head
@@ -28,12 +29,12 @@
 //!
 //! **The reference architecture.** The reference language models of the
 //! recurrent families follow the macro design of Llama, with a recurrent
-//! mixer in place of self-attention. So a faithful stack sets
+//! block in place of self-attention. So a faithful stack sets
 //! [`NetworkShape::mlp`] (`GatedMlpConfig::from_hidden_ratio(d_model, 4)`) and
 //! [`NetworkShape::init`] ([`InitPolicy`](crate::utils::InitPolicy), the reference
-//! `initializer_range`). A mixer-only stack with the per-module defaults of
-//! Burn is the ablation, not the default. The knobs with no reference
-//! counterpart ([`NetworkShape::n_virtual_layers`],
+//! `initializer_range`). A stack of blocks with no feed-forward and the
+//! per-module defaults of Burn is the ablation, not the default. The knobs
+//! with no reference counterpart ([`NetworkShape::n_virtual_layers`],
 //! [`NetworkShape::grad_horizon`],
 //! [`Residuals::MultiGate`](crate::modules::Residuals)) buy depth or memory at
 //! a parameter budget that the reference never has to work under. Each one is
@@ -56,18 +57,18 @@ use burn::prelude::*;
 /// *stack* rather than the block.
 #[derive(Config, Debug)]
 pub struct NetworkShape {
-    /// Number of real weight sets.
+    /// Number of real layers.
     pub n_real_layers: usize,
 
-    /// Optional virtual-layer scheduling: run `n` logical layers over the real
-    /// weight sets, mapped by a [`Schedule`]. Depth at no parameter cost. The
-    /// reference architectures do not do this.
+    /// Optional layer schedule: run `n` virtual layers over the real layers,
+    /// mapped by a [`Schedule`]. Depth at no parameter cost. The reference
+    /// architectures do not do this.
     #[config(default = "None")]
     pub n_virtual_layers: Option<(usize, Schedule)>,
 
-    /// Which virtual layers back-propagate. The others run on the inner
-    /// backend (truncated BPTT for deep recursion). `None` ⇒ track the whole
-    /// stack. See [`Layers::grad_horizon`].
+    /// The gradient horizon (for deep recursion): which virtual layers
+    /// back-propagate. The others run on the inner backend. `None` ⇒ track the
+    /// whole stack. See [`Layers::grad_horizon`].
     #[config(default = "None")]
     pub grad_horizon: Option<GradHorizon>,
 
@@ -91,12 +92,12 @@ pub struct NetworkShape {
     pub residuals: ResidualsConfig,
 
     /// Optional per-layer SwiGLU feed-forward sub-block, with its own pre-norm
-    /// and inner residual. `None` ⇒ mixer-only layers.
+    /// and inner residual. `None` ⇒ each layer has only its block.
     ///
     /// Every reference language model of the recurrent families has one. The
-    /// architecture is the macro design of Llama, with a recurrent mixer in
+    /// architecture is the macro design of Llama, with a recurrent block in
     /// place of self-attention. So a SwiGLU MLP of
-    /// [`GatedMlpConfig::from_hidden_ratio`] width follows each token mixer.
+    /// [`GatedMlpConfig::from_hidden_ratio`] width follows each block.
     #[config(default = "None")]
     pub mlp: Option<GatedMlpConfig>,
 
@@ -115,7 +116,7 @@ pub struct NetworkShape {
 }
 
 impl NetworkShape {
-    /// The number of residual sub-blocks per layer of this stack: the mixer,
+    /// The number of residual sub-blocks per layer of this stack: the block,
     /// plus the feed-forward when there is one. An [`InitPolicy`] rescale
     /// counts over this number.
     pub fn residuals_per_layer(&self) -> usize {
@@ -184,7 +185,7 @@ impl NetworkShape {
     /// `block`: the fused projections of the block, plus those of the optional
     /// MLP.
     ///
-    /// The boundary weights of a network (`in_proj`/`out_proj`, the embedding
+    /// The I/O weights of a network (`in_proj`/`out_proj`, the embedding
     /// and LM head, class-marker tables) stay out on purpose (see
     /// [`crate::optim`]).
     #[cfg(feature = "optim")]
@@ -291,7 +292,7 @@ pub struct BidiShape {
     pub n_real_layers: usize,
     /// One merge config per real pair, length `n_real_layers / 2`.
     pub outputs_merge: Vec<OutputMergeConfig>,
-    /// Optional virtual-layer scheduling over the real pairs.
+    /// Optional layer schedule over the real pairs.
     #[config(default = "None")]
     pub n_virtual_layers: Option<(usize, BidiSchedule)>,
     /// Zero the first virtual pair's residual.

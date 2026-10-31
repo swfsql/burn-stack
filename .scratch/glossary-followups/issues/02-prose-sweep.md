@@ -1,6 +1,6 @@
 # 02: Prose sweep: the core containers, README and CLAUDE.md
 
-Status: ready-for-agent
+Status: resolved
 
 Blocked by: 01
 
@@ -71,10 +71,114 @@ replacement. Write in the style of the `asd-ste100` skill.
 
 ## Acceptance criteria
 
-- [ ] For each _Avoid_ term, `rg` over the scope finds only the uses that the
+- [x] For each _Avoid_ term, `rg` over the scope finds only the uses that the
       tables permit. Each other hit that you keep is listed with its reason
       under `## Comments`.
-- [ ] `cargo check` and `cargo test --lib -- --test-threads=1` pass (flex).
-- [ ] `cargo doc --no-deps` has no warnings.
+- [x] `cargo check` and `cargo test --lib -- --test-threads=1` pass (flex).
+- [x] `cargo doc --no-deps` has no warnings.
 
 ## Comments
+
+### Scope
+
+The scope also has `src/reference/tests.rs`. It is the contract suite of the
+reference block, and no other ticket covers it.
+
+### Hits that stay
+
+`rg` over the scope still finds these uses. The tables permit each one, or it
+has a different meaning from the _Avoid_ entry:
+
+- **slot**: one entry of a cache stack (`CacheStack::into_slots`,
+  `from_slots`, `slot_count`, the `slots` locals, "cache slot"), and the
+  opening slots of a packed row. Both are the **Slot** of the glossary: one
+  entry of a buffer that has a fixed size.
+- **step**: each prose use names the step call, a captured step or a
+  training step. Two other uses stay:
+  - "Muon must step one copy at a time" (`reference.rs`): the optimizer verb,
+    as in the glossary entry of the Muon plan.
+  - "a discretisation step size `Δ`" (`activation/softplus.rs`): the
+    step size of a discretised recurrence.
+- **carry**: a plain verb, and the MGR gates ("carry-biased", "towards
+  *carry*", "carry budget": the Highway Networks term). Also the locals
+  `carried`, `carry`, `carry_active` (`layers.rs`) and `carry`
+  (`misc/prefix_sum.rs`).
+- **chunk**: a chunk of a chunked scan ("chunkwise", "the start of a chunk",
+  `chunk_len`, the chunk selector of `Block::Options`). Also the chunking of
+  H-Net, and the `chunk`/`chunks` methods of tensors and slices.
+- **segment**: a segment of a packed row, and the segment sum of `segsum`
+  (the usual name of that op). Also the `Segmented`/`segmented.rs`
+  identifiers.
+- **row**: one sequence of a batch, or a row of a matrix. Examples of the
+  second: an embedding row, the rows of the RMSNorm and MSE tests,
+  "row-major", and the `[batch, width]` rows that `prime` sizes.
+- **level**: a marker level ("network-level", "stack-level", "at either
+  level"), and "high-level" in CLAUDE.md.
+- **graph**: the autodiff graph, and the module path `utils::graph`.
+- **memory**: the memory of the device ("peak memory", "runs out of
+  memory"), and the auto-memory in CLAUDE.md.
+- **variant**: the variants of a Rust enum (`cache.rs`, the
+  `large_enum_variant` lint). "generation" is text generation, and
+  "conversion" is a false positive of the pattern.
+- **truncated BPTT**: `CacheStack::detach` (`cache.rs`). It is the BPTT from
+  one window to the next, not the gradient horizon.
+- **forward/backward**: the passes of autodiff, "feed-forward", and the
+  `forward` methods. No hit names a direction of a bidirectional pair.
+- **unshared**: buffers in `cache.rs`, not parameters.
+- **schedule**: the `Schedule` and `BidiSchedule` types, the `schedule`
+  locals and code spans, and "LR schedules".
+- **document**: a verb, and markdown documents in CLAUDE.md.
+
+### Identifiers that conflict with a glossary term
+
+These stay for a later decision:
+
+- `Padding::in_slot_order` (`utils/padding.rs`): "slot" for a row of a batch.
+- `block_forward_is_chunkable_through_the_cache` (`reference/tests.rs`):
+  "chunk" for a window.
+- `step_matches_the_matching_forward_row` (`mlp/tests.rs`): "row" for a
+  position.
+- `an_untied_stack_is_the_unshared_stack_of_its_application_views` and its
+  local `unshared` (`reference/tests.rs`): "unshared".
+- `carried` in `Layers::cascade` (`layers.rs`): it holds the MultiGate stream
+  sets of the tokens, not the straight-through carry (that is `st`). A reader
+  can confuse the two.
+- `splice_class_rows` (`utils/class`): it splices rows of an embedding table
+  into the time axis, so each spliced row becomes a position.
+- `init_bias_step` (`MultiGateResidualConfig`, `ResidualsConfig::MultiGate`):
+  "step" for the offset between the gate biases of two streams. The prose
+  says "offset".
+- The locals `step` and `half_step` in the tests of the losses and the norms
+  (`loss/{bce,cross_entropy,l2warp}/tests.rs`,
+  `norm/{rms_norm,rms_norm_gated}/tests.rs`): "step" for the machine epsilon
+  of a dtype. The prose says "machine epsilon".
+- The local `row` in `step_matches_the_matching_forward_row`
+  (`mlp/tests.rs`): "row" for a position. Its message says "position".
+
+### Choices that this sweep made
+
+- The old docs called the per-stream sigmoid gate of MGR the "mixer". But
+  "mixer" is an _Avoid_ term for a block. So the prose now calls it the
+  **β gate**, after `w_beta` and `b_beta`. "β gate" is not in `GLOSSARY.md`.
+  Add it through `/domain-modeling` under Residuals, or pick another name.
+- The glossary names only the end of an untracked span (**cut**). The prose
+  now says "backend hop" for both the entry and the cut, where it counts both
+  (`reference/tests.rs`, `Layers::cascade`). The entry has no glossary term.
+- The test docs said "within two steps of the dtype". They now say "two
+  machine epsilons of the dtype". "ε" stays for the `div_eps` of the norms.
+- "I/O boundary" of a network is now its "input and output maps", the words
+  of the glossary entry **Network**. "Boundary weights" (Muon) are now
+  **I/O weights**.
+- The `src/lib.rs` heading "Three execution modes" is now "Three calls", the
+  words of CLAUDE.md and of the glossary. No link points to its anchor.
+- "Block" alone now names only the block of a family. "Sub-block" names one
+  of the two Pre-LN parts of a layer: the block, or the feed-forward. So the
+  feed-forward is no longer a "block" (`mlp.rs`, `norm/rms_norm.rs`, the
+  `Layer` docs).
+
+### A doc that does not match its test
+
+`class_latents_receive_gradients` (`reference/tests.rs`) has the doc "A
+per-layer class latent is a learnable input". The test sets
+`LayersBuilder::class_latents`, which are the class latents of the stack, not
+of a layer. Decide which side is the intent: the doc or the test.

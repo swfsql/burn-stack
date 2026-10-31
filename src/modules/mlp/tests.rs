@@ -47,9 +47,10 @@ fn value_half_precedes_gate_half() {
     assert!(max_abs_diff(mlp.forward(x), expected) < dtype_tol(1e-5));
 }
 
-/// The block is point-wise in the sequence, so a `[batch, d_model]` step and the
-/// matching row of a `[batch, sequence, d_model]` forward must agree. This is
-/// what lets [`Layer`](crate::modules::Layer) reuse one module for both modes.
+/// The MLP is point-wise in the sequence, so a `[batch, d_model]` step and the
+/// matching position of a `[batch, sequence, d_model]` forward must agree. This
+/// is what lets [`Layer`](crate::modules::Layer) reuse one module for both
+/// calls.
 #[test]
 fn step_matches_the_matching_forward_row() {
     let device = test_device();
@@ -68,7 +69,7 @@ fn step_matches_the_matching_forward_row() {
         let expected: Tensor<2> = full.clone().narrow(1, t, 1).squeeze_dim::<2>(1);
         assert!(
             max_abs_diff(mlp.forward(row), expected) < dtype_tol(1e-5),
-            "row {t} disagrees"
+            "position {t} disagrees"
         );
     }
 }

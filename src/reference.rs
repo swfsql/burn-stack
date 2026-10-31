@@ -3,7 +3,7 @@
 //! It exists for two reasons:
 //!
 //! - The test suite of this crate composes it. So the tests exercise the
-//!   containers without a dependency on any real mixer family.
+//!   containers without a dependency on any real family.
 //! - It is a worked example of the four things that a family must supply: a
 //!   cache, a [`CacheStack`], [`Block`] and [`BlockConfig`] (plus
 //!   [`CacheTensors`], which only a captured step needs).
@@ -35,15 +35,14 @@ use burn::module::Param;
 use burn::nn::{Linear, LinearConfig};
 use burn::prelude::*;
 
-/// The streaming state of one (virtual) layer: the EMA accumulator
-/// `[batch, d_model]`.
+/// The cache of one virtual layer: the EMA accumulator `[batch, d_model]`.
 #[derive(Module, Debug)]
 pub struct RefCache {
     /// The accumulator `hₜ`.
     pub state_bd: Tensor<2>,
 }
 
-/// One slot per (virtual) layer.
+/// The cache stack: one slot per virtual layer.
 #[derive(Module, Debug)]
 pub struct RefCaches {
     /// Per-layer caches, length = number of virtual layers.
@@ -101,7 +100,7 @@ pub enum RefUntied {
     GateProj,
 }
 
-/// The reference mixer block.
+/// The reference block.
 #[derive(Module, Debug)]
 pub struct RefBlock {
     /// `d_model → d_model` input map feeding the accumulator.
@@ -121,7 +120,7 @@ pub struct RefBlock {
 }
 
 impl RefBlock {
-    /// One recurrence step: `(y, hₜ)` from `(xₜ, hₜ₋₁)`.
+    /// One update of the recurrence: `(y, hₜ)` from `(xₜ, hₜ₋₁)`.
     fn recurrence(&self, x_bd: Tensor<2>, prev_bd: Tensor<2>) -> (Tensor<2>, Tensor<2>) {
         let decay_1d: Tensor<2> = burn::tensor::activation::sigmoid(self.decay_raw.val()).unsqueeze();
         let state_bd = prev_bd * decay_1d + self.in_proj.forward(x_bd.clone());
@@ -150,7 +149,8 @@ impl Block for RefBlock {
     /// Nothing to select: the block has one algorithm.
     type Options = ();
 
-    /// A padded row keeps the state that it found: the recurrence skips it.
+    /// A padded position keeps the state that it found: the recurrence skips
+    /// it.
     fn block_forward(
         &self,
         x_bsd: Tensor<3>,
@@ -214,7 +214,7 @@ impl Block for RefBlock {
     }
 }
 
-/// Panic unless the padding of every slot follows all of its real rows. The
+/// Panic unless the padding of every row follows all of its real tokens. The
 /// reference block would skip padding anywhere. But a real block relies on
 /// the right padding that [`Block::block_forward`] promises. So the reference
 /// checks that the containers keep that promise, whatever they splice.
@@ -225,7 +225,7 @@ fn assert_right_padded(pad_bs: Tensor<2, Bool>) {
     for (b, row) in pad.chunks(sequence).enumerate() {
         assert!(
             row.windows(2).all(|w| !w[0] || w[1]),
-            "slot {b}: a real row follows padding ({row:?})",
+            "row {b}: a real token follows padding ({row:?})",
         );
     }
 }

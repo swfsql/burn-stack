@@ -17,8 +17,8 @@
 //! The returned value is the **unmodified** loss. The penalty enters through
 //! the gradient alone (`p − p.detach()` has value zero and derivative one),
 //! exactly as the hand-written backward of the reference does. So a training
-//! curve stays comparable to a run without it. The version of the reference is
-//! a custom `autograd.Function` only to avoid keeping the full logits tensor
+//! curve stays comparable to a run without it. The reference writes it as a
+//! custom `autograd.Function` only to avoid keeping the full logits tensor
 //! alive. Here, the closed form above is written out, and autodiff gives the
 //! same gradient.
 //!
