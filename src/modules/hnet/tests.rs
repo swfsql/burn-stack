@@ -1,7 +1,7 @@
 //! H-Net over [`RefBlock`]. The tests check the parts against plain loops.
-//! They check the whole network against the contract of the containers:
-//! forward = step unrolled, chunked calls and right padding. The checks
-//! compare the outputs, the caches and the gradients.
+//! They check the whole H-Net against the contract of the containers:
+//! forward = step unrolled, windows through the cache and right padding. The
+//! checks compare the outputs, the caches and the gradients.
 
 use super::chunk::plan;
 use super::smooth::{P_MAX, P_MIN, smooth, smooth_step};
@@ -25,7 +25,7 @@ fn shape(n_stages: usize) -> HNetShape {
     .with_smooth_block(4)
 }
 
-/// An H-Net whose stages have the widths `widths` and whose main network has
+/// An H-Net whose stages have the widths `widths` and whose main stack has
 /// the width `main`. The residual of each stage is redrawn, so that the
 /// tests also cover it (it is zero at init).
 fn net(widths: &[usize], main: usize, device: &Device) -> Net {
@@ -62,7 +62,7 @@ fn bools<const D: usize>(t: Tensor<D, Bool>) -> Vec<bool> {
     t.int().into_data().iter::<i64>().map(|v| v != 0).collect()
 }
 
-/// `step` unrolled over the rows of `x` (`[batch, sequence, d]`).
+/// `step` unrolled over the positions of `x` (`[batch, sequence, d]`).
 fn step_unrolled(
     net: &Net,
     x: Tensor<3>,
@@ -87,8 +87,8 @@ fn step_unrolled(
 // ---------------------------------------------------------------------------
 
 /// The chunked scan of the smoothing module equals the recurrence, over
-/// several blocks, from a carry, with absent rows that hold the state. The
-/// step form equals it too.
+/// several scan blocks, from a carry, with absent chunks that hold the state.
+/// `smooth_step` equals it too.
 #[test]
 fn smooth_equals_the_sequential_ema() {
     let device = test_device();
@@ -96,7 +96,7 @@ fn smooth_equals_the_sequential_ema() {
     let x = randn([batch, k, d], &device);
     let p = Tensor::<2>::random([batch, k], Distribution::Uniform(0.0, 1.0), &device);
     let carry = randn([batch, d], &device);
-    // Slot 1 has 17 real chunks.
+    // Row 1 has 17 real chunks.
     let pad = Tensor::<1, Int>::arange(0..k as i64, &device)
         .reshape([1, k])
         .expand([batch, k])
@@ -119,11 +119,12 @@ fn smooth_equals_the_sequential_ema() {
     let want = Tensor::cat(want, 1);
     assert!(max_rel_diff(got.clone(), want) < dtype_tol(TOL));
     let last = got.narrow(1, k - 1, 1).squeeze_dim::<2>(1);
-    assert!(max_rel_diff(last, z_step) < dtype_tol(TOL), "the absent rows hold the last chunk");
+    assert!(max_rel_diff(last, z_step) < dtype_tol(TOL), "the absent chunks hold the last real chunk");
 }
 
-/// The plan of a hand-made mask: the boundary rows, packed left, the count
-/// before each row, and the inner padding (rounded up to the multiple).
+/// The plan of a hand-made mask. The test checks the chunk boundaries (packed
+/// left) and the inner padding (rounded up to the multiple). It also checks
+/// the count of chunk boundaries at or before each position.
 #[test]
 fn chunk_plan_points_at_the_boundary_rows() {
     let device = test_device();
@@ -142,13 +143,13 @@ fn chunk_plan_points_at_the_boundary_rows() {
 }
 
 /// The ratio loss is 1 where `F = G = 1/N`, and the mean is over the real
-/// rows only.
+/// tokens only.
 #[test]
 fn ratio_loss_is_one_at_the_target() {
     let device = test_device();
     let n = 4.0;
-    // 8 real rows, 2 boundaries (F = 1/4), p = 1/4 everywhere (G = 1/4), and
-    // 4 padded rows with p = 1 that must not count.
+    // 8 real tokens, 2 chunk boundaries (F = 1/4), p = 1/4 everywhere
+    // (G = 1/4), and 4 padded positions with p = 1 that must not count.
     let b = Tensor::<2, Int>::from_data([[1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]], &device).equal_elem(1);
     let pad = Tensor::<2, Int>::from_data([[0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1]], &device).equal_elem(1);
     let p = Tensor::<2>::full([1, 12], 0.25, &device).mask_fill(pad.clone(), 1.0);
@@ -157,13 +158,14 @@ fn ratio_loss_is_one_at_the_target() {
     assert!((loss - 1.0).abs() < dtype_tol(1e-5), "loss = {loss}");
 }
 
-/// The router starts a chunk at the first row of a new sequence, and only
-/// there. A call that continues a cache has no forced boundary.
+/// The router starts a chunk at the first position of a new sequence, and
+/// only there. A call that continues a cache has no forced chunk boundary.
 #[test]
 fn only_a_new_sequence_forces_its_first_boundary() {
     let device = test_device();
     let mut net = net(&[8], 8, &device);
-    // W_q = 0 gives cos = 0, so p = ½ and no row starts a chunk on its own.
+    // W_q = 0 gives cos = 0, so p = ½ and no position starts a chunk on its
+    // own.
     let q = &mut net.stages[0].router.q_proj;
     q.weight = q.weight.clone().map(|w| w.zeros_like());
     let x = randn([2, 6, 8], &device);
@@ -177,12 +179,12 @@ fn only_a_new_sequence_forces_its_first_boundary() {
 }
 
 // ---------------------------------------------------------------------------
-// The whole network: the contract of the containers
+// The whole H-Net: the contract of the containers
 // ---------------------------------------------------------------------------
 
 /// `forward` equals `step` unrolled on the outputs, the caches and the
-/// decisions. The cases are one and two stages (with a wider main network),
-/// in both step modes.
+/// decisions. The cases are one and two stages (with a wider main stack), in
+/// both step modes.
 #[test]
 fn forward_equals_step_unrolled() {
     let device = test_device();
@@ -204,9 +206,9 @@ fn forward_equals_step_unrolled() {
     }
 }
 
-/// A `forward` split into two calls (the cache in between) equals one
-/// `forward`. The second call can open with rows before its first boundary,
-/// which read the last chunk of the first call.
+/// A `forward` split into two windows (the cache in between) equals one
+/// `forward`. The second window can open with positions before its first
+/// chunk boundary, which read the last chunk of the first window.
 #[test]
 fn forward_is_chunkable_through_the_cache() {
     let device = test_device();
@@ -219,8 +221,8 @@ fn forward_is_chunkable_through_the_cache() {
     assert!(cache_diff(c_all, c) < dtype_tol(TOL));
 }
 
-/// In a right-padded batch, each slot gives what it gives alone: the outputs
-/// of its real rows, and its caches. A slot with no real row keeps its
+/// In a right-padded batch, each row gives what it gives alone: the outputs
+/// at its real tokens, and its caches. A row with no real token keeps its
 /// incoming cache.
 #[test]
 fn padded_slots_match_each_slot_alone() {
@@ -232,7 +234,7 @@ fn padded_slots_match_each_slot_alone() {
         .reshape([1, 11])
         .expand([3, 11])
         .greater_equal(Tensor::<2, Int>::from_data([[11], [4], [0]], &device).expand([3, 11]));
-    // A warm cache, so that the empty slot has something to keep.
+    // A warm cache, so that the empty row has something to keep.
     let (_, warm, _) = net.forward(randn([3, 5, 8], &device), None, ((), ()), None);
     let (y, caches, _) = net.forward(x.clone(), Some(warm.clone()), ((), ()), Some(pad));
 
@@ -243,19 +245,20 @@ fn padded_slots_match_each_slot_alone() {
     for (b, &len) in lens.iter().enumerate() {
         let warm_b = row(warm.clone(), b);
         if len == 0 {
-            assert!(cache_diff(row(caches.clone(), b), warm_b) < dtype_tol(TOL), "slot {b}: the cache moved");
+            assert!(cache_diff(row(caches.clone(), b), warm_b) < dtype_tol(TOL), "row {b}: the cache moved");
             continue;
         }
         let x_b = x.clone().narrow(0, b, 1).narrow(1, 0, len);
         let (y_b, c_b, _) = net.forward(x_b, Some(warm_b), ((), ()), None);
         let y_real = y.clone().narrow(0, b, 1).narrow(1, 0, len);
-        assert!(max_rel_diff(y_real, y_b) < dtype_tol(TOL), "slot {b}: outputs");
-        assert!(cache_diff(row(caches.clone(), b), c_b) < dtype_tol(TOL), "slot {b}: caches");
+        assert!(max_rel_diff(y_real, y_b) < dtype_tol(TOL), "row {b}: outputs");
+        assert!(cache_diff(row(caches.clone(), b), c_b) < dtype_tol(TOL), "row {b}: caches");
     }
 }
 
-/// A call in which no row starts a chunk skips the inner network. `forward`
-/// and both step modes still agree (the gathered step takes its empty path).
+/// A call in which no position starts a chunk skips the inner H-Net.
+/// `forward` and both step modes still agree (the gathered step takes its
+/// empty path).
 #[test]
 fn a_call_without_boundaries_skips_the_inner_network() {
     let device = test_device();
@@ -276,8 +279,7 @@ fn a_call_without_boundaries_skips_the_inner_network() {
 }
 
 /// The gradients of `forward` equal those of `step` unrolled: at the router,
-/// the encoder, the residual, the main network, the width vector and the
-/// input.
+/// the encoder, the residual, the main stack, the width vector and the input.
 #[test]
 fn forward_and_step_have_the_same_gradients() {
     let device = test_device().autodiff();
@@ -332,8 +334,9 @@ fn vocab_network_forward_equals_step_unrolled() {
     assert!(max_rel_diff(logits, Tensor::cat(steps, 1)) < dtype_tol(TOL));
 }
 
-/// The start rows: `forward_opened` equals `prime` then `step` unrolled. The
-/// output of the last start row is the logits that `prime` returns.
+/// The start embeddings: `forward_opened` equals `prime` then `step`
+/// unrolled. The output at the last start embedding is the logits that
+/// `prime` returns.
 #[test]
 fn start_rows_forward_equals_prime_then_steps() {
     let device = test_device();
@@ -348,7 +351,7 @@ fn start_rows_forward_equals_prime_then_steps() {
     let (logits, c_fwd, _) = net.forward_opened(x.clone(), ((), ()), None);
     assert_eq!(logits.dims(), [2, 10, 12]);
 
-    let (first, caches) = net.prime(2, StepMode::Gathered).expect("the network has start rows");
+    let (first, caches) = net.prime(2, StepMode::Gathered).expect("the network has start embeddings");
     let mut caches = Some(caches);
     let mut steps = vec![first.unsqueeze_dim(1)];
     for t in 0..7 {
@@ -361,8 +364,8 @@ fn start_rows_forward_equals_prime_then_steps() {
 }
 
 /// The Muon plan scopes the specs of each stack. The `in_proj` of stage 0
-/// (width 6) and that of the main network (width 10) each match only their
-/// own stack.
+/// (width 6) and that of the main stack (width 10) each match only their own
+/// stack.
 #[cfg(feature = "optim")]
 #[test]
 fn muon_plan_scopes_each_stack() {

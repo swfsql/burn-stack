@@ -1,33 +1,35 @@
-//! The smoothing module of the dechunking layer: an exponential moving
-//! average over the chunks.
+//! The smoothing module of the dechunking: an exponential moving average over
+//! the chunks.
 //!
 //! ```text
 //!   z̄ₖ = Pₖ·ẑₖ + (1 − Pₖ)·z̄ₖ₋₁        z̄₋₁ = the carry of the previous call
 //! ```
 //!
-//! `Pₖ` is the router probability of the row that started chunk `k`, clamped
+//! `Pₖ` is the router probability at the chunk boundary of chunk `k`, clamped
 //! to `[10⁻⁴, 1 − 10⁻⁴]`. A confident chunk (`P ≈ 1`) passes through. A weak
 //! chunk (`P ≈ ½`) mixes with the chunk before it. This is the path on which
-//! the gradient reaches the boundary decision, which is discrete.
+//! the gradient reaches the chunk-boundary decision, which is discrete.
 //!
 //! The reference runs this recurrence through the Mamba-2 SSD kernel (state
 //! size 1, `A = −1`, `Δ = −ln(1 − P)`). Here it is the same scan in plain
 //! tensor ops, chunked like SSD:
 //!
-//! 1. Split the `K` chunks into blocks of `l` rows. In a block, the decay from
-//!    row `j` to row `i` is `exp(segsum(ln(1 − P))[i, j])`. One matmul gives
-//!    every in-block output from a zero start.
-//! 2. The state that enters block `c` is the carry and the end state of every
-//!    earlier block, each decayed through the blocks between. That is the
-//!    same segsum one level up: an `n × n` matmul over the block totals.
-//! 3. Add the entering state to each row of the block, decayed through the
-//!    rows before it.
+//! 1. Split the `K` chunks into scan blocks of `l` chunks. In a scan block,
+//!    the decay from chunk `j` to chunk `i` is `exp(segsum(ln(1 − P))[i, j])`.
+//!    One matmul gives every output of the scan block from a zero start.
+//! 2. The state that enters scan block `c` is a sum over the carry and the
+//!    end states of the earlier scan blocks. Each term decays through the
+//!    scan blocks between. That is the same segsum over the scan blocks: an
+//!    `n × n` matmul over the totals of the scan blocks.
+//! 3. Add the entering state to each chunk of the scan block, decayed through
+//!    the chunks before it.
 //!
-//! `P = 0` is a valid row that holds the state (decay 1, no write). An absent
-//! row (the inner padding) gets it, with its input set to zero. The output of
-//! a padded row is unspecified, and `0·NaN` is not zero. So the last column of
-//! `z̄` is the last real chunk of each slot. Every exponent is a sum of
-//! `ln(1 − P) ≤ 0` terms, so nothing overflows.
+//! A chunk with `P = 0` is valid, and it holds the state (decay 1, no write).
+//! An absent chunk (the inner padding) gets `P = 0`, with its input set to
+//! zero. The output of the inner H-Net at a padded position is unspecified,
+//! and `0·NaN` is not zero. So the last column of `z̄` is the last real chunk
+//! of each row. Every exponent is a sum of `ln(1 − P) ≤ 0` terms, so nothing
+//! overflows.
 //!
 //! The clamp is in f32. In f16, `1 − 10⁻⁴` rounds to `1`, and `ln(1 − 1)` is
 //! `−∞`.
@@ -42,7 +44,7 @@ pub const P_MIN: f64 = 1e-4;
 pub const P_MAX: f64 = 1.0 - 1e-4;
 
 /// The EMA over `x_bkd` (`[batch, K, d]`) from `carry_bd` (`[batch, d]`), in
-/// blocks of `block` rows. Out: `z̄`, `[batch, K, d]`.
+/// scan blocks of `block` chunks. Out: `z̄`, `[batch, K, d]`.
 ///
 /// `p_bk` (`[batch, K]`) is the router probability of each chunk. It is
 /// clamped to `[P_MIN, P_MAX]`. `pad_bk` (`None` ⇒ none) marks the absent
@@ -55,7 +57,7 @@ pub fn smooth(
     carry_bd: Tensor<2>,
     block: usize,
 ) -> Tensor<3> {
-    assert!(block > 0, "the smoothing block must hold at least 1 row");
+    assert!(block > 0, "the scan block of the smoothing must hold at least 1 chunk");
     let (x_bkd, dtype) = upcast(x_bkd);
     let (p_bk, _) = upcast(p_bk);
     let (carry_bd, _) = upcast(carry_bd);
@@ -72,8 +74,9 @@ pub fn smooth(
     let n = k.div_ceil(block);
     let l = if n == 1 { k } else { block };
     let pad = n * l - k;
-    // Pad with rows that hold (P = 0, x = 0). They are after every real row,
-    // so they change no output. The end narrows them off.
+    // Pad with chunks that hold the state (P = 0, x = 0). They are after
+    // every real chunk, so they change no output. The `narrow` at the end
+    // removes them.
     let (x_bkd, p_bk) = if pad == 0 {
         (x_bkd, p_bk)
     } else {
@@ -82,24 +85,24 @@ pub fn smooth(
         (Tensor::cat(vec![x_bkd, x_pad], 1), Tensor::cat(vec![p_bk, p_pad], 1))
     };
 
-    // ln(1 − P) and the write P·x, split into blocks.
+    // ln(1 − P) and the write P·x, split into scan blocks.
     let la_bnl = p_bk.clone().neg().log1p().reshape([batch, n, l]);
     let w_bnld = (p_bk.unsqueeze_dim::<3>(2) * x_bkd).reshape([batch, n, l, d]);
 
-    // 1. In-block outputs from a zero start.
+    // 1. The outputs of each scan block from a zero start.
     let decay_bnll = segsum::<3, 4>(la_bnl.clone()).exp();
     let intra_bnld = decay_bnll.matmul(w_bnld);
 
-    // The decay from the start of a block through row i of it.
+    // The decay from the start of a scan block through chunk i of it.
     let cum_bnl = la_bnl.cumsum(2);
 
-    // 2. The state that enters each block.
+    // 2. The state that enters each scan block.
     let enter_bnd = if n == 1 {
         carry_bd.unsqueeze_dim::<3>(1)
     } else {
         // h = [carry, end₀, …, end_{n−2}] and u = [0, T₀, …, T_{n−2}], with
-        // T the total log-decay of a block. Then the state that enters block c
-        // is Σ_{j ≤ c} exp(segsum(u)[c, j]) · h[j].
+        // T the total log-decay of a scan block. Then the state that enters
+        // scan block c is Σ_{j ≤ c} exp(segsum(u)[c, j]) · h[j].
         let total_bn = cum_bnl.clone().narrow(2, l - 1, 1).reshape([batch, n]);
         let end_bnd = intra_bnld.clone().narrow(2, l - 1, 1).reshape([batch, n, d]);
         let h_bnd = Tensor::cat(vec![carry_bd.unsqueeze_dim(1), end_bnd.narrow(1, 0, n - 1)], 1);
@@ -113,17 +116,17 @@ pub fn smooth(
         segsum::<2, 3>(u_bn).exp().matmul(h_bnd)
     };
 
-    // 3. Each row adds the entering state, decayed through the rows before it
-    //    (its own row included).
+    // 3. Each chunk adds the entering state, decayed through the chunks
+    //    before it (its own chunk included).
     let out_bnld = intra_bnld + cum_bnl.exp().unsqueeze_dim::<4>(3) * enter_bnd.unsqueeze_dim(2);
     let out_bkd = out_bnld.reshape([batch, n * l, d]);
     let out_bkd = if pad == 0 { out_bkd } else { out_bkd.narrow(1, 0, k) };
     downcast(out_bkd, dtype)
 }
 
-/// One step of the EMA: `P·x + (1 − P)·carry` on the rows where `take_b` is
-/// `true`, and the carry unchanged (bit for bit) on the other rows. `p_b`
-/// (`[batch]`) is clamped as in [`smooth`]. It computes in f32 when the
+/// The EMA update of the step call: `P·x + (1 − P)·carry` on the rows where
+/// `take_b` is `true`. The other rows keep the carry unchanged (bit for bit).
+/// `p_b` (`[batch]`) is clamped as in [`smooth`]. It computes in f32 when the
 /// inputs are f16/bf16, as [`smooth`] does.
 pub fn smooth_step(x_bd: Tensor<2>, p_b: Tensor<1>, take_b: Tensor<1, Bool>, carry_bd: Tensor<2>) -> Tensor<2> {
     let [batch, d] = carry_bd.dims();

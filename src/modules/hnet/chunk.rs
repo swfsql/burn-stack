@@ -1,21 +1,22 @@
-//! The index math of the chunking layer (the downsampler) and of the
-//! upsampler of the dechunking layer.
+//! The index math of the chunking (the downsampler) and of the upsampler of
+//! the dechunking.
 //!
 //! ```text
-//!   upto[t]   = Σ_{j ≤ t} b[j]             boundaries at or before row t
-//!   src[k]    = the row t with b[t] = 1 and upto[t] = k + 1
-//!   x'[k]     = x̂[src[k]]                  chunk:   keep the boundary rows
+//!   upto[t]   = Σ_{j ≤ t} b[j]             chunk boundaries at or before t
+//!   src[k]    = the position t with b[t] = 1 and upto[t] = k + 1
+//!   x'[k]     = x̂[src[k]]                  chunk:   keep the chunk boundaries
 //!   z̃[t]      = Z[upto[t]]                 dechunk: repeat the latest chunk
 //! ```
 //!
 //! `Z = [carry, z̄₀, z̄₁, …]` puts the smoothed chunk of the previous call in
-//! front. Only a call that continues a cache can have rows before its first
-//! boundary. Such a row reads the latest chunk of the previous call.
+//! front. Only a call that continues a cache can have positions before its
+//! first chunk boundary. Such a position reads the latest chunk of the
+//! previous call.
 //!
-//! The chunk count differs from slot to slot. So the chunked sequence is
-//! right-padded to the largest count `K`, and the inner network runs on it
-//! with the padding contract of [`Block`](crate::modules::Block). `K` is a
-//! shape, so [`plan`] reads the counts to the host once per call.
+//! The chunk count differs from row to row. So the chunked sequence is
+//! right-padded to the largest count `K`, and the inner H-Net runs on it with
+//! the padding contract of [`Block`](crate::modules::Block). `K` is a shape,
+//! so [`plan`] reads the counts to the host once per call.
 
 use crate::modules::prefix_sum;
 use burn::prelude::*;
@@ -23,25 +24,26 @@ use burn::tensor::IndexingUpdateOp;
 
 /// Where the chunks of one call are.
 pub(crate) struct ChunkPlan {
-    /// The source row of each chunk, `[batch, K]`. Past the count of a slot,
-    /// it is `0` (any valid row: the inner padding hides it). With `K = 0`, it
-    /// is `[batch, 1]` and unused.
+    /// The source position of each chunk, `[batch, K]`. Past the count of a
+    /// row, it is `0` (any valid position: the inner padding hides it). With
+    /// `K = 0`, it is `[batch, 1]` and unused.
     pub src_bk: Tensor<2, Int>,
-    /// The boundaries at or before each row, `[batch, sequence]`.
+    /// The chunk boundaries at or before each position, `[batch, sequence]`.
     pub upto_bs: Tensor<2, Int>,
-    /// The inner padding: `true` past the count of the slot, `[batch, K]`.
-    /// `None` when every slot has `K` chunks.
+    /// The inner padding: `true` past the count of the row, `[batch, K]`.
+    /// `None` when every row has `K` chunks.
     pub pad_bk: Option<Tensor<2, Bool>>,
     /// `K`: the largest chunk count, rounded up to the multiple of the call.
     pub len: usize,
 }
 
-/// The [`ChunkPlan`] of a boundary mask `[batch, sequence]` (`false` on every
-/// absent row). `K` is rounded up to a multiple of `multiple`, so that a run
-/// sees fewer distinct inner shapes. This reads the chunk counts to the host.
+/// The [`ChunkPlan`] of a chunk-boundary mask `[batch, sequence]` (`false` on
+/// every absent position). `K` is rounded up to a multiple of `multiple`, so
+/// that a run sees fewer distinct inner shapes. This reads the chunk counts to
+/// the host.
 pub(crate) fn plan(boundary_bs: Tensor<2, Bool>, multiple: usize) -> ChunkPlan {
     let [batch, sequence] = boundary_bs.dims();
-    assert!(sequence > 0, "an H-Net call needs at least one row");
+    assert!(sequence > 0, "an H-Net call needs at least one position");
     assert!(multiple > 0, "the chunk-length multiple must be at least 1");
     let device = boundary_bs.device();
     let upto_bs = prefix_sum::<2, 3, Int>(boundary_bs.clone().int(), 1);
@@ -50,14 +52,15 @@ pub(crate) fn plan(boundary_bs: Tensor<2, Bool>, multiple: usize) -> ChunkPlan {
     let max = counts.iter().copied().max().unwrap_or(0) as usize;
     let len = max.div_ceil(multiple) * multiple;
     if len == 0 {
-        // No chunk at all. The caller skips the inner network and reads no
-        // chunk row, so `src_bk` only keeps a valid shape.
+        // No chunk at all. The caller skips the inner H-Net and reads no
+        // chunk, so `src_bk` only keeps a valid shape.
         return ChunkPlan { src_bk: Tensor::zeros([batch, 1], &device), upto_bs, pad_bk: None, len };
     }
 
-    // Each boundary row writes its own row index into its chunk slot `k`. Each
-    // other row writes into a dump slot of its own (`K + t`). So every index is
-    // unique, and an additive scatter onto zeros is an assignment.
+    // Each chunk boundary writes its own position index into its chunk slot
+    // `k`. Each other position writes into a dump slot of its own (`K + t`).
+    // So every index is unique, and an additive scatter onto zeros is an
+    // assignment.
     let t_bs = Tensor::<1, Int>::arange(0..sequence as i64, &device)
         .reshape([1, sequence])
         .expand([batch, sequence]);
@@ -75,16 +78,16 @@ pub(crate) fn plan(boundary_bs: Tensor<2, Bool>, multiple: usize) -> ChunkPlan {
     ChunkPlan { src_bk, upto_bs, pad_bk, len }
 }
 
-/// The rows `src_bk` of `x_bsd`: `[batch, K, d]`.
+/// The positions `src_bk` of `x_bsd`: `[batch, K, d]`.
 pub(crate) fn gather_rows(x_bsd: Tensor<3>, src_bk: Tensor<2, Int>) -> Tensor<3> {
     let [batch, _sequence, d] = x_bsd.dims();
     let [_batch, k] = src_bk.dims();
     x_bsd.gather(1, src_bk.unsqueeze_dim::<3>(2).expand([batch, k, d]))
 }
 
-/// The upsampler: row `t` reads `z_all_bKd[upto[t]]`, where `z_all_bKd` is
-/// `[carry, z̄₀, …, z̄_{K−1}]` (`[batch, K + 1, d]`). Out: `[batch, sequence,
-/// d]`.
+/// The upsampler: position `t` reads `z_all_bKd[upto[t]]`, where
+/// `z_all_bKd` is `[carry, z̄₀, …, z̄_{K−1}]` (`[batch, K + 1, d]`). Out:
+/// `[batch, sequence, d]`.
 #[allow(non_snake_case)]
 pub(crate) fn upsample(z_all_bKd: Tensor<3>, upto_bs: Tensor<2, Int>) -> Tensor<3> {
     let [batch, _k1, d] = z_all_bKd.dims();

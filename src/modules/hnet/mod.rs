@@ -1,33 +1,34 @@
-//! # H-Net: dynamic chunking between levels of block stacks
+//! # H-Net: dynamic chunking between layer stacks
 //!
 //! An H-Net (Hwang, Wang & Gu, *Dynamic Chunking for End-to-End Hierarchical
-//! Sequence Modeling*, 2025) is a U-Net over the sequence axis. Each level
-//! (a **stage**) runs a stack at the resolution of its input. A learned router
-//! decides where a new chunk starts. The stage keeps only those rows, gives
-//! that shorter sequence to the next level, and expands the result back:
+//! Sequence Modeling*, 2025) is a U-Net over the sequence axis. Each **stage**
+//! runs a layer stack at the resolution of its input. A learned router
+//! decides where a new chunk starts. The stage keeps only the chunk
+//! boundaries, gives that shorter sequence to its inner H-Net, and expands the
+//! result back:
 //!
 //! ```text
 //!   x̂ˢ      = Eˢ(xˢ)                                encoder (a stack + RMSNorm)
 //!   pˢ, bˢ  = Router(x̂ˢ)                            pₜ = ½(1 − cos(W_q x̂ₜ₋₁, W_k x̂ₜ)), bₜ = [pₜ > ½]
-//!   xˢ⁺¹    = x̂ˢ[bˢ]                                chunk: keep the boundary rows
-//!   ẑˢ⁺¹    = the inner network on xˢ⁺¹             the next stage, or the main network M
+//!   xˢ⁺¹    = x̂ˢ[bˢ]                                chunk: keep the chunk boundaries
+//!   ẑˢ⁺¹    = the inner H-Net on xˢ⁺¹               the next stage, or the main stack M
 //!   z̄ₖ      = Pₖ ẑₖ + (1 − Pₖ) z̄ₖ₋₁                 smoothing (EMA over the chunks)
 //!   zₜˢ     = STE(cₜ) · z̄_{upto(t)} + W_r x̂ₜˢ       dechunk: repeat, confidence, residual
 //!   ẑˢ      = Dˢ(zˢ)                                decoder (a stack + RMSNorm)
 //! ```
 //!
 //! - `cₜ = pₜ` where `bₜ = 1`, else `1 − pₜ`: the confidence of the decision
-//!   at row `t`. `STE(c) = c + sg(1 − c)` is `1` in the forward pass, with the
-//!   gradient of `c`. So the router gets a gradient through every row, and
-//!   through the smoothing.
+//!   at position `t`. `STE(c) = c + sg(1 − c)` is `1` in the forward pass,
+//!   with the gradient of `c`. So the router gets a gradient through every
+//!   position, and through the smoothing.
 //! - `W_r` (`residual_proj`) starts at zero, so at init each stage passes the
 //!   coarse path only. The reference computes it in fp32.
-//! - Every network ends in an RMSNorm (the *network normalization* of the
-//!   paper). Without it, the deep main network would drown the residual of
-//!   the encoder.
+//! - Each encoder, each decoder and the main stack end in an RMSNorm (the
+//!   *network normalization* of the paper). Without it, the deep main stack
+//!   would drown the residual of the encoder.
 //! - A stage can be wider than its input. It then appends a learnable vector
-//!   (shared by all rows) to each input row, and returns the first columns of
-//!   its output. So the widths must not decrease inward.
+//!   (shared by all positions) to the input at each position, and returns the
+//!   first columns of its output. So the widths must not decrease inward.
 //!
 //! The submodules hold the details:
 //!
@@ -41,26 +42,25 @@
 //! ## Two block families
 //!
 //! `HNet<E, M>`: every encoder and decoder is a [`Layers<E>`], and the main
-//! network is a [`Layers<M>`]. The reference uses Mamba-2 outside (it handles
-//! the fine-grained rows well) and attention inside. Each stack has its own
-//! [`BlockConfig`] (so its own width) and its own
-//! [`NetworkShape`] (virtual layers, MLP,
-//! residuals, …). See [`HNetShape`].
+//! stack is a [`Layers<M>`]. The reference uses Mamba-2 outside (it handles
+//! the fine-grained positions well) and attention inside. Each layer stack
+//! has its own [`BlockConfig`] (so its own width) and its own
+//! [`NetworkShape`] (virtual layers, MLP, residuals, …). See [`HNetShape`].
 //!
 //! ## Execution
 //!
 //! - `forward` takes a right-padded batch, like every container of this
-//!   crate. The chunk count differs from slot to slot. So the inner sequence
-//!   gets right padding up to the largest count, and the inner network runs
+//!   crate. The chunk count differs from row to row. So the inner sequence
+//!   gets right padding up to the largest count, and the inner H-Net runs
 //!   under the padding contract of [`Block`]. That count is a shape, so
-//!   `forward` reads it to the host once per stage. A `forward` thus does not
-//!   replay as a captured graph.
-//! - `step` runs one row. The inner network must step only on the rows that
-//!   start a chunk. [`StepMode::Masked`] steps it on every row and keeps the
-//!   old inner cache on the other rows. Every call runs the same kernels, so a
-//!   captured step replays it. [`StepMode::Gathered`] reads the decisions to
-//!   the host and steps only the rows that start a chunk (no inner work when
-//!   none does).
+//!   `forward` reads it to the host once per stage. So a captured step cannot
+//!   contain a `forward`.
+//! - `step` takes one token of each row. The inner H-Net must step only the
+//!   rows whose token starts a chunk. [`StepMode::Masked`] steps it on every
+//!   row and keeps the old inner cache on the other rows. Every call runs the
+//!   same kernels, so a captured step replays it. [`StepMode::Gathered`] reads
+//!   the decisions to the host and steps only the rows whose token starts a
+//!   chunk (no inner work when no token does).
 //! - `forward` from any cache equals `step` unrolled from that cache, on the
 //!   outputs, the caches and the gradients. The router and the smoothing keep
 //!   their own state ([`HNetStageCache`](crate::modules::hnet::HNetStageCache)),
@@ -68,11 +68,11 @@
 //!
 //! ## Not supported
 //!
-//! - Class markers in a stack of an H-Net: they would move the rows that the
-//!   chunk indices point at. [`HNetShape`] refuses them.
-//! - Packed rows: a reset must reach the inner network at a row that the
-//!   block accepts (a chunk start of a chunked SSD). Dynamic chunking can put
-//!   it at any row.
+//! - Class markers in a layer stack of an H-Net: they would move the
+//!   positions that the chunk indices point at. [`HNetShape`] refuses them.
+//! - Packed rows: a reset must reach the inner H-Net at a position that the
+//!   block accepts (the start of a chunk of a chunked SSD). Dynamic chunking
+//!   can put it at any position.
 
 /// The caches of an H-Net and the per-row cache operations of its `step`.
 pub mod cache;
@@ -101,26 +101,26 @@ use burn::prelude::*;
 use cache::{gather_rows, merge_rows, select_rows};
 use smooth::{smooth, smooth_step};
 
-/// How [`HNet::step`] runs the network inside a stage.
+/// How [`HNet::step`] runs the inner H-Net of a stage.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum StepMode {
-    /// Step the inner network on every row, then keep the old inner cache on
-    /// the rows that start no chunk. Every step runs the same launches, so a
-    /// captured step can replay it. No compute is saved.
+    /// Step the inner H-Net on every row, then keep the old inner cache on
+    /// the rows whose token starts no chunk. Every step runs the same
+    /// launches, so a captured step can replay it. No compute is saved.
     #[default]
     Masked,
-    /// Read the decisions to the host, and step the inner network only on the
-    /// rows that start a chunk. When no row does, the inner network does not
-    /// run. This saves the inner compute, but it is not capturable.
+    /// Read the decisions to the host, and step the inner H-Net only on the
+    /// rows whose token starts a chunk. When no token does, the inner H-Net
+    /// does not run. This saves the inner compute, but it is not capturable.
     Gathered,
 }
 
 /// One stage of an [`HNet`]: an encoder, a router, the dechunking residual
-/// and a decoder, around the inner network.
+/// and a decoder, around the inner H-Net.
 #[derive(Module, Debug)]
 pub struct HNetStage<E: Module> {
-    /// The vector appended to each input row when this stage is wider than
-    /// its input (`None` at equal width, and at stage 0).
+    /// The vector appended to the input at each position when this stage is
+    /// wider than its input (`None` at equal width, and at stage 0).
     pub pad_dimension: Option<Param<Tensor<1>>>,
     /// The encoder stack.
     pub encoder: Layers<E>,
@@ -137,39 +137,40 @@ pub struct HNetStage<E: Module> {
     pub decoder_norm: RmsNorm,
 }
 
-/// The main network of an [`HNet`]: the innermost stack, on the most
+/// The main stack of an [`HNet`]: the innermost layer stack, on the most
 /// compressed sequence.
 #[derive(Module, Debug)]
 pub struct HNetMain<M: Module> {
-    /// The vector appended to each input row when this network is wider than
-    /// its input. `None` at equal width, and when the H-Net has no stage.
+    /// The vector appended to the input at each position when the main stack
+    /// is wider than its input. `None` at equal width, and when the H-Net has
+    /// no stage.
     pub pad_dimension: Option<Param<Tensor<1>>>,
-    /// The stack.
+    /// The layer stack.
     pub layers: Layers<M>,
     /// The final RMSNorm.
     pub norm: RmsNorm,
 }
 
 /// An H-Net over `[batch, sequence, d₀]`: the stages (outermost first) and
-/// the main network. See the module header.
+/// the main stack. See the module header.
 #[derive(Module, Debug)]
 pub struct HNet<E: Module, M: Module> {
-    /// The stages, outermost first. Empty ⇒ the main network alone (an
+    /// The stages, outermost first. Empty ⇒ the main stack alone (an
     /// isotropic stack with a final norm).
     pub stages: Vec<HNetStage<E>>,
-    /// The main network.
+    /// The main stack.
     pub main: HNetMain<M>,
     /// The inner chunk count of a `forward` is rounded up to a multiple of
     /// this. A larger value gives fewer distinct inner shapes in a run.
     #[module(skip)]
     pub chunk_multiple: usize,
-    /// The block length of the smoothing scan ([`smooth()`]).
+    /// The length of a scan block of the smoothing ([`smooth()`]), in chunks.
     #[module(skip)]
     pub smooth_block: usize,
 }
 
-/// `x` with the vector `pad` appended to each row (on the last axis), or `x`
-/// when there is none.
+/// `x` with the vector `pad` appended at each position (on the last axis), or
+/// `x` when there is none.
 fn widen<const D: usize>(x: Tensor<D>, pad: &Option<Param<Tensor<1>>>) -> Tensor<D> {
     let Some(pad) = pad else { return x };
     let pad = pad.val();
@@ -189,8 +190,8 @@ fn narrow_last<const D: usize>(x: Tensor<D>, width: usize) -> Tensor<D> {
     }
 }
 
-/// The dechunked rows: `STE(c) · up + residual`, with `c = p` where `b`, else
-/// `1 − p`. `STE(c)` is `1` in value and carries the gradient of `c`.
+/// The dechunked output: `STE(c) · up + residual`, with `c = p` where `b`,
+/// else `1 − p`. `STE(c)` is `1` in value and carries the gradient of `c`.
 fn confident(up_bsd: Tensor<3>, p_bs: Tensor<2>, b_bs: Tensor<2, Bool>, residual_bsd: Tensor<3>) -> Tensor<3> {
     let c_bs = (p_bs.clone().neg() + 1.0).mask_where(b_bs, p_bs);
     let ste_bs = (c_bs.clone() - c_bs.detach()) + 1.0;
@@ -205,7 +206,7 @@ impl<E: Module> HNetStage<E> {
 }
 
 impl<M: Module> HNetMain<M> {
-    /// The width of the main network.
+    /// The width of the main stack.
     pub fn width(&self) -> usize {
         self.norm.gamma.dims()[0]
     }
@@ -238,7 +239,7 @@ where
 
 impl<E: Module, M: Module> HNet<E, M> {
     /// The width of the input (and of the output): that of stage 0, or that
-    /// of the main network when there is no stage.
+    /// of the main stack when there is no stage.
     pub fn width(&self) -> usize {
         match self.stages.first() {
             Some(stage) => stage.width(),
@@ -255,15 +256,15 @@ where
     /// The full-sequence pass: `[batch, sequence, d₀]` → the same shape.
     ///
     /// `options` goes to every encoder and decoder (`.0`) and to the main
-    /// network (`.1`). `pad` (`[batch, sequence]`, `true` at padding, `None` ⇒
-    /// none) is right padding. The outputs of the real rows and the caches of
-    /// each slot are those of that slot run alone. The output of a padded row
-    /// is unspecified.
+    /// stack (`.1`). `pad` (`[batch, sequence]`, `true` at padding, `None` ⇒
+    /// none) is right padding. The outputs at the real tokens and the caches
+    /// of each row are those of that row run alone. The output at a padded
+    /// position is unspecified.
     ///
     /// Returns the output, the caches, and one [`Routing`] per stage
-    /// (outermost first). A stage that no row reached (every slot of its
-    /// outer stage started no chunk in this call) reports all of its rows
-    /// absent.
+    /// (outermost first). A stage that no token reached (its outer stage
+    /// started no chunk in this call, in any row) reports all of its
+    /// positions absent.
     pub fn forward(
         &self,
         x: Tensor<3>,
@@ -279,9 +280,10 @@ where
         (y, caches, routing)
     }
 
-    /// The single-row step: `[batch, d₀]` → the same shape. `mode` selects how
-    /// the inner network of each stage runs ([`StepMode`]). Returns the
-    /// output, the caches, and one [`Routing`] per stage (each `[batch, 1]`).
+    /// The step call, on one token of each row: `[batch, d₀]` → the same
+    /// shape. `mode` selects how the inner H-Net of each stage runs
+    /// ([`StepMode`]). Returns the output, the caches, and one [`Routing`] per
+    /// stage (each `[batch, 1]`).
     pub fn step(
         &self,
         x: Tensor<2>,
@@ -301,7 +303,7 @@ where
     }
 
     /// The zero caches of the stages from `s` inward (and of the main
-    /// network), sized for single-row steps.
+    /// stack), sized for `step`.
     pub fn zero_caches_2d(&self, s: usize, batch: usize, device: &Device) -> HNetCaches<E, M> {
         let stages = self.stages[s..]
             .iter()
@@ -321,7 +323,7 @@ where
     }
 
     /// The zero caches of the stages from `s` inward (and of the main
-    /// network), sized for a full-sequence pass.
+    /// stack), sized for a full-sequence pass.
     pub fn zero_caches_3d(&self, s: usize, batch: usize, device: &Device) -> HNetCaches<E, M> {
         let stages = self.stages[s..]
             .iter()
@@ -377,7 +379,7 @@ where
         let xh_bsd = stage.encoder_norm.forward(xh_bsd);
         let residual_bsd = stage.residual_proj.forward(xh_bsd.clone());
 
-        // Route. No absent row starts a chunk.
+        // Route. No absent position starts a chunk.
         let p_bs = stage.router.probs(xh_bsd.clone(), &router);
         let b_bs = p_bs.clone().greater_elem(0.5);
         let b_bs = match &pad_bs {
@@ -387,10 +389,10 @@ where
         routing.push(Routing { prob_bs: p_bs.clone(), boundary_bs: b_bs.clone(), pad_bs: pad_bs.clone() });
         let router = router.after_rows(xh_bsd.clone(), pad_bs.as_ref());
 
-        // Chunk, run the inner network, and smooth. `z_all` is `[carry, z̄…]`.
+        // Chunk, run the inner H-Net, and smooth. `z_all` is `[carry, z̄…]`.
         let plan = chunk::plan(b_bs.clone(), self.chunk_multiple);
         let (z_all_bkd, rest) = if plan.len == 0 {
-            // No row starts a chunk, so the inner network does not run.
+            // No position starts a chunk, so the inner H-Net does not run.
             let rest = rest.unwrap_or_else(|| self.zero_caches_3d(s + 1, batch, &device));
             routing.extend((s + 1..self.stages.len()).map(|_| Routing::absent(batch, &device)));
             (carry_bd.unsqueeze_dim(1), rest)
@@ -403,7 +405,7 @@ where
             (Tensor::cat(vec![carry_bd.unsqueeze_dim(1), zbar_bkd], 1), rest)
         };
         // The inner padding holds the state. So the last column is the last
-        // real chunk of each slot, or the carry for a slot with none.
+        // real chunk of each row, or the carry for a row with none.
         let smooth_bd = z_all_bkd.clone().narrow(1, plan.len, 1).reshape([batch, d]);
         let up_bsd = chunk::upsample(z_all_bkd, plan.upto_bs);
 
@@ -457,7 +459,7 @@ where
         let router = RouterCache { last_bd: xh_bd.clone(), seen_b: head.router.seen_b.ones_like() };
         let carry_bd = head.smooth_bd;
 
-        // The inner network, on the rows that start a chunk.
+        // The inner H-Net, on the rows whose token starts a chunk.
         let first = routing.len();
         let (z_bd, mut rest) = match mode {
             StepMode::Masked => {
@@ -496,7 +498,8 @@ where
                 }
             }
         };
-        // A row that started no chunk did not reach the stages inward.
+        // The token of a row that started no chunk did not reach the stages
+        // inward.
         for r in &mut routing[first..] {
             *r = r.clone().reached(&b_b);
         }

@@ -1,4 +1,4 @@
-//! A language model over an [`HNet`]: the token boundary of
+//! A language model over an [`HNet`]: the token input and output maps of
 //! [`VocabNetwork`](crate::modules::VocabNetwork) around an H-Net backbone.
 
 use crate::modules::hnet::{HNet, HNetCaches, Routing, StepMode};
@@ -15,15 +15,16 @@ use burn::prelude::*;
 ///
 /// There is no norm before the head. The final RMSNorm of the outermost
 /// decoder is that norm, as in the reference (with no stage, that of the main
-/// network).
+/// stack).
 ///
-/// **Start rows.** A stack of an H-Net takes no class markers (see
-/// [`HNet`]). The network can still open a sequence with learnable rows of its
-/// own ([`Self::start_emb`]). They go in front of the H-Net, as its first
-/// rows, so the H-Net routes and chunks them like any other row.
-/// [`Self::forward_opened`] puts them in front of a new sequence, and
-/// [`Self::prime`] steps them alone. Then the output of the last start row
-/// predicts the first token, and a sampler needs no seed token.
+/// **Start embeddings.** A layer stack of an H-Net takes no class markers
+/// (see [`HNet`]). The network can still open a sequence with learnable
+/// embeddings of its own ([`Self::start_emb`]). They go in front of the
+/// H-Net input, at its first positions, so the H-Net routes and chunks them
+/// like any other token. [`Self::forward_opened`] puts them in front of a new
+/// sequence, and [`Self::prime`] steps them alone. Then the output at the last
+/// start embedding predicts the first token, and a sampler needs no seed
+/// token.
 #[derive(Module, Debug)]
 pub struct HNetVocabNetwork<E: Module, M: Module> {
     /// Token embedding table, weight shape `[padded_vocab, d₀]`.
@@ -38,7 +39,7 @@ pub struct HNetVocabNetwork<E: Module, M: Module> {
     pub lm_head: Option<Linear>,
     /// The flag output: one logit per position (`d₀ → 1`).
     pub flag_head: Linear,
-    /// The start rows, `[n_start, d₀]` (`None` ⇒ none).
+    /// The start embeddings, `[n_start, d₀]` (`None` ⇒ none).
     pub start_emb: Option<Param<Tensor<2>>>,
 }
 
@@ -62,15 +63,15 @@ where
         (self.heads(y), caches, routing)
     }
 
-    /// The number of start rows.
+    /// The number of start embeddings.
     pub fn n_start(&self) -> usize {
         self.start_emb.as_ref().map_or(0, |emb| emb.dims()[0])
     }
 
-    /// [`Self::forward`] over a **new** sequence, with the start rows in front
-    /// of it: logits `[batch, n_start + sequence, padded_vocab + 1]`. The logits
-    /// of the last start row predict the first token. `pad` marks the padding
-    /// of `x` (the start rows are always real).
+    /// [`Self::forward`] over a **new** sequence, with the start embeddings in
+    /// front of it: logits `[batch, n_start + sequence, padded_vocab + 1]`. The
+    /// logits at the last start embedding predict the first token. `pad` marks
+    /// the padding of `x` (the start embeddings are never padding).
     pub fn forward_opened(
         &self,
         x: Tensor<3, Int>,
@@ -113,10 +114,10 @@ where
         (self.heads(y.unsqueeze_dim(1)).squeeze_dim(1), caches, routing)
     }
 
-    /// Step the start rows alone, from a new sequence, for `batch` slots.
-    /// Returns the logits of the last start row (which predict the first
-    /// token) and the caches, or `None` when there are no start rows. `prime`
-    /// then `step` runs what [`Self::forward_opened`] runs.
+    /// Step the start embeddings alone, from a new sequence, for `batch` rows.
+    /// Returns the logits at the last start embedding (which predict the first
+    /// token) and the caches, or `None` when there are no start embeddings.
+    /// `prime` then `step` runs what [`Self::forward_opened`] runs.
     pub fn prime(&self, batch: usize, mode: StepMode) -> Option<(Tensor<2>, HNetCaches<E, M>)>
     where
         E::Caches: CacheTensors,

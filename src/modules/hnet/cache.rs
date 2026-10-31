@@ -1,8 +1,8 @@
 //! The caches of an [`HNet`], and the per-row operations that
-//! its `step` does on the cache of a whole inner network.
+//! its `step` does on the cache of a whole inner H-Net.
 //!
-//! A `step` runs the inner network only on the rows that start a chunk. So it
-//! needs three things that do not depend on the block family:
+//! A `step` runs the inner H-Net only on the rows whose token starts a chunk.
+//! So it needs three things that do not depend on the block family:
 //!
 //! - `select_rows`: per row, the new cache or the old one.
 //! - `gather_rows`: some rows of a cache, as a smaller batch.
@@ -21,19 +21,19 @@ pub struct HNetStageCache<E: Block> {
     pub encoder: E::Caches,
     /// The state of the router.
     pub router: RouterCache,
-    /// The smoothed chunk `z̄` of the last chunk of each slot, `[batch,
-    /// d_model]`: the carry of the EMA of the dechunking layer.
+    /// The smoothed chunk `z̄` of the last chunk of each row, `[batch,
+    /// d_model]`: the carry of the EMA of the dechunking.
     pub smooth_bd: Tensor<2>,
     /// The caches of the decoder stack.
     pub decoder: E::Caches,
 }
 
 /// The caches of a whole [`HNet`](super::HNet): one [`HNetStageCache`] per
-/// stage (outermost first), and the caches of the main network.
+/// stage (outermost first), and the caches of the main stack.
 pub struct HNetCaches<E: Block, M: Block> {
     /// One cache per stage, outermost first.
     pub stages: Vec<HNetStageCache<E>>,
-    /// The caches of the main network.
+    /// The caches of the main stack.
     pub main: M::Caches,
 }
 

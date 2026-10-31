@@ -4,16 +4,17 @@
 //! the model config of a consumer is a shape plus its block configs:
 //! `{ shape: HNetShape, stage_blocks: Vec<CE>, main_block: CM }`. The block
 //! config of stage `s` sets the width of that stage, and it builds both its
-//! encoder and its decoder. Each of the three stacks of a stage has its own
+//! encoder and its decoder. Each layer stack (the encoder and the decoder of
+//! each stage, and the main stack) has its own
 //! [`NetworkShape`](crate::modules::NetworkShape).
 //!
 //! **The init.** Each stack takes the
 //! [`InitPolicy`](crate::utils::InitPolicy) of its own shape. Its
 //! residual rescale counts the residual branches of every stack from the
 //! outermost encoder down to that stack, as the reference does. Stage `s`
-//! counts the encoders and decoders of stages `0..=s`. The main network
-//! counts those and its own. The router (identity), the residual of the
-//! dechunking layer (zero) and the width vectors (zero) keep their own init.
+//! counts the encoders and decoders of stages `0..=s`. The main stack counts
+//! those and its own. The router (identity), the residual of the dechunking
+//! (zero) and the width vectors (zero) keep their own init.
 
 use crate::modules::hnet::{HNet, HNetMain, HNetStage, HNetVocabNetwork, Router};
 use crate::modules::network::padded_vocab;
@@ -36,9 +37,9 @@ pub struct HNetStageShape {
 /// The block-independent half of an [`HNet`] config.
 #[derive(Config, Debug)]
 pub struct HNetShape {
-    /// The stages, outermost first. Empty ⇒ the main network alone.
+    /// The stages, outermost first. Empty ⇒ the main stack alone.
     pub stages: Vec<HNetStageShape>,
-    /// The main network.
+    /// The main stack.
     pub main: NetworkShape,
     /// See [`HNet::chunk_multiple`].
     #[config(default = 1)]
@@ -64,7 +65,7 @@ fn init_stack<C: BlockConfig + Clone>(
 ) -> Layers<C::Block> {
     assert!(
         shape.class_latents.is_empty(),
-        "the {what} of an H-Net takes no class latents: they would move the rows that the chunks point at"
+        "the {what} of an H-Net takes no class latents: they would move the positions that the chunks point at"
     );
     let layers = shape.layers(block.clone()).init(device);
     match &shape.init {
@@ -136,7 +137,7 @@ impl HNetShape {
             stages,
             main: HNetMain {
                 pad_dimension: pad_dimension(d_in, d),
-                layers: init_stack(&self.main, main_block, main_depth, "main network", device),
+                layers: init_stack(&self.main, main_block, main_depth, "main stack", device),
                 norm: RmsNormConfig::new(d).init(device),
             },
             chunk_multiple: self.chunk_multiple,
@@ -147,8 +148,8 @@ impl HNetShape {
     /// The [`MuonPlan`](crate::optim::MuonPlan) of the H-Net: the plan of each
     /// stack at its own block config, scoped to that stack
     /// ([`MuonPlan::within`](crate::optim::MuonPlan::within)). The router, the
-    /// residual of the dechunking layer and the width vectors stay on the
-    /// fallback optimizer.
+    /// residual of the dechunking and the width vectors stay on the fallback
+    /// optimizer.
     #[cfg(feature = "optim")]
     pub fn muon_plan<CE: BlockConfig, CM: BlockConfig>(
         &self,
@@ -183,7 +184,7 @@ pub struct HNetVocabShape {
     /// Burn). The embedding keeps `N(0, 1)`, as in the reference.
     #[config(default = "None")]
     pub head_init: Option<InitPolicy>,
-    /// The number of learnable start rows that open a sequence (see
+    /// The number of learnable start embeddings that open a sequence (see
     /// [`HNetVocabNetwork`]). `0` ⇒ none.
     #[config(default = 0)]
     pub n_start_tokens: usize,

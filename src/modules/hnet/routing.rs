@@ -4,18 +4,18 @@
 //!   pₜ = ½·(1 − cos(W_q x̂ₜ₋₁, W_k x̂ₜ)) ∈ [0, 1]      bₜ = [pₜ > ½]
 //! ```
 //!
-//! `x̂` is the output of the encoder. A row starts a new chunk (`bₜ = 1`) when
-//! it turns away from the row before it. The first row of a sequence has no
-//! row before it, so `p₀ = 1`. The paper writes `q` on the current row and `k`
-//! on the previous row. The reference code (and this module) projects the
-//! previous row with `W_q` and the current row with `W_k`. Both maps are
-//! learnable and start as the identity, so the two forms span the same
-//! function class. The reference also decides `p > ½`, not `p ≥ ½`, in both
-//! `forward` and `step`.
+//! `x̂` is the output of the encoder. A position starts a new chunk (`bₜ = 1`)
+//! when its `x̂` turns away from the `x̂` of the position before it. The first
+//! position of a sequence has no position before it, so `p₀ = 1`. The paper
+//! writes `q` on the current position and `k` on the previous position. The
+//! reference code (and this module) projects the previous position with `W_q`
+//! and the current position with `W_k`. Both maps are learnable and start as
+//! the identity, so the two forms span the same function class. The reference
+//! also decides `p > ½`, not `p ≥ ½`, in both `forward` and `step`.
 //!
-//! The router has a state: the `x̂` of the last row, and whether the slot saw a
-//! row at all ([`RouterCache`]). So a chunked `forward` and a `step` both
-//! continue a sequence where the previous call stopped.
+//! The router has a state: the `x̂` of the last position, and whether the row
+//! saw a token at all ([`RouterCache`]). So a `forward` of one window and a
+//! `step` both continue a sequence where the previous call stopped.
 
 use crate::utils::{div_eps, downcast, upcast};
 use burn::nn::{Linear, LinearConfig};
@@ -26,9 +26,9 @@ use burn::prelude::*;
 /// outputs.
 #[derive(Module, Debug)]
 pub struct Router {
-    /// The map of the previous row (`W_q`).
+    /// The map of the previous position (`W_q`).
     pub q_proj: Linear,
-    /// The map of the current row (`W_k`).
+    /// The map of the current position (`W_k`).
     pub k_proj: Linear,
 }
 
@@ -46,19 +46,20 @@ impl Router {
         Self { q_proj: identity(), k_proj: identity() }
     }
 
-    /// `pₜ` for every row of `x_bsd`, continued from `cache`. A slot that saw
-    /// no row before this call gets `p₀ = 1`.
+    /// `pₜ` for every position of `x_bsd`, continued from `cache`. A row that
+    /// saw no token before this call gets `p₀ = 1`.
     pub fn probs(&self, x_bsd: Tensor<3>, cache: &RouterCache) -> Tensor<2> {
         let [batch, sequence, _d_model] = x_bsd.dims();
-        // The previous row of every row: the cached row, then all rows but the
-        // last.
+        // The previous vector of each position: the cached vector, then the
+        // vectors of all positions but the last.
         let cached_b1d = cache.last_bd.clone().unsqueeze_dim(1);
         let prev_bsd = match sequence {
             1 => cached_b1d,
             _ => Tensor::cat(vec![cached_b1d, x_bsd.clone().narrow(1, 0, sequence - 1)], 1),
         };
         let p_bs = cos_distance(self.q_proj.forward(prev_bsd), self.k_proj.forward(x_bsd));
-        // `p₀ = 1` where the slot is new. Only column 0 can be the first row.
+        // `p₀ = 1` where the row is new. Only column 0 can hold the first
+        // token.
         let fresh_b1 = cache.seen_b.clone().lower_elem(0.5).reshape([batch, 1]);
         let first_bs = Tensor::<1, Int>::arange(0..sequence as i64, &p_bs.device())
             .reshape([1, sequence])
@@ -68,7 +69,7 @@ impl Router {
         p_bs.mask_fill(force_bs, 1.0)
     }
 
-    /// `p` of one new row `x_bd`, continued from `cache`.
+    /// `p` of the new token `x_bd` of each row, continued from `cache`.
     pub fn step_prob(&self, x_bd: Tensor<2>, cache: &RouterCache) -> Tensor<1> {
         let p_bs = cos_distance(
             self.q_proj.forward(cache.last_bd.clone()).unsqueeze_dim(1),
@@ -85,7 +86,7 @@ impl Router {
 /// f32 when the inputs are f16/bf16.
 ///
 /// The clamp is on `‖v‖²`, before the square root. A zero vector (the cached
-/// row of a new slot) then gets a finite derivative. The derivative of `√0`
+/// vector of a new row) then gets a finite derivative. The derivative of `√0`
 /// is infinite, and `0·∞` would put a NaN into the gradient.
 fn cos_distance(q_bsd: Tensor<3>, k_bsd: Tensor<3>) -> Tensor<2> {
     let (q_bsd, dtype) = upcast(q_bsd);
@@ -101,16 +102,16 @@ fn cos_distance(q_bsd: Tensor<3>, k_bsd: Tensor<3>) -> Tensor<2> {
 /// The state of a [`Router`] between calls.
 #[derive(Clone, Debug)]
 pub struct RouterCache {
-    /// The encoder output `x̂` of the last real row of each slot,
+    /// The encoder output `x̂` at the last real token of each row,
     /// `[batch, d_model]`.
     pub last_bd: Tensor<2>,
-    /// `1` where the slot saw a real row, else `0`, `[batch]`. A float (not a
-    /// bool), so that a captured step can write it back in place.
+    /// `1` where the row saw a real token, else `0`, `[batch]`. A float (not
+    /// a bool), so that a captured step can write it back in place.
     pub seen_b: Tensor<1>,
 }
 
 impl RouterCache {
-    /// The state of a slot that saw no row.
+    /// The state of `batch` rows that saw no token.
     pub fn zeros(batch: usize, d_model: usize, device: &Device) -> Self {
         Self {
             last_bd: Tensor::zeros([batch, d_model], device),
@@ -118,9 +119,9 @@ impl RouterCache {
         }
     }
 
-    /// The state after the rows `x_bsd` of a `forward`. `pad_bs` (right
-    /// padding, `None` ⇒ none) marks the rows that are absent. A slot with no
-    /// real row keeps its state.
+    /// The state after the positions `x_bsd` of a `forward`. `pad_bs` (right
+    /// padding, `None` ⇒ none) marks the absent positions. A row with no real
+    /// token keeps its state.
     pub(crate) fn after_rows(self, x_bsd: Tensor<3>, pad_bs: Option<&Tensor<2, Bool>>) -> Self {
         let [batch, sequence, d_model] = x_bsd.dims();
         let Some(pad_bs) = pad_bs else {
@@ -149,17 +150,19 @@ impl RouterCache {
 pub struct Routing {
     /// `pₜ`, `[batch, sequence]`.
     pub prob_bs: Tensor<2>,
-    /// `bₜ = [pₜ > ½]`, `[batch, sequence]`. It is `false` on every absent
-    /// row.
+    /// `bₜ = [pₜ > ½]`, `[batch, sequence]`: `true` at each chunk boundary.
+    /// It is `false` on every absent position.
     pub boundary_bs: Tensor<2, Bool>,
-    /// The absent rows of this stage, `[batch, sequence]` (`None` ⇒ none):
-    /// the padding of the call. In a `step`, a row that did not reach this
-    /// stage (its outer stage started no chunk) is also absent.
+    /// The absent positions of this stage, `[batch, sequence]` (`None` ⇒
+    /// none): the padding of the call. A position is also absent when its
+    /// token did not reach this stage (the outer stage started no chunk
+    /// there). This occurs in a `step`, and in a `forward` that no token of
+    /// this stage reached.
     pub pad_bs: Option<Tensor<2, Bool>>,
 }
 
 impl Routing {
-    /// A stage that no row reached in a `step` (every row absent).
+    /// A stage that no token reached in a call (every position absent).
     pub(crate) fn absent(batch: usize, device: &Device) -> Self {
         Self {
             prob_bs: Tensor::zeros([batch, 1], device),
@@ -168,8 +171,9 @@ impl Routing {
         }
     }
 
-    /// `(F, G)`, each `[1]`: the share of the real rows that start a chunk, and
-    /// the mean `p` over the real rows. A call with no real row gives `0`.
+    /// `(F, G)`, each `[1]`: the share of the real tokens that start a chunk,
+    /// and the mean `p` over the real tokens. A call with no real token gives
+    /// `0`.
     pub fn fractions(&self) -> (Tensor<1>, Tensor<1>) {
         let boundary_bs = self.boundary_bs.clone().float();
         match &self.pad_bs {
@@ -184,8 +188,8 @@ impl Routing {
         }
     }
 
-    /// The ratio loss of the paper, toward a mean chunk of `target` rows
-    /// (`N > 1`), `[1]`:
+    /// The ratio loss of the paper, toward a mean chunk length of `target`
+    /// positions (`N > 1`), `[1]`:
     ///
     /// ```text
     ///   L = N/(N−1) · ((N−1)·F·G + (1−F)·(1−G))
@@ -195,7 +199,7 @@ impl Routing {
     /// the router. At `F = G = 1/N`, `L = 1`. The reference weights it by
     /// `α = 0.03` per stage, beside the language-model loss.
     pub fn ratio_loss(&self, target: f64) -> Tensor<1> {
-        assert!(target > 1.0, "the target chunk length must be above 1 row, got {target}");
+        assert!(target > 1.0, "the target chunk length must be above 1 position, got {target}");
         let (f, g) = self.fractions();
         let a = f.clone() * g.clone() * (target - 1.0);
         let b = (f.neg() + 1.0) * (g.neg() + 1.0);
