@@ -115,7 +115,8 @@ For a later rename:
   `splice_class_embeddings` of ticket 02. The glossary has no term for them.
   Open for the user: does the glossary need an entry for **start embedding**
   (and for **scan block**)? A start embedding is close to a **class marker**,
-  but `HNet` refuses class markers.
+  but `HNet` refuses class markers. The user chose to add **start
+  embedding** to `GLOSSARY.md` (the H-Net group).
 - "The chunking layer" and "the dechunking layer" (the names of the paper)
   are now "the chunking" and "the dechunking". In the glossary, a **layer** is
   a Pre-LN residual around one block.

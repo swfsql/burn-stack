@@ -280,3 +280,9 @@ _Avoid_: main network
 What a stage runs on its chunks: the later stages and the main stack. An H-Net
 with no stage is its main stack alone.
 _Avoid_: inner network
+
+**Start embedding**:
+A learnable embedding that a vocab network over an H-Net puts in front of a
+new sequence. It is not a class marker: it only opens a sequence, and the
+output at the last start embedding predicts the first token.
+_Avoid_: start row, start token
