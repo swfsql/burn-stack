@@ -228,7 +228,7 @@ fn padded_multi_gate_layers_are_each_slot_alone() {
     let residuals = ResidualsConfig::MultiGate {
         n_stream: 2,
         init_bias: 1.0,
-        init_bias_step: 0.0,
+        init_bias_offset: 0.0,
         per_virtual_layer: false,
     };
     let layers = marked_layers(residuals, &device);

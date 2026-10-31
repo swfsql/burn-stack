@@ -143,17 +143,19 @@ this ticket renamed these:
 | `an_untied_stack_is_the_unshared_stack_of_its_application_views`, local `unshared` | `an_untied_stack_equals_the_stack_of_its_application_views`, `view_stack` | `reference/tests.rs` |
 | `step_matches_the_matching_forward_row`, local `row` | `step_matches_the_matching_forward_position`, `x_t` | `mlp/tests.rs` |
 | locals `step`, `half_step` | `machine_eps`, `half_spacing` | the tests of the losses and the norms |
+| `init_bias_step`, `with_init_bias_step` | `init_bias_offset`, `with_init_bias_offset` | `MultiGateResidualConfig`, `ResidualsConfig::MultiGate` |
 
 The renamed functions have no caller in burn-mamba or burn-deltanet. The
 docs of the two renamed functions now use the glossary terms. The rest of the
 prose of `utils/` stays for ticket 04.
 
-One identifier stays for a decision of the user:
-
-- `init_bias_step` (`MultiGateResidualConfig`, `ResidualsConfig::MultiGate`):
-  "step" for the offset between the gate biases of two streams. The prose
-  says "offset". The field is part of the serialized config, burn-mamba and
-  burn-deltanet set it, and their saved config generators write it as a key.
+`init_bias_offset` is part of the serialized config. A saved config with the
+old key stops loading. (The `Config` derive of Burn does not pass a serde
+alias through.) The two consumers set the field, so they do not compile
+against burn-stack until they rename it too. The user chose to rename it here
+only. burn-mamba has the ticket
+`.scratch/glossary-followups/issues/05-init-bias-offset-rename.md`.
+burn-deltanet (two sites) has no ticket yet.
 
 burn-mamba has a copy of the untied-stack test with the old names
 (`src/unified/tests/untied.rs`: `assert_untied_stack_is_its_unshared_views`,

@@ -60,10 +60,10 @@
 //! That formula assumes one *shared* timescale for all `n` streams, which is a
 //! choice for long training runs. It buys stability, because it makes the
 //! contribution of every layer small (`σ(b) ∝ 1/√L`). The streams then differ
-//! only by their seeds. [`MultiGateResidualConfig::init_bias_step`] instead
-//! spreads the initial biases over the streams, from an update-biased stream
-//! to a carry-biased one. So the set covers several depth-timescales from the
-//! first training step. `0` keeps the uniform init of the paper.
+//! only by their seeds. [`MultiGateResidualConfig::init_bias_offset`]
+//! instead spreads the initial biases over the streams, from an update-biased
+//! stream to a carry-biased one. So the set covers several depth-timescales
+//! from the first training step. `0` keeps the uniform init of the paper.
 //!
 //! **Output scale.** Every operation here is a convex combination, and the
 //! aggregator is a *mean* over the `n` streams. So the stack output stays
@@ -267,12 +267,12 @@ pub struct MultiGateResidualConfig {
     #[config(default = 0.0)]
     pub init_bias: f64,
     /// Per-stream offset on top of [`Self::init_bias`]. Stream `i` starts at
-    /// `init_bias + i · init_bias_step`. So a negative offset gives the streams
-    /// **different timescales**: from an update-biased first stream to a
-    /// carry-biased last one. `0` (the default) starts them all equal, as the
+    /// `init_bias + i · init_bias_offset`. So a negative offset gives the
+    /// streams **different timescales**: from an update-biased first stream to
+    /// a carry-biased last one. `0` (the default) starts them all equal, as the
     /// paper prescribes.
     #[config(default = 0.0)]
-    pub init_bias_step: f64,
+    pub init_bias_offset: f64,
 }
 
 impl MultiGateResidualConfig {
@@ -298,13 +298,13 @@ impl MultiGateResidualConfig {
     }
 
     /// Allocate the MGR parameters of one layer: `w⁽ᵝ⁾` and `w⁽ᵅ⁾` zero, and
-    /// `b⁽ᵝ⁾` the arithmetic ramp `init_bias + i · init_bias_step`.
+    /// `b⁽ᵝ⁾` the arithmetic ramp `init_bias + i · init_bias_offset`.
     pub fn init(&self, device: &Device) -> MultiGateResidual {
         let ramp = Tensor::<1, Int>::arange(0..self.n_stream as i64, device).float();
         MultiGateResidual {
             w_beta: Initializer::Zeros.init::<1, _>([self.d_model], device),
             w_alpha: Initializer::Zeros.init::<1, _>([self.d_model], device),
-            b_beta: Param::from_tensor(ramp * self.init_bias_step + self.init_bias),
+            b_beta: Param::from_tensor(ramp * self.init_bias_offset + self.init_bias),
             d_model: self.d_model,
             n_stream: self.n_stream,
         }
@@ -369,9 +369,9 @@ pub enum ResidualsConfig {
         /// [`MultiGateResidualConfig::init_bias`]).
         init_bias: f64,
         /// Per-stream gate-bias offset (see
-        /// [`MultiGateResidualConfig::init_bias_step`]). `0` starts every
+        /// [`MultiGateResidualConfig::init_bias_offset`]). `0` starts every
         /// stream equal.
-        init_bias_step: f64,
+        init_bias_offset: f64,
         /// `true` ⇒ one MGR per *virtual* layer. `false` ⇒ one per *real*
         /// layer (reused across virtual passes). See [`MultiGate::per_virtual`].
         per_virtual_layer: bool,
@@ -395,7 +395,7 @@ impl ResidualsConfig {
             ResidualsConfig::MultiGate {
                 n_stream,
                 init_bias,
-                init_bias_step,
+                init_bias_offset,
                 per_virtual_layer,
             } => {
                 let count = if *per_virtual_layer {
@@ -407,7 +407,7 @@ impl ResidualsConfig {
                     .map(|_| {
                         MultiGateResidualConfig::new(d_model, *n_stream)
                             .with_init_bias(*init_bias)
-                            .with_init_bias_step(*init_bias_step)
+                            .with_init_bias_offset(*init_bias_offset)
                             .init(device)
                     })
                     .collect();

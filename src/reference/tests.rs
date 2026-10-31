@@ -278,7 +278,7 @@ fn grad_horizon_mask_alternates_and_keeps_forward_step_parity() {
         ResidualsConfig::MultiGate {
             n_stream: 3,
             init_bias: 2.0,
-            init_bias_step: 0.0,
+            init_bias_offset: 0.0,
             per_virtual_layer: false,
         },
     ] {
@@ -413,7 +413,7 @@ fn multi_gate_forward_equals_step_and_stays_bounded() {
         residuals: ResidualsConfig::MultiGate {
             n_stream: 3,
             init_bias: 2.0,
-            init_bias_step: 0.0,
+            init_bias_offset: 0.0,
             per_virtual_layer: false,
         },
         ..layers_builder(4)
