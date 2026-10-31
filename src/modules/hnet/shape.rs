@@ -44,9 +44,9 @@ pub struct HNetShape {
     /// See [`HNet::chunk_multiple`].
     #[config(default = 1)]
     pub chunk_multiple: usize,
-    /// See [`HNet::smooth_block`].
+    /// See [`HNet::smooth_scan_block`].
     #[config(default = 64)]
-    pub smooth_block: usize,
+    pub smooth_scan_block: usize,
 }
 
 /// The residual branches of a stack (for the init rescale).
@@ -141,7 +141,7 @@ impl HNetShape {
                 norm: RmsNormConfig::new(d).init(device),
             },
             chunk_multiple: self.chunk_multiple,
-            smooth_block: self.smooth_block,
+            smooth_scan_block: self.smooth_scan_block,
         }
     }
 
@@ -187,7 +187,7 @@ pub struct HNetVocabShape {
     /// The number of learnable start embeddings that open a sequence (see
     /// [`HNetVocabNetwork`]). `0` ⇒ none.
     #[config(default = 0)]
-    pub n_start_tokens: usize,
+    pub n_start_embeddings: usize,
 }
 
 impl HNetVocabShape {
@@ -213,7 +213,7 @@ impl HNetVocabShape {
             lm_head: (!self.missing_lm_head)
                 .then(|| head(LinearConfig::new(d, vocab).with_bias(false).init(device))),
             flag_head: head(LinearConfig::new(d, 1).init(device)),
-            start_emb: init_class_emb(self.n_start_tokens, d, device),
+            start_emb: init_class_emb(self.n_start_embeddings, d, device),
         }
     }
 

@@ -122,7 +122,7 @@ impl RouterCache {
     /// The state after the positions `x_bsd` of a `forward`. `pad_bs` (right
     /// padding, `None` ⇒ none) marks the absent positions. A row with no real
     /// token keeps its state.
-    pub(crate) fn after_rows(self, x_bsd: Tensor<3>, pad_bs: Option<&Tensor<2, Bool>>) -> Self {
+    pub(crate) fn after_positions(self, x_bsd: Tensor<3>, pad_bs: Option<&Tensor<2, Bool>>) -> Self {
         let [batch, sequence, d_model] = x_bsd.dims();
         let Some(pad_bs) = pad_bs else {
             let last_bd = x_bsd.narrow(1, sequence - 1, 1).reshape([batch, d_model]);
@@ -131,12 +131,12 @@ impl RouterCache {
         let len_b = pad_bs.clone().bool_not().int().sum_dim(1).reshape([batch]);
         let has_b = len_b.clone().greater_elem(0);
         let idx_b11 = (len_b - 1).clamp_min(0).reshape([batch, 1, 1]);
-        let row_bd = x_bsd
+        let x_last_bd = x_bsd
             .gather(1, idx_b11.expand([batch, 1, d_model]))
             .reshape([batch, d_model]);
         let has_bd = has_b.clone().reshape([batch, 1]).expand([batch, d_model]);
         Self {
-            last_bd: self.last_bd.mask_where(has_bd, row_bd),
+            last_bd: self.last_bd.mask_where(has_bd, x_last_bd),
             seen_b: self.seen_b.mask_fill(has_b, 1.0),
         }
     }
@@ -152,7 +152,7 @@ pub struct Routing {
     pub prob_bs: Tensor<2>,
     /// `bₜ = [pₜ > ½]`, `[batch, sequence]`: `true` at each chunk boundary.
     /// It is `false` on every absent position.
-    pub boundary_bs: Tensor<2, Bool>,
+    pub chunk_boundary_bs: Tensor<2, Bool>,
     /// The absent positions of this stage, `[batch, sequence]` (`None` ⇒
     /// none): the padding of the call. A position is also absent when its
     /// token did not reach this stage (the outer stage started no chunk
@@ -166,7 +166,7 @@ impl Routing {
     pub(crate) fn absent(batch: usize, device: &Device) -> Self {
         Self {
             prob_bs: Tensor::zeros([batch, 1], device),
-            boundary_bs: Tensor::<2, Int>::zeros([batch, 1], device).equal_elem(1),
+            chunk_boundary_bs: Tensor::<2, Int>::zeros([batch, 1], device).equal_elem(1),
             pad_bs: Some(Tensor::<2, Int>::zeros([batch, 1], device).equal_elem(0)),
         }
     }
@@ -175,13 +175,13 @@ impl Routing {
     /// and the mean `p` over the real tokens. A call with no real token gives
     /// `0`.
     pub fn fractions(&self) -> (Tensor<1>, Tensor<1>) {
-        let boundary_bs = self.boundary_bs.clone().float();
+        let chunk_boundary_bs = self.chunk_boundary_bs.clone().float();
         match &self.pad_bs {
-            None => (boundary_bs.mean(), self.prob_bs.clone().mean()),
+            None => (chunk_boundary_bs.mean(), self.prob_bs.clone().mean()),
             Some(pad_bs) => {
                 let real_bs = pad_bs.clone().bool_not().float();
                 let n = real_bs.clone().sum().clamp_min(1.0);
-                let f = boundary_bs.sum() / n.clone();
+                let f = chunk_boundary_bs.sum() / n.clone();
                 let g = (self.prob_bs.clone() * real_bs).sum() / n;
                 (f, g)
             }

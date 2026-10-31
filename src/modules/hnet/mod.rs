@@ -166,7 +166,7 @@ pub struct HNet<E: Module, M: Module> {
     pub chunk_multiple: usize,
     /// The length of a scan block of the smoothing ([`smooth()`]), in chunks.
     #[module(skip)]
-    pub smooth_block: usize,
+    pub smooth_scan_block: usize,
 }
 
 /// `x` with the vector `pad` appended at each position (on the last axis), or
@@ -386,8 +386,8 @@ where
             Some(pad_bs) => b_bs.bool_and(pad_bs.clone().bool_not()),
             None => b_bs,
         };
-        routing.push(Routing { prob_bs: p_bs.clone(), boundary_bs: b_bs.clone(), pad_bs: pad_bs.clone() });
-        let router = router.after_rows(xh_bsd.clone(), pad_bs.as_ref());
+        routing.push(Routing { prob_bs: p_bs.clone(), chunk_boundary_bs: b_bs.clone(), pad_bs: pad_bs.clone() });
+        let router = router.after_positions(xh_bsd.clone(), pad_bs.as_ref());
 
         // Chunk, run the inner H-Net, and smooth. `z_all` is `[carry, z̄…]`.
         let plan = chunk::plan(b_bs.clone(), self.chunk_multiple);
@@ -397,11 +397,11 @@ where
             routing.extend((s + 1..self.stages.len()).map(|_| Routing::absent(batch, &device)));
             (carry_bd.unsqueeze_dim(1), rest)
         } else {
-            let x_inner_bkd = chunk::gather_rows(xh_bsd, plan.src_bk.clone());
+            let x_inner_bkd = chunk::gather_positions(xh_bsd, plan.src_bk.clone());
             let (z_inner_bkd, rest) =
                 self.forward_from(s + 1, x_inner_bkd, rest, options, plan.pad_bk.clone(), routing);
             let p_bk = p_bs.clone().gather(1, plan.src_bk.clone());
-            let zbar_bkd = smooth(z_inner_bkd, p_bk, plan.pad_bk.clone(), carry_bd.clone(), self.smooth_block);
+            let zbar_bkd = smooth(z_inner_bkd, p_bk, plan.pad_bk.clone(), carry_bd.clone(), self.smooth_scan_block);
             (Tensor::cat(vec![carry_bd.unsqueeze_dim(1), zbar_bkd], 1), rest)
         };
         // The inner padding holds the state. So the last column is the last
@@ -453,7 +453,7 @@ where
         let b_b = p_b.clone().greater_elem(0.5);
         routing.push(Routing {
             prob_bs: p_b.clone().reshape([batch, 1]),
-            boundary_bs: b_b.clone().reshape([batch, 1]),
+            chunk_boundary_bs: b_b.clone().reshape([batch, 1]),
             pad_bs: None,
         });
         let router = RouterCache { last_bd: xh_bd.clone(), seen_b: head.router.seen_b.ones_like() };
@@ -535,7 +535,7 @@ impl Routing {
         let pad_sub = self.pad_bs.unwrap_or_else(|| Tensor::<2>::zeros([rows, sequence], &device).greater_elem(0.5));
         Self {
             prob_bs: merge_f(self.prob_bs, 0.0),
-            boundary_bs: merge_b(self.boundary_bs, 0.0),
+            chunk_boundary_bs: merge_b(self.chunk_boundary_bs, 0.0),
             pad_bs: Some(merge_b(pad_sub, 1.0)),
         }
     }
@@ -548,7 +548,7 @@ impl Routing {
         let absent_bs = reached_bs.clone().bool_not();
         Self {
             prob_bs: self.prob_bs,
-            boundary_bs: self.boundary_bs.bool_and(reached_bs),
+            chunk_boundary_bs: self.chunk_boundary_bs.bool_and(reached_bs),
             pad_bs: Some(match self.pad_bs {
                 Some(pad_bs) => pad_bs.bool_or(absent_bs),
                 None => absent_bs,

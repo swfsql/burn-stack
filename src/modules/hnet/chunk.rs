@@ -41,12 +41,12 @@ pub(crate) struct ChunkPlan {
 /// every absent position). `K` is rounded up to a multiple of `multiple`, so
 /// that a run sees fewer distinct inner shapes. This reads the chunk counts to
 /// the host.
-pub(crate) fn plan(boundary_bs: Tensor<2, Bool>, multiple: usize) -> ChunkPlan {
-    let [batch, sequence] = boundary_bs.dims();
+pub(crate) fn plan(chunk_boundary_bs: Tensor<2, Bool>, multiple: usize) -> ChunkPlan {
+    let [batch, sequence] = chunk_boundary_bs.dims();
     assert!(sequence > 0, "an H-Net call needs at least one position");
     assert!(multiple > 0, "the chunk-length multiple must be at least 1");
-    let device = boundary_bs.device();
-    let upto_bs = prefix_sum::<2, 3, Int>(boundary_bs.clone().int(), 1);
+    let device = chunk_boundary_bs.device();
+    let upto_bs = prefix_sum::<2, 3, Int>(chunk_boundary_bs.clone().int(), 1);
     let count_b1 = upto_bs.clone().narrow(1, sequence - 1, 1);
     let counts: Vec<i64> = count_b1.clone().into_data().iter::<i64>().collect();
     let max = counts.iter().copied().max().unwrap_or(0) as usize;
@@ -64,7 +64,7 @@ pub(crate) fn plan(boundary_bs: Tensor<2, Bool>, multiple: usize) -> ChunkPlan {
     let t_bs = Tensor::<1, Int>::arange(0..sequence as i64, &device)
         .reshape([1, sequence])
         .expand([batch, sequence]);
-    let slot_bs = (t_bs.clone() + len as i64).mask_where(boundary_bs, upto_bs.clone() - 1);
+    let slot_bs = (t_bs.clone() + len as i64).mask_where(chunk_boundary_bs, upto_bs.clone() - 1);
     let src_bk = Tensor::<2, Int>::zeros([batch, len + sequence], &device)
         .scatter(1, slot_bs, t_bs, IndexingUpdateOp::Add)
         .narrow(1, 0, len);
@@ -79,7 +79,7 @@ pub(crate) fn plan(boundary_bs: Tensor<2, Bool>, multiple: usize) -> ChunkPlan {
 }
 
 /// The positions `src_bk` of `x_bsd`: `[batch, K, d]`.
-pub(crate) fn gather_rows(x_bsd: Tensor<3>, src_bk: Tensor<2, Int>) -> Tensor<3> {
+pub(crate) fn gather_positions(x_bsd: Tensor<3>, src_bk: Tensor<2, Int>) -> Tensor<3> {
     let [batch, _sequence, d] = x_bsd.dims();
     let [_batch, k] = src_bk.dims();
     x_bsd.gather(1, src_bk.unsqueeze_dim::<3>(2).expand([batch, k, d]))

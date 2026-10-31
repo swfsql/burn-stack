@@ -44,7 +44,7 @@ pub const P_MIN: f64 = 1e-4;
 pub const P_MAX: f64 = 1.0 - 1e-4;
 
 /// The EMA over `x_bkd` (`[batch, K, d]`) from `carry_bd` (`[batch, d]`), in
-/// scan blocks of `block` chunks. Out: `z̄`, `[batch, K, d]`.
+/// scan blocks of `scan_block` chunks. Out: `z̄`, `[batch, K, d]`.
 ///
 /// `p_bk` (`[batch, K]`) is the router probability of each chunk. It is
 /// clamped to `[P_MIN, P_MAX]`. `pad_bk` (`None` ⇒ none) marks the absent
@@ -55,9 +55,9 @@ pub fn smooth(
     p_bk: Tensor<2>,
     pad_bk: Option<Tensor<2, Bool>>,
     carry_bd: Tensor<2>,
-    block: usize,
+    scan_block: usize,
 ) -> Tensor<3> {
-    assert!(block > 0, "the scan block of the smoothing must hold at least 1 chunk");
+    assert!(scan_block > 0, "the scan block of the smoothing must hold at least 1 chunk");
     let (x_bkd, dtype) = upcast(x_bkd);
     let (p_bk, _) = upcast(p_bk);
     let (carry_bd, _) = upcast(carry_bd);
@@ -71,8 +71,8 @@ pub fn smooth(
         ),
     };
     let device = x_bkd.device();
-    let n = k.div_ceil(block);
-    let l = if n == 1 { k } else { block };
+    let n = k.div_ceil(scan_block);
+    let l = if n == 1 { k } else { scan_block };
     let pad = n * l - k;
     // Pad with chunks that hold the state (P = 0, x = 0). They are after
     // every real chunk, so they change no output. The `narrow` at the end

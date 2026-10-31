@@ -22,7 +22,7 @@ fn shape(n_stages: usize) -> HNetShape {
         (0..n_stages).map(|_| HNetStageShape::new(stack(), stack())).collect(),
         stack(),
     )
-    .with_smooth_block(4)
+    .with_smooth_scan_block(4)
 }
 
 /// An H-Net whose stages have the widths `widths` and whose main stack has
@@ -72,14 +72,14 @@ fn step_unrolled(
     let [_batch, sequence, _d] = x.dims();
     let mut caches = caches;
     let mut ys = Vec::new();
-    let mut boundaries = Vec::new();
+    let mut chunk_boundaries = Vec::new();
     for t in 0..sequence {
         let (y, c, routing) = net.step(x.clone().narrow(1, t, 1).squeeze_dim(1), caches, mode);
         caches = Some(c);
         ys.push(y.unsqueeze_dim(1));
-        boundaries.push(routing[0].boundary_bs.clone());
+        chunk_boundaries.push(routing[0].chunk_boundary_bs.clone());
     }
-    (Tensor::cat(ys, 1), caches.unwrap(), boundaries)
+    (Tensor::cat(ys, 1), caches.unwrap(), chunk_boundaries)
 }
 
 // ---------------------------------------------------------------------------
@@ -126,7 +126,7 @@ fn smooth_equals_the_sequential_ema() {
 /// left) and the inner padding (rounded up to the multiple). It also checks
 /// the count of chunk boundaries at or before each position.
 #[test]
-fn chunk_plan_points_at_the_boundary_rows() {
+fn chunk_plan_points_at_the_chunk_boundaries() {
     let device = test_device();
     let b = Tensor::<2, Int>::from_data([[1, 0, 1, 1, 0], [1, 0, 0, 0, 0]], &device).equal_elem(1);
     let p = plan(b.clone(), 1);
@@ -153,7 +153,7 @@ fn ratio_loss_is_one_at_the_target() {
     let b = Tensor::<2, Int>::from_data([[1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]], &device).equal_elem(1);
     let pad = Tensor::<2, Int>::from_data([[0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1]], &device).equal_elem(1);
     let p = Tensor::<2>::full([1, 12], 0.25, &device).mask_fill(pad.clone(), 1.0);
-    let routing = Routing { prob_bs: p, boundary_bs: b, pad_bs: Some(pad) };
+    let routing = Routing { prob_bs: p, chunk_boundary_bs: b, pad_bs: Some(pad) };
     let loss = routing.ratio_loss(n).into_scalar::<f32>();
     assert!((loss - 1.0).abs() < dtype_tol(1e-5), "loss = {loss}");
 }
@@ -161,7 +161,7 @@ fn ratio_loss_is_one_at_the_target() {
 /// The router starts a chunk at the first position of a new sequence, and
 /// only there. A call that continues a cache has no forced chunk boundary.
 #[test]
-fn only_a_new_sequence_forces_its_first_boundary() {
+fn only_a_new_sequence_forces_its_first_chunk_boundary() {
     let device = test_device();
     let mut net = net(&[8], 8, &device);
     // W_q = 0 gives cos = 0, so p = ½ and no position starts a chunk on its
@@ -172,10 +172,10 @@ fn only_a_new_sequence_forces_its_first_boundary() {
 
     let (_, caches, routing) = net.forward(x.clone(), None, ((), ()), None);
     let first_only = [true, false, false, false, false, false];
-    assert_eq!(bools(routing[0].boundary_bs.clone()), first_only.repeat(2));
+    assert_eq!(bools(routing[0].chunk_boundary_bs.clone()), first_only.repeat(2));
 
     let (_, _, routing) = net.forward(x, Some(caches), ((), ()), None);
-    assert!(bools(routing[0].boundary_bs.clone()).iter().all(|b| !b));
+    assert!(bools(routing[0].chunk_boundary_bs.clone()).iter().all(|b| !b));
 }
 
 // ---------------------------------------------------------------------------
@@ -193,11 +193,11 @@ fn forward_equals_step_unrolled() {
         let x = randn([3, 12, widths[0]], &device);
         let (y_fwd, c_fwd, routing) = net.forward(x.clone(), None, ((), ()), None);
         for mode in [StepMode::Masked, StepMode::Gathered] {
-            let (y_step, c_step, boundaries) = step_unrolled(&net, x.clone(), None, mode);
+            let (y_step, c_step, chunk_boundaries) = step_unrolled(&net, x.clone(), None, mode);
             let tag = format!("{widths:?} → {main}, {mode:?}");
             assert_eq!(
-                bools(routing[0].boundary_bs.clone()),
-                bools(Tensor::cat(boundaries, 1)),
+                bools(routing[0].chunk_boundary_bs.clone()),
+                bools(Tensor::cat(chunk_boundaries, 1)),
                 "{tag}: the decisions differ"
             );
             assert!(max_rel_diff(y_fwd.clone(), y_step) < dtype_tol(TOL), "{tag}: outputs");
@@ -210,7 +210,7 @@ fn forward_equals_step_unrolled() {
 /// `forward`. The second window can open with positions before its first
 /// chunk boundary, which read the last chunk of the first window.
 #[test]
-fn forward_is_chunkable_through_the_cache() {
+fn forward_splits_into_windows_through_the_cache() {
     let device = test_device();
     let net = net(&[8, 8], 12, &device);
     let x = randn([2, 13, 8], &device);
@@ -225,7 +225,7 @@ fn forward_is_chunkable_through_the_cache() {
 /// at its real tokens, and its caches. A row with no real token keeps its
 /// incoming cache.
 #[test]
-fn padded_slots_match_each_slot_alone() {
+fn padded_rows_match_each_row_alone() {
     let device = test_device();
     let net = net(&[8, 8], 12, &device);
     let lens = [11usize, 4, 0];
@@ -260,7 +260,7 @@ fn padded_slots_match_each_slot_alone() {
 /// `forward` and both step modes still agree (the gathered step takes its
 /// empty path).
 #[test]
-fn a_call_without_boundaries_skips_the_inner_network() {
+fn a_call_without_chunk_boundaries_skips_the_inner_hnet() {
     let device = test_device();
     let mut net = net(&[8, 8], 12, &device);
     let q = &mut net.stages[1].router.q_proj;
@@ -270,7 +270,7 @@ fn a_call_without_boundaries_skips_the_inner_network() {
     let x = randn([2, 9, 8], &device);
     let (_, warm, _) = net.forward(x.clone().narrow(1, 0, 3), None, ((), ()), None);
     let (y_fwd, c_fwd, routing) = net.forward(x.clone().narrow(1, 3, 6), Some(warm.clone()), ((), ()), None);
-    assert!(bools(routing[0].boundary_bs.clone()).iter().all(|b| !b));
+    assert!(bools(routing[0].chunk_boundary_bs.clone()).iter().all(|b| !b));
     for mode in [StepMode::Masked, StepMode::Gathered] {
         let (y_step, c_step, _) = step_unrolled(&net, x.clone().narrow(1, 3, 6), Some(warm.clone()), mode);
         assert!(max_rel_diff(y_fwd.clone(), y_step) < dtype_tol(TOL), "{mode:?}: outputs");
@@ -338,11 +338,11 @@ fn vocab_network_forward_equals_step_unrolled() {
 /// unrolled. The output at the last start embedding is the logits that
 /// `prime` returns.
 #[test]
-fn start_rows_forward_equals_prime_then_steps() {
+fn start_embeddings_forward_equals_prime_then_steps() {
     let device = test_device();
     let blocks = [RefBlockConfig::new(8)];
     let net = HNetVocabShape::new(shape(1), 11)
-        .with_n_start_tokens(3)
+        .with_n_start_embeddings(3)
         .init(&blocks, &RefBlockConfig::new(8), &device);
     assert_eq!(net.n_start(), 3);
     let ids = Tensor::<2, Int>::random([2, 7], Distribution::Uniform(0.0, 11.0), &device);

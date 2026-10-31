@@ -80,6 +80,8 @@ has a different meaning from the _Avoid_ entry:
 
 ### Identifiers that conflict with a glossary term
 
+Ticket 07 renames all of them, with the names that the user approved.
+
 | Identifier | Where | Conflict |
 |---|---|---|
 | `boundary_bs` | `Routing`, `chunk::plan` | bare "boundary" (**chunk boundary**) |
