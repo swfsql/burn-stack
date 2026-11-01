@@ -173,9 +173,9 @@ fn the_flag_of_a_token_changes_the_next_logits() {
     assert!(d > 1e-3, "the flag input is read: the logits differ by {d}");
 }
 
-/// Whether this build and device give a hardware graph (cubecl without
+/// Whether this build and device give a hardware recording (cubecl without
 /// fusion, on a CUDA/HIP device).
-fn expects_graph(device: &Device) -> bool {
+fn expects_recording(device: &Device) -> bool {
     let name = format!("{device:?}");
     cfg!(all(feature = "cubecl", not(feature = "fusion")))
         && (name.contains("Cuda") || name.contains("Hip"))
@@ -272,7 +272,7 @@ fn a_prefill_is_the_same_captured_and_eager_and_is_the_prompt_in_one_pass() {
         let (logits, prefilled, _) = eager.run(&prompt, || Some(opening(&net))).unwrap();
         let (logits_captured, prefilled_captured, _) =
             captured.run(&prompt, || Some(opening(&net))).unwrap();
-        assert_eq!(captured.is_captured(), expects_graph(&device));
+        assert_eq!(captured.is_captured(), expects_recording(&device));
         let d = max_abs_diff(logits_captured, logits.clone());
         assert_eq!(d, 0.0, "length {len}: captured logits differ by {d}");
         for (a, b) in prefilled_captured.caches.iter().zip(&prefilled.caches) {

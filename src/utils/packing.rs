@@ -35,7 +35,7 @@ pub struct Packed {
 }
 
 impl Packed {
-    /// The layout of a batch whose rows have `rows` positions each.
+    /// The layout of a batch whose rows have `sequence` positions each.
     /// `starts[b]` holds the first position of each segment of row `b`, and
     /// each segment opens with `lead` slots.
     ///
@@ -43,26 +43,29 @@ impl Packed {
     /// - If a start is past the end of the row.
     /// - If the opening slots of a segment reach the next start or the end
     ///   of the row.
-    pub fn from_starts(starts: &[Vec<usize>], lead: usize, rows: usize, device: &Device) -> Self {
+    pub fn from_starts(starts: &[Vec<usize>], lead: usize, sequence: usize, device: &Device) -> Self {
         let batch = starts.len();
-        let mut reset = vec![false; batch * rows];
-        let mut latent = vec![-1i64; batch * rows];
+        let mut reset = vec![false; batch * sequence];
+        let mut latent = vec![-1i64; batch * sequence];
         for (b, starts) in starts.iter().enumerate() {
             let mut end = 0;
             for &start in starts {
-                assert!(start >= end, "the segments of a row must start in order, after the opening slots");
-                assert!(start + lead.max(1) <= rows, "a segment starts past the end of the row");
-                reset[b * rows + start] = true;
+                assert!(
+                    start >= end,
+                    "the segments of a row must start in order, after the opening slots"
+                );
+                assert!(start + lead.max(1) <= sequence, "a segment starts past the end of the row");
+                reset[b * sequence + start] = true;
                 for k in 0..lead {
-                    latent[b * rows + start + k] = k as i64;
+                    latent[b * sequence + start + k] = k as i64;
                 }
                 end = start + lead.max(1);
             }
         }
         Self {
-            reset_bs: Tensor::<1, Bool>::from_bool(TensorData::new(reset, [batch * rows]), device)
-                .reshape([batch, rows]),
-            latent_bs: Tensor::<1, Int>::from_ints(latent.as_slice(), device).reshape([batch, rows]),
+            reset_bs: Tensor::<1, Bool>::from_bool(TensorData::new(reset, [batch * sequence]), device)
+                .reshape([batch, sequence]),
+            latent_bs: Tensor::<1, Int>::from_ints(latent.as_slice(), device).reshape([batch, sequence]),
         }
     }
 
@@ -92,8 +95,8 @@ impl Packed {
     /// positions of `x` pass unchanged. The gradient of a slot goes to its row
     /// of `table`.
     pub fn place(&self, x: Tensor<3>, table: Tensor<2>) -> Tensor<3> {
-        let [batch, rows, width] = x.dims();
-        assert_eq!(self.dims(), [batch, rows], "the layout of a packed batch has its shape");
+        let [batch, sequence, width] = x.dims();
+        assert_eq!(self.dims(), [batch, sequence], "the layout of a packed batch has its shape");
         let [lead, table_width] = table.dims();
         assert_eq!(table_width, width, "the table must have one row per latent, with the width of `x`");
         let device = x.device();
@@ -104,9 +107,9 @@ impl Packed {
         let is_slot_bs = slot_bs.clone().greater_equal_elem(0);
         let index = slot_bs
             .mask_fill(is_slot_bs.clone().bool_not(), lead as i64)
-            .reshape([batch * rows]);
-        let slots = table.select(0, index).reshape([batch, rows, width]);
-        let is_slot = is_slot_bs.unsqueeze_dim::<3>(2).expand([batch, rows, width]);
+            .reshape([batch * sequence]);
+        let slots = table.select(0, index).reshape([batch, sequence, width]);
+        let is_slot = is_slot_bs.unsqueeze_dim::<3>(2).expand([batch, sequence, width]);
         x.mask_where(is_slot, slots)
     }
 }

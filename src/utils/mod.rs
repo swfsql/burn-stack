@@ -8,7 +8,7 @@
 //!   rows (`packing`),
 //! - the custom-backward helpers that a block family needs to register its own
 //!   memory-efficient kernels (`backend_macros` / `combined_grad` / `fprim`),
-//! - no-grad regions (`detach`) and the captured step (`graph`),
+//! - no-grad regions (`detach`) and the captured step (`capture`),
 //! - the whole-model init policy (`init`) and the LR schedules (`scheduler`),
 //! - the per-dtype numerical constants below.
 
@@ -18,6 +18,9 @@ use burn::tensor::{DType, FloatDType, Tensor};
 /// Macros emitting per-backend `BackendExt` impls + autodiff marker traits.
 #[macro_use]
 pub mod backend_macros;
+/// The captured step: a call of a fixed shape that the backend records once
+/// and then replays, with its caches written back in place.
+pub mod capture;
 /// Class markers: the learnable class tokens and class latents that the
 /// containers splice into a sequence.
 pub mod class;
@@ -30,9 +33,6 @@ pub mod detach;
 /// Rank-tagged `FloatTensor` primitive wrapper mirroring the `Tensor` method
 /// API, used by custom-backward gradient math.
 pub mod fprim;
-/// The captured step: a step that the backend records once and then replays,
-/// with its caches written back in place.
-pub mod graph;
 /// A whole-model init policy, applied to a module after its build.
 pub mod init;
 /// Packed rows: several segments one after another in each row, each from a
@@ -56,17 +56,17 @@ pub mod test_helpers;
 /// applications.
 pub mod untied;
 
+pub use capture::{CapturedStep, StepInput};
+#[cfg(feature = "autodiff")]
+pub use capture::Weights;
 pub use class::{ClassCursor, ClassCursors, ClassLatent, ClassToken};
 pub use detach::detach_params;
-pub use graph::{CapturedStep, StepInput};
-#[cfg(feature = "autodiff")]
-pub use graph::Weights;
 pub use init::InitPolicy;
 pub use packing::Packed;
 pub use padding::Padding;
 pub use schedule::{Applications, BidiSchedule, GradHorizon, Schedule};
 pub use untied::UntiedParam;
-pub use scheduler::{ConstantLr, CosineAnnealingLr, LinearLr, Lr, LrSegment};
+pub use scheduler::{ConstantLr, CosineAnnealingLr, LinearLr, Lr, LrLink};
 
 /// A small `dtype`-specific epsilon for safe division (`x / (y + eps)`),
 /// returned as `f32`.

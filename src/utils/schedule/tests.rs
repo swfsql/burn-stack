@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn schedule() {
+fn layer_schedule() {
     use Schedule::*;
     assert_eq!(
         (0..8)
@@ -25,7 +25,7 @@ fn schedule() {
 }
 
 #[test]
-fn bidi_schedule() {
+fn bidi_layer_schedule() {
     use BidiSchedule::*;
     assert_eq!(
         (0..10)
@@ -124,7 +124,7 @@ fn grad_horizon_last_is_a_plain_suffix() {
 
 #[test]
 #[should_panic(expected = "GradHorizon::Depth is undefined for Schedule::Custom")]
-fn grad_horizon_depth_rejects_a_custom_schedule() {
+fn grad_horizon_depth_rejects_a_custom_layer_schedule() {
     let custom = Schedule::Custom(vec![0, 1, 2, 2, 1, 0, 0, 0]);
     GradHorizon::Depth(1).tracked(Some(&custom), 8, 3);
 }

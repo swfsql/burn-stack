@@ -1,7 +1,7 @@
 use crate::modules::{GatedMlp, RmsNorm};
 use crate::prelude::*;
 use crate::utils::class::{
-    assert_full_len_known, class_chunk_plan, class_emb_width, class_prime_plan, class_row,
+    assert_full_len_known, class_emb_width, class_prime_plan, class_row, class_window_plan,
     insert_class_markers,
 };
 use crate::utils::{ClassCursor, ClassLatent, Packed, Padding, UntiedParam};
@@ -301,7 +301,7 @@ impl<M: Block> Layer<M> {
             assert_full_len_known(&self.class_latents, None, "Layer");
             return self.step_one(x, cache);
         };
-        let plan = class_chunk_plan(&self.class_latents, 1, cursor, "Layer");
+        let plan = class_window_plan(&self.class_latents, 1, cursor, "Layer");
         if plan.is_empty() {
             return self.step_one(x, cache);
         }

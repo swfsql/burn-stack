@@ -40,11 +40,11 @@ fn a_linear_ramp_holds_its_end() {
 
 /// A warmup, a drop, and a cosine cooldown: the LR schedule of a whole run in
 /// one chain.
-fn run_schedule() -> Lr {
-    Lr::Sequence(vec![
-        LrSegment::new(0, Lr::Linear(LinearLr::new(0.0, 4.0, 4))),
-        LrSegment::new(10, Lr::Constant(ConstantLr::new().with_lr(1.0))),
-        LrSegment::new(
+fn run_chain() -> Lr {
+    Lr::Chain(vec![
+        LrLink::new(0, Lr::Linear(LinearLr::new(0.0, 4.0, 4))),
+        LrLink::new(10, Lr::Constant(ConstantLr::new().with_lr(1.0))),
+        LrLink::new(
             20,
             Lr::CosineAnnealing(CosineAnnealingLr::new(10).with_max_lr(1.0).with_min_lr(0.01)),
         ),
@@ -52,8 +52,8 @@ fn run_schedule() -> Lr {
 }
 
 #[test]
-fn a_sequence_counts_each_segment_from_its_start() {
-    let lr = run_schedule();
+fn a_chain_counts_each_schedule_from_its_start() {
+    let lr = run_chain();
     lr.validate();
     assert_eq!(lr.get_lr(0), 0.0);
     assert_eq!(lr.get_lr(2), 2.0, "the warmup ramp");
@@ -71,10 +71,10 @@ fn a_sequence_counts_each_segment_from_its_start() {
 }
 
 #[test]
-fn a_sequence_survives_a_json_round_trip() {
-    let lr = run_schedule();
+fn a_chain_survives_a_json_round_trip() {
+    let lr = run_chain();
     let json = lr.to_string();
-    assert!(json.contains("\"Sequence\"") && json.contains("\"from\""), "{json}");
+    assert!(json.contains("\"Chain\"") && json.contains("\"from\""), "{json}");
     let back = Lr::load_binary(json.as_bytes()).expect("the JSON of a chain loads");
     for step in [0, 2, 9, 10, 19, 20, 25, 30, 100] {
         assert_eq!(back.get_lr(step), lr.get_lr(step), "training step {step}");
@@ -83,39 +83,39 @@ fn a_sequence_survives_a_json_round_trip() {
 
 #[test]
 #[should_panic(expected = "at least one schedule")]
-fn an_empty_sequence_is_invalid() {
-    Lr::Sequence(vec![]).validate();
+fn an_empty_chain_is_invalid() {
+    Lr::Chain(vec![]).validate();
 }
 
 #[test]
 #[should_panic(expected = "must start at training step 0")]
-fn a_sequence_starts_at_step_zero() {
-    Lr::Sequence(vec![LrSegment::new(5, Lr::Constant(ConstantLr::new()))]).validate();
+fn a_chain_starts_at_training_step_zero() {
+    Lr::Chain(vec![LrLink::new(5, Lr::Constant(ConstantLr::new()))]).validate();
 }
 
 #[test]
 #[should_panic(expected = "increasing training steps")]
-fn the_segments_start_at_increasing_steps() {
+fn the_schedules_of_a_chain_start_at_increasing_training_steps() {
     let constant = || Lr::Constant(ConstantLr::new());
-    Lr::Sequence(vec![
-        LrSegment::new(0, constant()),
-        LrSegment::new(10, constant()),
-        LrSegment::new(10, constant()),
+    Lr::Chain(vec![
+        LrLink::new(0, constant()),
+        LrLink::new(10, constant()),
+        LrLink::new(10, constant()),
     ])
     .validate();
 }
 
 #[test]
 #[should_panic(expected = "increasing training steps")]
-fn validate_checks_the_inner_sequences() {
+fn validate_checks_the_inner_chains() {
     let constant = || Lr::Constant(ConstantLr::new());
-    let inner = Lr::Sequence(vec![LrSegment::new(0, constant()), LrSegment::new(0, constant())]);
-    Lr::Sequence(vec![LrSegment::new(0, inner)]).validate();
+    let inner = Lr::Chain(vec![LrLink::new(0, constant()), LrLink::new(0, constant())]);
+    Lr::Chain(vec![LrLink::new(0, inner)]).validate();
 }
 
 #[test]
-fn set_peak_scales_a_sequence() {
-    let mut lr = run_schedule();
+fn set_peak_scales_a_chain() {
+    let mut lr = run_chain();
     assert_eq!(lr.peak(), 4.0);
     lr.set_peak(2.0);
     assert_eq!(lr.peak(), 2.0);
@@ -133,8 +133,8 @@ fn set_peak_keeps_the_min_rate_of_a_cosine() {
 }
 
 #[test]
-fn scale_steps_moves_every_step_of_a_sequence() {
-    let mut lr = run_schedule();
+fn scale_steps_moves_every_training_step_of_a_chain() {
+    let mut lr = run_chain();
     lr.scale_steps(2, 1, false);
     lr.validate();
     assert_eq!(lr.get_lr(4), 2.0, "the ramp is twice as long");

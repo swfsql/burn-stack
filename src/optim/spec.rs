@@ -40,7 +40,7 @@ pub enum ProjScope {
 /// `Linear` weight of Burn is `[d_input, d_output]`, so the fused axis is
 /// dim 1).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ProjSegment {
+pub struct SubProjection {
     /// Name of the sub-projection, for diagnostics (`"value"`, `"gate"`, …).
     pub name: &'static str,
     /// Number of columns that this sub-projection spans.
@@ -50,7 +50,7 @@ pub struct ProjSegment {
     pub muon: bool,
 }
 
-impl ProjSegment {
+impl SubProjection {
     /// A sub-projection that Muon orthogonalises on its own.
     pub fn muon(name: &'static str, width: usize) -> Self {
         Self { name, width, muon: true }
@@ -79,9 +79,9 @@ pub struct ProjSpec {
     pub scope: ProjScope,
     /// The sub-projections, in order. Their widths must sum to the output
     /// width of the weight (or, when [`Self::tiled`], to one copy of it).
-    pub segments: Vec<ProjSegment>,
+    pub sub_projections: Vec<SubProjection>,
     /// The weight is [untied](crate::utils::untied) along its fused axis: any
-    /// whole number of copies of `segments` side by side, one per application.
+    /// whole number of copies of `sub_projections` side by side, one per application.
     /// The optimizer steps the sub-projections of each copy on their own.
     pub tiled: bool,
     /// More path substrings that the parameter must contain (empty ⇒ none).
@@ -93,11 +93,11 @@ pub struct ProjSpec {
 
 impl ProjSpec {
     /// A fused projection of the block.
-    pub fn block(path: impl Into<String>, segments: Vec<ProjSegment>) -> Self {
+    pub fn block(path: impl Into<String>, sub_projections: Vec<SubProjection>) -> Self {
         Self {
             path: path.into(),
             scope: ProjScope::Block,
-            segments,
+            sub_projections,
             tiled: false,
             within: Vec::new(),
         }
@@ -105,15 +105,15 @@ impl ProjSpec {
 
     /// An unfused weight of the block. Muon owns it in full.
     pub fn block_whole(path: impl Into<String>, width: usize) -> Self {
-        Self::block(path, vec![ProjSegment::muon("all", width)])
+        Self::block(path, vec![SubProjection::muon("all", width)])
     }
 
     /// A fused projection matched by plain path substring.
-    pub fn path(path: impl Into<String>, segments: Vec<ProjSegment>) -> Self {
+    pub fn path(path: impl Into<String>, sub_projections: Vec<SubProjection>) -> Self {
         Self {
             path: path.into(),
             scope: ProjScope::Path,
-            segments,
+            sub_projections,
             tiled: false,
             within: Vec::new(),
         }
@@ -136,17 +136,17 @@ impl ProjSpec {
     /// An unfused weight matched by plain path substring. Muon owns it in
     /// full.
     pub fn path_whole(path: impl Into<String>, width: usize) -> Self {
-        Self::path(path, vec![ProjSegment::muon("all", width)])
+        Self::path(path, vec![SubProjection::muon("all", width)])
     }
 
     /// Total output width (the sum of the widths of the sub-projections).
     pub fn width(&self) -> usize {
-        self.segments.iter().map(|s| s.width).sum()
+        self.sub_projections.iter().map(|s| s.width).sum()
     }
 
     /// Whether Muon owns any sub-projection.
     pub fn has_muon(&self) -> bool {
-        self.segments.iter().any(|s| s.muon)
+        self.sub_projections.iter().any(|s| s.muon)
     }
 
     /// Whether Muon owns the whole tensor as a single sub-projection (so stock
@@ -154,7 +154,7 @@ impl ProjSpec {
     /// true for a [tiled](Self::tiled) weight, whose copies are separate
     /// matrices.
     pub fn is_whole_muon(&self) -> bool {
-        !self.tiled && self.segments.len() == 1 && self.segments[0].muon
+        !self.tiled && self.sub_projections.len() == 1 && self.sub_projections[0].muon
     }
 
     /// The path substrings that a parameter must **all** contain to belong to

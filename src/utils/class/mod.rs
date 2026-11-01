@@ -192,10 +192,10 @@ impl ClassCursor {
         }
     }
 
-    /// Whether a window of `chunk_len` tokens placed from this cursor is the
+    /// Whether a window of `window_len` tokens placed from this cursor is the
     /// entire sequence: nothing emitted before it, and nothing announced after.
-    pub fn covers_whole(&self, chunk_len: usize) -> bool {
-        self.offset == 0 && self.full_len == Some(chunk_len)
+    pub fn covers_whole(&self, window_len: usize) -> bool {
+        self.offset == 0 && self.full_len == Some(window_len)
     }
 }
 
@@ -311,23 +311,23 @@ pub fn assert_full_len_known<M: ClassMarker>(
     );
 }
 
-/// Which of `markers` fall inside the next `chunk_len` user tokens, and where.
+/// Which of `markers` fall inside the next `window_len` user tokens, and where.
 ///
 /// Returns `(at, marker)` pairs in output order: insert `markers[marker]`
-/// *before* the `at`-th token of the window (`at == chunk_len` ⇒ after the
+/// *before* the `at`-th token of the window (`at == window_len` ⇒ after the
 /// last one). `cursor` is advanced past the whole window, its insertions
 /// included.
-pub fn class_chunk_plan<M: ClassMarker>(
+pub fn class_window_plan<M: ClassMarker>(
     markers: &[M],
-    chunk_len: usize,
+    window_len: usize,
     cursor: &mut ClassCursor,
     who: &str,
 ) -> Vec<(usize, usize)> {
-    class_plan(markers, chunk_len, cursor, false, who)
+    class_plan(markers, window_len, cursor, false, who)
 }
 
-/// [`class_chunk_plan`] for a **prime**. The call carries no user token of
-/// its own beyond the `chunk_len` tokens that a lower level handed up (`0` at
+/// [`class_window_plan`] for a **prime**. The call carries no user token of
+/// its own beyond the `window_len` tokens that a lower level handed up (`0` at
 /// the level where the call enters). One more user token is still to come.
 ///
 /// So it differs only on the trailing edge of those tokens. The markers that
@@ -337,23 +337,23 @@ pub fn class_chunk_plan<M: ClassMarker>(
 /// next token, so the plan is then empty.
 pub fn class_prime_plan<M: ClassMarker>(
     markers: &[M],
-    chunk_len: usize,
+    window_len: usize,
     cursor: &mut ClassCursor,
     who: &str,
 ) -> Vec<(usize, usize)> {
-    class_plan(markers, chunk_len, cursor, true, who)
+    class_plan(markers, window_len, cursor, true, who)
 }
 
-/// The shared placement loop of [`class_chunk_plan`] / [`class_prime_plan`].
+/// The shared placement loop of [`class_window_plan`] / [`class_prime_plan`].
 fn class_plan<M: ClassMarker>(
     markers: &[M],
-    chunk_len: usize,
+    window_len: usize,
     cursor: &mut ClassCursor,
     prime: bool,
     who: &str,
 ) -> Vec<(usize, usize)> {
     if markers.is_empty() {
-        cursor.offset += chunk_len;
+        cursor.offset += window_len;
         return Vec::new();
     }
     assert_full_len_known(markers, cursor.full_len, who);
@@ -364,7 +364,7 @@ fn class_plan<M: ClassMarker>(
     // tokens than an announced `full_len` are allowed. Every marker inside that
     // length is already placed by then, so the extra tokens stream through.
     let start = cursor.offset;
-    let consumed = start - positions.iter().filter(|&&p| p < start).count() + chunk_len;
+    let consumed = start - positions.iter().filter(|&&p| p < start).count() + window_len;
     // Whether this call reaches the announced end, that is, carries the last
     // user token. This is the only place where an `End` can go. A prime
     // carries no token of its own, so it never closes anything.
@@ -386,10 +386,10 @@ fn class_plan<M: ClassMarker>(
             continue; // emitted by an earlier call
         }
         let need = p - out; // user tokens preceding this marker
-        if at + need > chunk_len {
+        if at + need > window_len {
             break; // the token that it precedes is in a later call, and so is the marker
         }
-        if at + need == chunk_len {
+        if at + need == window_len {
             // Nothing is left in this call to precede. Only two cases belong
             // here: a closing `End` on the call that ends the sequence, or, on
             // a prime, the markers due before the next token. A `Custom` waits
@@ -404,12 +404,12 @@ fn class_plan<M: ClassMarker>(
         out = p + 1;
         plan.push((at, i));
     }
-    cursor.offset = out + (chunk_len - at);
+    cursor.offset = out + (window_len - at);
     plan
 }
 
 /// Splice the learnable class markers `emb` (`[k, width]`, row `i` ↔
-/// `markers[i]`) that fall inside the window `x` (`[batch, chunk_len, width]`).
+/// `markers[i]`) that fall inside the window `x` (`[batch, window_len, width]`).
 /// Returns the longer window, and advances `cursor` past it.
 ///
 /// `markers` empty (or none of them landing in this window) ⇒ `x` unchanged.
@@ -434,9 +434,9 @@ pub fn insert_class_markers_padded<M: ClassMarker>(
     cursor: &mut ClassCursor,
     who: &str,
 ) -> (Tensor<3>, Option<Padding>) {
-    let [_batch, chunk_len, width] = x.dims();
-    let whole = cursor.covers_whole(chunk_len);
-    let plan = class_chunk_plan(markers, chunk_len, cursor, who);
+    let [_batch, window_len, width] = x.dims();
+    let whole = cursor.covers_whole(window_len);
+    let plan = class_window_plan(markers, window_len, cursor, who);
     if plan.is_empty() {
         return (x, padding);
     }
@@ -464,7 +464,7 @@ pub fn class_emb_table<M: ClassMarker>(
 }
 
 /// The tensor half of [`insert_class_markers`]: splice the embeddings that a
-/// [`class_chunk_plan`] selected into `x` along its **sequence axis 1**,
+/// [`class_window_plan`] selected into `x` along its **sequence axis 1**,
 /// broadcasting each embedding over every other axis.
 ///
 /// It is rank-generic, so the same placement lands in a plain
@@ -480,7 +480,7 @@ pub fn splice_class_embeddings<const D: usize>(
         return x;
     }
     let dims = x.dims();
-    let chunk_len = dims[1];
+    let window_len = dims[1];
     // One marker row broadcast to a single sequence position: `[1, ‥, 1, width]`
     // expanded over the batch (and, for the streams, the stream axis).
     let mut row_shape = [1usize; D];
@@ -494,19 +494,19 @@ pub fn splice_class_embeddings<const D: usize>(
             .expand(row_dims)
     };
 
-    let mut segments: Vec<Tensor<D>> = Vec::with_capacity(2 * plan.len() + 1);
+    let mut parts: Vec<Tensor<D>> = Vec::with_capacity(2 * plan.len() + 1);
     let mut taken = 0usize; // tokens of the window emitted so far
     for &(at, i) in plan {
         if at > taken {
-            segments.push(x.clone().narrow(1, taken, at - taken));
+            parts.push(x.clone().narrow(1, taken, at - taken));
             taken = at;
         }
-        segments.push(row(i));
+        parts.push(row(i));
     }
-    if taken < chunk_len {
-        segments.push(x.narrow(1, taken, chunk_len - taken));
+    if taken < window_len {
+        parts.push(x.narrow(1, taken, window_len - taken));
     }
-    Tensor::cat(segments, 1)
+    Tensor::cat(parts, 1)
 }
 
 /// Width of the class embeddings (`[num_markers, width]`). A `prime` sizes its

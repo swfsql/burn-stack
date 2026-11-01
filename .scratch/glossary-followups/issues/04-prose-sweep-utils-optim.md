@@ -100,6 +100,8 @@ each one, or it has a different meaning from the _Avoid_ entry:
 
 ### Identifiers that conflict with a glossary term
 
+Ticket 08 renames them, with the names that the user approved.
+
 | Identifier | Where | Conflict |
 |---|---|---|
 | `ProjSegment` (also in the prelude of `lib.rs`) | `optim/spec.rs` | "segment" for a sub-projection |

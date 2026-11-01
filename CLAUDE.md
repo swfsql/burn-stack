@@ -133,7 +133,7 @@ src/
 │  ├─ class/           class markers: ClassToken, ClassLatent, ClassCursors
 │  ├─ schedule/        layer schedules, Applications, GradHorizon
 │  ├─ scheduler/       LR schedules (Lr)
-│  ├─ graph.rs         CapturedStep. graph/weights.rs: Weights (the training step)
+│  ├─ capture.rs       CapturedStep. capture/weights.rs: Weights (the training step)
 │  ├─ fprim.rs         F<B,D>: the primitive wrapper of a custom backward
 │  ├─ combined_grad.rs two outputs in one autodiff node (a custom backward)
 │  └─ init.rs          InitPolicy: the reference LM init

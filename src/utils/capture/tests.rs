@@ -6,7 +6,7 @@
 //! On a build that cannot record (flex, the default), the captured step runs
 //! each step call eagerly. These calls still run the closure of `capture`, so
 //! the tests pin the snapshot/restore around it. Under `backend-cuda`, the same
-//! suite replays a hardware recording, and [`expects_graph`] asserts that the
+//! suite replays a hardware recording, and [`expects_recording`] asserts that the
 //! capture made one.
 
 use super::CapturedStep;
@@ -25,7 +25,7 @@ const STEPS: usize = 12;
 
 /// Whether this build and device give a hardware recording (cubecl without
 /// fusion, on a CUDA/HIP device).
-fn expects_graph(device: &Device) -> bool {
+fn expects_recording(device: &Device) -> bool {
     let name = format!("{device:?}");
     cfg!(all(feature = "cubecl", not(feature = "fusion")))
         && (name.contains("Cuda") || name.contains("Hip"))
@@ -95,7 +95,7 @@ fn captured_token_steps_are_the_eager_steps() {
     // Safety: the step reads nothing but its arguments and `net`, borrowed.
     let mut captured =
         unsafe { CapturedStep::capture(&device, x, caches, |x, c| net.step(x, Some(c), None)) };
-    assert_eq!(captured.is_captured(), expects_graph(&device));
+    assert_eq!(captured.is_captured(), expects_recording(&device));
 
     let d = max_abs_diff(y0, eager[0].clone());
     assert_eq!(d, 0.0, "step 0 differs by {d}");
@@ -141,7 +141,7 @@ fn captured_latent_steps_are_the_eager_steps() {
     let mut captured = unsafe {
         CapturedStep::capture(&device, xs[1].clone(), caches, |x, c| layers.step(x, Some(c), None))
     };
-    assert_eq!(captured.is_captured(), expects_graph(&device));
+    assert_eq!(captured.is_captured(), expects_recording(&device));
     let d = max_abs_diff(y0, eager[0].clone());
     assert_eq!(d, 0.0, "step 0 differs by {d}");
     for k in 1..STEPS {
@@ -166,7 +166,7 @@ fn captured_forward_is_the_eager_forward() {
     // Safety: the forward reads nothing but its argument and `layers`, borrowed.
     let mut captured =
         unsafe { CapturedStep::capture(&device, xs[0].clone(), (), |x, ()| (forward(x), ())) };
-    assert_eq!(captured.is_captured(), expects_graph(&device));
+    assert_eq!(captured.is_captured(), expects_recording(&device));
     for (k, x) in xs.iter().enumerate() {
         let y = captured.step(x.clone()).clone();
         let d = max_abs_diff(y, forward(x.clone()));
@@ -268,7 +268,7 @@ fn captured_sgd_training_is_the_eager_training() {
     // Safety: the training step reads nothing but its arguments and `sgd`,
     // borrowed.
     let mut captured = unsafe { CapturedStep::capture(&device, (x, y, rate(0)), Weights(layers), step) };
-    assert_eq!(captured.is_captured(), expects_graph(&device));
+    assert_eq!(captured.is_captured(), expects_recording(&device));
     for (k, (x, y)) in data.iter().enumerate() {
         let l = captured.step((x.clone(), y.clone(), rate(k))).clone();
         let d = max_abs_diff(l, eager_losses[k].clone());

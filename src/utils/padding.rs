@@ -79,14 +79,14 @@ impl Padding {
 
     /// `[batch, sequence]`: `0, 1, …` in every row.
     fn arange_bs(&self) -> Tensor<2, Int> {
-        let [batch, rows] = self.dims();
-        Tensor::<1, Int>::arange(0..rows as i64, &self.pad_bs.device())
-            .reshape([1, rows])
-            .expand([batch, rows])
+        let [batch, sequence] = self.dims();
+        Tensor::<1, Int>::arange(0..sequence as i64, &self.pad_bs.device())
+            .reshape([1, sequence])
+            .expand([batch, sequence])
     }
 
     /// Splice the positions that a class-marker plan inserts (`(at, marker)`
-    /// pairs, as [`class_chunk_plan`](crate::utils::class::class_chunk_plan)
+    /// pairs, as [`class_window_plan`](crate::utils::class::class_window_plan)
     /// returns them): the padding half of
     /// [`insert_class_markers`](crate::utils::class::insert_class_markers).
     ///
@@ -105,7 +105,7 @@ impl Padding {
         if plan.is_empty() {
             return self;
         }
-        let [batch, rows] = self.dims();
+        let [batch, sequence] = self.dims();
         let device = self.pad_bs.device();
         let k = plan.len();
         let n_real_b1 = self.real_b1();
@@ -158,18 +158,18 @@ impl Padding {
         // goes last.
         let real_i_bk = real_bk.clone().int();
         let m_real_b1 = real_i_bk.clone().sum_dim(1);
-        let p_bsk = p_bk.clone().unsqueeze_dim::<3>(1).expand([batch, rows, k]);
+        let p_bsk = p_bk.clone().unsqueeze_dim::<3>(1).expand([batch, sequence, k]);
         let before_bs = local_bs
             .clone()
             .unsqueeze_dim::<3>(2)
-            .expand([batch, rows, k])
+            .expand([batch, sequence, k])
             .greater_equal(p_bsk)
             .int()
-            .mul(real_i_bk.clone().unsqueeze_dim::<3>(1).expand([batch, rows, k]))
+            .mul(real_i_bk.clone().unsqueeze_dim::<3>(1).expand([batch, sequence, k]))
             .sum_dim(2)
             .squeeze_dim::<2>(2);
-        let rows_local_bs = local_bs.clone().add(
-            before_bs.mask_where(self.pad_bs.clone(), m_real_b1.clone().expand([batch, rows])),
+        let positions_local_bs = local_bs.clone().add(
+            before_bs.mask_where(self.pad_bs.clone(), m_real_b1.clone().expand([batch, sequence])),
         );
 
         // The place of a marker: its entry point, plus the real markers ordered
@@ -202,12 +202,12 @@ impl Padding {
             .squeeze_dim::<2>(2);
         let markers_local_bk = p_bk.add(ahead_bk).mask_where(
             real_bk.bool_not(),
-            absent_ahead_bk.add(m_real_b1.add_scalar(rows as i64).expand([batch, k])),
+            absent_ahead_bk.add(m_real_b1.add_scalar(sequence as i64).expand([batch, k])),
         );
 
         Self {
             pad_bs: spliced_pad,
-            local_bs: Some(splice_columns(rows_local_bs, plan, markers_local_bk)),
+            local_bs: Some(splice_columns(positions_local_bs, plan, markers_local_bk)),
         }
     }
 
@@ -227,9 +227,9 @@ impl Padding {
         let Some(local_bs) = &self.local_bs else {
             return f(x_bsd, self.pad_bs.clone());
         };
-        let [batch, rows, d] = x_bsd.dims();
+        let [batch, sequence, d] = x_bsd.dims();
         assert_eq!(
-            [batch, rows],
+            [batch, sequence],
             self.dims(),
             "the padding must have the batch and sequence shape of the input"
         );
@@ -241,12 +241,12 @@ impl Padding {
             self.arange_bs(),
             IndexingUpdateOp::Add,
         );
-        let x_bsd = x_bsd.gather(1, src_bs.unsqueeze_dim::<3>(2).expand([batch, rows, d]));
+        let x_bsd = x_bsd.gather(1, src_bs.unsqueeze_dim::<3>(2).expand([batch, sequence, d]));
         let pad_bs = self
             .arange_bs()
-            .greater_equal(self.real_b1().expand([batch, rows]));
+            .greater_equal(self.real_b1().expand([batch, sequence]));
         let (y_bsd, c) = f(x_bsd, pad_bs);
-        let y_bsd = y_bsd.gather(1, local_bs.clone().unsqueeze_dim::<3>(2).expand([batch, rows, d]));
+        let y_bsd = y_bsd.gather(1, local_bs.clone().unsqueeze_dim::<3>(2).expand([batch, sequence, d]));
         (y_bsd, c)
     }
 
@@ -258,11 +258,11 @@ impl Padding {
     /// Its batch-wide order does not change. Only the place of each position
     /// in its row changes.
     pub fn reversed(&self) -> Self {
-        let [batch, rows] = self.dims();
+        let [batch, sequence] = self.dims();
         let local_bs = self.local_bs.clone().unwrap_or_else(|| self.arange_bs());
         let mirrored_bs = self
             .real_b1()
-            .expand([batch, rows])
+            .expand([batch, sequence])
             .sub_scalar(1)
             .sub(local_bs.clone());
         Self {
@@ -281,20 +281,20 @@ fn splice_columns<K>(x_bs: Tensor<2, K>, plan: &[(usize, usize)], cols_bk: Tenso
 where
     K: burn::tensor::kind::Basic,
 {
-    let [_batch, rows] = x_bs.dims();
-    let mut segments = Vec::with_capacity(2 * plan.len() + 1);
+    let [_batch, sequence] = x_bs.dims();
+    let mut parts = Vec::with_capacity(2 * plan.len() + 1);
     let mut taken = 0usize;
     for (j, &(at, _)) in plan.iter().enumerate() {
         if at > taken {
-            segments.push(x_bs.clone().narrow(1, taken, at - taken));
+            parts.push(x_bs.clone().narrow(1, taken, at - taken));
             taken = at;
         }
-        segments.push(cols_bk.clone().narrow(1, j, 1));
+        parts.push(cols_bk.clone().narrow(1, j, 1));
     }
-    if taken < rows {
-        segments.push(x_bs.narrow(1, taken, rows - taken));
+    if taken < sequence {
+        parts.push(x_bs.narrow(1, taken, sequence - taken));
     }
-    Tensor::cat(segments, 1)
+    Tensor::cat(parts, 1)
 }
 
 #[cfg(all(test, feature = "_dev-test"))]

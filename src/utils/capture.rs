@@ -33,7 +33,7 @@
 //! Shapes and the launch sequence are frozen at capture: one batch size, and a
 //! step whose host-side control flow does not change between calls (e.g. no
 //! class marker left to land). Compile and autotune the kernels before the
-//! capture (see [`WARMUP_STEPS`](crate::utils::graph::WARMUP_STEPS)). A step
+//! capture (see [`WARMUP_STEPS`](crate::utils::capture::WARMUP_STEPS)). A step
 //! also must not read back to the host. On CUDA, the read fails inside the
 //! recording and leaves the stream in capture mode, so every later read in
 //! the process fails too.
@@ -253,7 +253,7 @@ type Shared<T> = Rc<RefCell<Option<T>>>;
 pub struct CapturedStep<'a, I: StepInput + 'a, Y: 'a, C: CacheTensors + 'a> {
     // Declared first, so it drops first. When the recording drops, it waits
     // for its replays, before the buffers below can go.
-    graph: Option<Graph<Y, Box<dyn FnMut() -> Y + 'a>>>,
+    recording: Option<Graph<Y, Box<dyn FnMut() -> Y + 'a>>>,
     step: Rc<RefCell<Box<StepFn<'a, I, Y, C>>>>,
     input: Shared<I>,
     caches: Shared<C>,
@@ -300,7 +300,7 @@ impl<'a, I: StepInput + 'a, Y: 'a, C: CacheTensors + 'a> CapturedStep<'a, I, Y, 
                 y
             })
         };
-        let graph = burn::tensor::capture(device, run);
+        let recording = burn::tensor::capture(device, run);
 
         // The closure ran: put back the caches that it was given.
         {
@@ -315,7 +315,7 @@ impl<'a, I: StepInput + 'a, Y: 'a, C: CacheTensors + 'a> CapturedStep<'a, I, Y, 
                     caches.borrow().as_ref().expect("caches are always put back"),
                 );
         Self {
-            graph: (graph.is_hardware() && kept).then_some(graph),
+            recording: (recording.is_hardware() && kept).then_some(recording),
             step,
             input,
             caches,
@@ -327,7 +327,7 @@ impl<'a, I: StepInput + 'a, Y: 'a, C: CacheTensors + 'a> CapturedStep<'a, I, Y, 
     /// Whether the calls replay a hardware recording (`false`: they run the
     /// step eagerly, see the [module docs](self)).
     pub fn is_captured(&self) -> bool {
-        self.graph.is_some()
+        self.recording.is_some()
     }
 
     /// Whether `x` has the shapes of the captured input, which every call
@@ -340,7 +340,7 @@ impl<'a, I: StepInput + 'a, Y: 'a, C: CacheTensors + 'a> CapturedStep<'a, I, Y, 
     /// captured input. When the calls replay a recording, the next call
     /// overwrites the output: read or copy it first.
     pub fn step(&mut self, x: I) -> &Y {
-        if self.graph.is_none() {
+        if self.recording.is_none() {
             return self.eager(x);
         }
         {
@@ -373,7 +373,7 @@ impl<'a, I: StepInput + 'a, Y: 'a, C: CacheTensors + 'a> CapturedStep<'a, I, Y, 
         let stable = slot.take().expect("caches are always put back");
         let input = self.input.borrow();
         let input = input.as_ref().expect("the input is always present");
-        let before = self.graph.as_ref().and(stable_ids(input, &stable));
+        let before = self.recording.as_ref().and(stable_ids(input, &stable));
         let stable = stable.assign_in_place(caches);
         if before.is_some() {
             assert_eq!(stable_ids(input, &stable), before, "the caches must be set in place");
@@ -383,7 +383,7 @@ impl<'a, I: StepInput + 'a, Y: 'a, C: CacheTensors + 'a> CapturedStep<'a, I, Y, 
 
     /// Drop the recording, and give back the current caches.
     pub fn into_caches(mut self) -> C {
-        self.graph = None;
+        self.recording = None;
         self.caches.borrow_mut().take().expect("caches are always put back")
     }
 
@@ -395,7 +395,7 @@ impl<'a, I: StepInput + 'a, Y: 'a, C: CacheTensors + 'a> CapturedStep<'a, I, Y, 
     }
 
     fn replay(&mut self) -> &Y {
-        let graph = self.graph.as_mut().expect("replay needs a recording");
+        let recording = self.recording.as_mut().expect("replay needs a recording");
         // Safety: the recording touches three sets of buffers:
         // - the stable input and caches, held by `self` and by the closure
         //   that the recording owns, and only written in place (checked at
@@ -405,7 +405,7 @@ impl<'a, I: StepInput + 'a, Y: 'a, C: CacheTensors + 'a> CapturedStep<'a, I, Y, 
         // - the buffers that the recording retains itself.
         // `self` is not `Send`, so every refresh, replay and read comes from
         // this thread, on the stream of the capture.
-        unsafe { graph.replay() }
+        unsafe { recording.replay() }
     }
 }
 
@@ -425,7 +425,7 @@ impl<'a, const D: usize, K: InputKind + 'a, Y: 'a, C: CacheTensors + 'a>
     pub fn step_data(&mut self, data: TensorData) -> &Y {
         let dtype = self.input.borrow().as_ref().expect("the input is always present").dtype();
         let data = data.convert_dtype(dtype);
-        if self.graph.is_none() {
+        if self.recording.is_none() {
             // The dtype of the input, not the default of the device.
             let x = Tensor::from_data(data, (&self.device, dtype));
             return self.eager(x);

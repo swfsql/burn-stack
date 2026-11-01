@@ -4,7 +4,7 @@
 //! A family supplies its own `Caches` type. The generic containers need only
 //! indexed access to one cache slot per virtual layer, plus the backend hop of
 //! `grad_horizon`.
-//! [`CapturedStep`](crate::utils::graph::CapturedStep) also needs
+//! [`CapturedStep`](crate::utils::capture::CapturedStep) also needs
 //! [`CacheTensors`]: every tensor of a cache, visited pairwise with the
 //! matching tensor of another cache.
 
@@ -122,7 +122,7 @@ pub trait TensorZip {
 /// stable cache, which copies the new cache into the stable buffers.
 /// `slice_assign` runs in place on a buffer that no other tensor shares. So
 /// the captured step records the copies, and each replay advances the state
-/// itself (see [`CapturedStep`](crate::utils::graph::CapturedStep)).
+/// itself (see [`CapturedStep`](crate::utils::capture::CapturedStep)).
 ///
 /// It is in place **only while** the destination buffers are unshared. This
 /// is what [`into_owned_buffers`](Self::into_owned_buffers) is for: the cache

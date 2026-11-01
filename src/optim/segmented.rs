@@ -28,7 +28,7 @@ use super::spec::ProjSpec;
 
 /// The optimizer that owns one sub-projection.
 #[derive(Clone)]
-enum BlockOptim {
+enum SubProjectionOptim {
     /// Muon: orthogonalised momentum-SGD, for genuine feature maps.
     Muon(Muon),
     /// The fallback for scalar-producing (or otherwise unsuitable)
@@ -39,7 +39,7 @@ enum BlockOptim {
     Sgd(Sgd),
 }
 
-impl BlockOptim {
+impl SubProjectionOptim {
     fn is_stateful(&self) -> bool {
         !matches!(self, Self::Sgd(_))
     }
@@ -50,7 +50,7 @@ impl BlockOptim {
 // fused projection, so the padding is not worth an extra indirection.
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone)]
-pub enum BlockState<const D: usize> {
+pub enum SubProjectionState<const D: usize> {
     /// State of a sub-projection on [`Muon`].
     Muon(MuonState<D>),
     /// State of a sub-projection on [`AdamW`].
@@ -63,7 +63,7 @@ pub enum BlockState<const D: usize> {
 pub struct SegmentedState<const D: usize> {
     /// The states of the sub-projections, in the order of the sub-projections
     /// of the [`ProjSpec`].
-    pub blocks: Vec<BlockState<D>>,
+    pub states: Vec<SubProjectionState<D>>,
 }
 
 /// One optimizer for each sub-projection of a fused projection.
@@ -73,7 +73,7 @@ pub struct SegmentedState<const D: usize> {
 /// parameter along [`Self::dim`].
 #[derive(Clone)]
 pub struct Segmented {
-    optims: Vec<BlockOptim>,
+    optims: Vec<SubProjectionOptim>,
     widths: Vec<usize>,
     dim: usize,
     tiled: bool,
@@ -85,21 +85,21 @@ impl Segmented {
     /// (`1` for a Burn `Linear` weight, whose layout is `[d_input, d_output]`).
     pub fn new(spec: &ProjSpec, muon: Muon, fallback: impl Into<Fallback>, dim: usize) -> Self {
         let fallback = match fallback.into() {
-            Fallback::AdamW(adamw) => BlockOptim::AdamW(adamw),
-            Fallback::Sgd(sgd) => BlockOptim::Sgd(sgd),
+            Fallback::AdamW(adamw) => SubProjectionOptim::AdamW(adamw),
+            Fallback::Sgd(sgd) => SubProjectionOptim::Sgd(sgd),
         };
         let optims = spec
-            .segments
+            .sub_projections
             .iter()
             .map(|s| {
                 if s.muon {
-                    BlockOptim::Muon(muon.clone())
+                    SubProjectionOptim::Muon(muon.clone())
                 } else {
                     fallback.clone()
                 }
             })
             .collect();
-        let widths = spec.segments.iter().map(|s| s.width).collect();
+        let widths = spec.sub_projections.iter().map(|s| s.width).collect();
         Self { optims, widths, dim, tiled: spec.tiled }
     }
 
@@ -135,9 +135,9 @@ impl Optimizer for Segmented {
             "Segmented: the dim-{} width of the parameter does not match the projection spec",
             self.dim
         );
-        let n_blocks = self.optims.len() * copies;
+        let n_sub_projections = self.optims.len() * copies;
         let n_states = self.optims.iter().filter(|o| o.is_stateful()).count() * copies;
-        let widths: Vec<usize> = self.widths.iter().copied().cycle().take(n_blocks).collect();
+        let widths: Vec<usize> = self.widths.iter().copied().cycle().take(n_sub_projections).collect();
 
         let tensors = tensor.split_with_sizes(widths.clone(), self.dim);
         let grads = grad.split_with_sizes(widths, self.dim);
@@ -146,54 +146,54 @@ impl Optimizer for Segmented {
         // differs from the spec, gives every sub-projection a fresh state.
         // This prevents a wrong pairing.
         let mut prev = match state {
-            Some(s) if s.blocks.len() == n_states => s.blocks,
+            Some(s) if s.states.len() == n_states => s.states,
             _ => Vec::new(),
         }
         .into_iter();
 
-        let mut out = Vec::with_capacity(n_blocks);
-        let mut blocks = Vec::with_capacity(n_states);
+        let mut out = Vec::with_capacity(n_sub_projections);
+        let mut states = Vec::with_capacity(n_states);
 
-        for (i, optim) in self.optims.iter().cycle().take(n_blocks).enumerate() {
+        for (i, optim) in self.optims.iter().cycle().take(n_sub_projections).enumerate() {
             let (t, g) = (tensors[i].clone(), grads[i].clone());
             match optim {
-                BlockOptim::Muon(muon) => {
+                SubProjectionOptim::Muon(muon) => {
                     let prev = match prev.next() {
-                        Some(BlockState::Muon(s)) => Some(s),
+                        Some(SubProjectionState::Muon(s)) => Some(s),
                         _ => None,
                     };
                     let (t, s) = muon.step(lr, t, g, prev);
                     out.push(t);
-                    blocks.extend(s.map(BlockState::Muon));
+                    states.extend(s.map(SubProjectionState::Muon));
                 }
-                BlockOptim::AdamW(adamw) => {
+                SubProjectionOptim::AdamW(adamw) => {
                     let prev = match prev.next() {
-                        Some(BlockState::AdamW(s)) => Some(s),
+                        Some(SubProjectionState::AdamW(s)) => Some(s),
                         _ => None,
                     };
                     let (t, s) = adamw.step(lr, t, g, prev);
                     out.push(t);
-                    blocks.extend(s.map(BlockState::AdamW));
+                    states.extend(s.map(SubProjectionState::AdamW));
                 }
-                BlockOptim::Sgd(sgd) => out.push(sgd.step(lr, t, g, None).0),
+                SubProjectionOptim::Sgd(sgd) => out.push(sgd.step(lr, t, g, None).0),
             }
         }
 
-        // Muon and AdamW always return a state, so `blocks` is complete.
-        assert_eq!(blocks.len(), n_states);
-        (Tensor::cat(out, self.dim), Some(SegmentedState { blocks }))
+        // Muon and AdamW always return a state, so `states` is complete.
+        assert_eq!(states.len(), n_states);
+        (Tensor::cat(out, self.dim), Some(SegmentedState { states }))
     }
 
     fn to_device<const D: usize>(state: Self::State<D>, device: &Device) -> Self::State<D> {
-        let blocks = state
-            .blocks
+        let states = state
+            .states
             .into_iter()
             .map(|b| match b {
-                BlockState::Muon(s) => BlockState::Muon(Muon::to_device(s, device)),
-                BlockState::AdamW(s) => BlockState::AdamW(AdamW::to_device(s, device)),
+                SubProjectionState::Muon(s) => SubProjectionState::Muon(Muon::to_device(s, device)),
+                SubProjectionState::AdamW(s) => SubProjectionState::AdamW(AdamW::to_device(s, device)),
             })
             .collect();
-        SegmentedState { blocks }
+        SegmentedState { states }
     }
 }
 
@@ -204,17 +204,17 @@ impl Optimizer for Segmented {
 /// These names never overlap.
 impl<const D: usize> RecordState for SegmentedState<D> {
     fn state_flatten(&self, prefix: &str, out: &mut StateSink) {
-        for (i, block) in self.blocks.iter().enumerate() {
+        for (i, state) in self.states.iter().enumerate() {
             let prefix = join_index(prefix, i);
-            match block {
-                BlockState::Muon(s) => s.state_flatten(&prefix, out),
-                BlockState::AdamW(s) => s.state_flatten(&prefix, out),
+            match state {
+                SubProjectionState::Muon(s) => s.state_flatten(&prefix, out),
+                SubProjectionState::AdamW(s) => s.state_flatten(&prefix, out),
             }
         }
     }
 
     fn state_unflatten(prefix: &str, src: &mut StateSource, device: &Device) -> Option<Self> {
-        let mut blocks = Vec::new();
+        let mut states = Vec::new();
         for i in 0.. {
             let prefix = join_index(prefix, i);
             if !src.has_under(&prefix) {
@@ -222,14 +222,14 @@ impl<const D: usize> RecordState for SegmentedState<D> {
             }
             // A failed attempt consumes nothing (the leaf that it looks for is
             // absent). So it is safe to try Muon first.
-            let block = MuonState::state_unflatten(&prefix, src, device)
-                .map(BlockState::Muon)
+            let state = MuonState::state_unflatten(&prefix, src, device)
+                .map(SubProjectionState::Muon)
                 .or_else(|| {
-                    AdamWState::state_unflatten(&prefix, src, device).map(BlockState::AdamW)
+                    AdamWState::state_unflatten(&prefix, src, device).map(SubProjectionState::AdamW)
                 })?;
-            blocks.push(block);
+            states.push(state);
         }
 
-        (!blocks.is_empty()).then_some(SegmentedState { blocks })
+        (!states.is_empty()).then_some(SegmentedState { states })
     }
 }

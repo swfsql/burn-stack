@@ -85,7 +85,7 @@ pub mod prelude {
     };
 
     #[cfg(feature = "optim")]
-    pub use crate::optim::{MuonPlan, ProjSegment, ProjSpec, muon_config};
+    pub use crate::optim::{MuonPlan, ProjSpec, SubProjection, muon_config};
 }
 
 /// When `true`, [`modules::sanity`] panics if it observes a `NaN`.

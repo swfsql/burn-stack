@@ -8,7 +8,7 @@
 //! [`SgdConfig::step`] takes it as a `[1]` device tensor: an input that the
 //! host refreshes before each replay, so an LR schedule keeps moving. The
 //! capture writes back the weights themselves
-//! ([`Weights`](crate::utils::graph::Weights)).
+//! ([`Weights`](crate::utils::capture::Weights)).
 //!
 //! [`SgdConfig::step`] is the `Sgd` of Burn without momentum, op for op (clip,
 //! decay, scale, subtract). So a captured run trains exactly as the eager

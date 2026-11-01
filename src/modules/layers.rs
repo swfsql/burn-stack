@@ -2,8 +2,8 @@ use crate::modules::{GatedMlpConfig, LayerUntied, Residuals, ResidualsConfig, li
 use crate::prelude::*;
 use crate::utils::{Applications, GradHorizon, Schedule};
 use crate::utils::class::{
-    assert_full_len_known, class_chunk_plan, class_emb_table, class_emb_width,
-    class_marker_output_indices, class_prime_plan, class_row, init_class_emb,
+    assert_full_len_known, class_emb_table, class_emb_width, class_marker_output_indices,
+    class_prime_plan, class_row, class_window_plan, init_class_emb,
     insert_class_markers_padded, landing_count, splice_class_embeddings,
 };
 use crate::utils::{ClassCursor, ClassCursors, ClassLatent, Packed, Padding};
@@ -148,7 +148,7 @@ where
     /// Whether every class latent that the stack splices (its own and those
     /// of each layer) is a `Start`. Then, after the opening of a sequence has
     /// run, no later [`step`](Self::step) emits one. So every step runs the
-    /// same launches (a [`CapturedStep`](crate::utils::graph::CapturedStep)
+    /// same launches (a [`CapturedStep`](crate::utils::capture::CapturedStep)
     /// needs this), and a step with no cursors equals the step with them.
     pub fn only_start_latents(&self) -> bool {
         let start = |m: &ClassLatent| matches!(m, ClassLatent::Start);
@@ -532,7 +532,7 @@ where
             // skip passes it.
             let mut cursor = ClassCursor::at(class.per_layer[i], full);
             let whole = cursor.covers_whole(x.dims()[1]);
-            let plan = class_chunk_plan(&layer.class_latents, x.dims()[1], &mut cursor, "Layer");
+            let plan = class_window_plan(&layer.class_latents, x.dims()[1], &mut cursor, "Layer");
             class.per_layer[i] = cursor.offset;
             full = full.map(|l| l + landing_count(&layer.class_latents, l));
             if !plan.is_empty() {
@@ -698,7 +698,7 @@ where
         let mut stream: Vec<Tensor<2>> = Vec::with_capacity(1);
         if let Some(class) = class.as_deref_mut() {
             let mut cursor = ClassCursor::at(class.stack, class.full_len);
-            let plan = class_chunk_plan(&self.class_latents, 1, &mut cursor, "Layers");
+            let plan = class_window_plan(&self.class_latents, 1, &mut cursor, "Layers");
             class.stack = cursor.offset;
             let row = |i: usize| class_row(self.class_latents_emb.as_ref(), i, batch, d_model);
             stream.extend(
@@ -882,7 +882,7 @@ where
                 let plan = if prime {
                     class_prime_plan(markers, stream.len(), &mut cursor, "Layer")
                 } else {
-                    class_chunk_plan(markers, stream.len(), &mut cursor, "Layer")
+                    class_window_plan(markers, stream.len(), &mut cursor, "Layer")
                 };
                 class.per_layer[pos] = cursor.offset;
                 plan

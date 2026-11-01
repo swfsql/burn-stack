@@ -6,9 +6,9 @@
 //!
 //! [`Lr`] is the LR schedule of a run: the rate as a function of the global
 //! training step. The primitive kinds are a cosine annealing with a linear
-//! warmup, a constant rate and a linear ramp. [`Lr::Sequence`] is a chain of
+//! warmup, a constant rate and a linear ramp. [`Lr::Chain`] is a chain of
 //! LR schedules, one after another. Each schedule of the chain
-//! ([`LrSegment`]) starts at a global training step, and counts the training
+//! ([`LrLink`]) starts at a global training step, and counts the training
 //! steps from there. So one config can hold a whole run: a warmup, constant
 //! stages that each go lower, and a cooldown.
 
@@ -24,8 +24,8 @@ pub enum Lr {
     Constant(ConstantLr),
     /// A linear ramp. See [`LinearLr`].
     Linear(LinearLr),
-    /// A chain of LR schedules, one after another. See [`LrSegment`].
-    Sequence(Vec<LrSegment>),
+    /// A chain of LR schedules, one after another. See [`LrLink`].
+    Chain(Vec<LrLink>),
 }
 
 impl Lr {
@@ -35,13 +35,13 @@ impl Lr {
             Lr::CosineAnnealing(inner) => inner.get_lr(step),
             Lr::Constant(inner) => inner.get_lr(step),
             Lr::Linear(inner) => inner.get_lr(step),
-            Lr::Sequence(segments) => {
-                let segment = segments
+            Lr::Chain(links) => {
+                let link = links
                     .iter()
                     .rev()
-                    .find(|segment| segment.from <= step)
+                    .find(|link| link.from <= step)
                     .expect("the first schedule of an LR chain must start at training step 0");
-                segment.lr.get_lr(step - segment.from)
+                link.lr.get_lr(step - link.from)
             }
         }
     }
@@ -50,12 +50,12 @@ impl Lr {
     /// schedule, its first schedule must start at training step 0, and the
     /// starts must increase. The check includes each schedule of the chain.
     pub fn validate(&self) {
-        let Lr::Sequence(segments) = self else {
+        let Lr::Chain(links) = self else {
             return;
         };
-        assert!(!segments.is_empty(), "an LR chain needs at least one schedule");
-        assert_eq!(segments[0].from, 0, "the first schedule of an LR chain must start at training step 0");
-        for pair in segments.windows(2) {
+        assert!(!links.is_empty(), "an LR chain needs at least one schedule");
+        assert_eq!(links[0].from, 0, "the first schedule of an LR chain must start at training step 0");
+        for pair in links.windows(2) {
             assert!(
                 pair[0].from < pair[1].from,
                 "the schedules of an LR chain must start at increasing training steps ({} then {})",
@@ -63,7 +63,7 @@ impl Lr {
                 pair[1].from
             );
         }
-        segments.iter().for_each(|segment| segment.lr.validate());
+        links.iter().for_each(|link| link.lr.validate());
     }
 
     /// The highest rate that the LR schedule sets.
@@ -72,7 +72,7 @@ impl Lr {
             Lr::CosineAnnealing(inner) => inner.max_lr.max(inner.min_lr),
             Lr::Constant(inner) => inner.lr,
             Lr::Linear(inner) => inner.start.max(inner.end),
-            Lr::Sequence(segments) => segments.iter().map(|segment| segment.lr.peak()).fold(0.0, f64::max),
+            Lr::Chain(links) => links.iter().map(|link| link.lr.peak()).fold(0.0, f64::max),
         }
     }
 
@@ -84,7 +84,7 @@ impl Lr {
         match self {
             Lr::CosineAnnealing(inner) => inner.max_lr = peak,
             Lr::Constant(inner) => inner.lr = peak,
-            Lr::Linear(_) | Lr::Sequence(_) => {
+            Lr::Linear(_) | Lr::Chain(_) => {
                 let old = self.peak();
                 assert!(old > 0.0, "an LR schedule with a peak of 0 cannot get the peak {peak}");
                 self.scale_rates(peak / old);
@@ -104,7 +104,7 @@ impl Lr {
                 inner.start *= factor;
                 inner.end *= factor;
             }
-            Lr::Sequence(segments) => segments.iter_mut().for_each(|segment| segment.lr.scale_rates(factor)),
+            Lr::Chain(links) => links.iter_mut().for_each(|link| link.lr.scale_rates(factor)),
         }
     }
 
@@ -124,10 +124,10 @@ impl Lr {
             }
             Lr::Constant(_) => {}
             Lr::Linear(inner) => scale(&mut inner.steps),
-            Lr::Sequence(segments) => {
-                for segment in segments {
-                    scale(&mut segment.from);
-                    segment.lr.scale_steps(num, den, true);
+            Lr::Chain(links) => {
+                for link in links {
+                    scale(&mut link.from);
+                    link.lr.scale_steps(num, den, true);
                 }
             }
         }
@@ -226,10 +226,10 @@ impl LinearLr {
     }
 }
 
-/// One schedule of the chain [`Lr::Sequence`]: the LR schedule `lr` from the
+/// One schedule of an [`Lr::Chain`]: the LR schedule `lr` from the
 /// global training step `from` until the next schedule of the chain starts.
 #[derive(Config, Debug)]
-pub struct LrSegment {
+pub struct LrLink {
     /// The global training step where this schedule of the chain starts.
     pub from: usize,
     /// The LR schedule. It counts the training steps from `from`: its training

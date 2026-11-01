@@ -39,7 +39,7 @@ mod tests;
 
 use crate::examples::tiny_stories::dataset::{FIRST_LETTER, VOCAB, VOCAB_SIZE, pair, unpair};
 use crate::modules::{Block, CacheTensors, VocabNetwork};
-use crate::utils::graph::{CapturedStep, WARMUP_STEPS};
+use crate::utils::capture::{CapturedStep, WARMUP_STEPS};
 use crate::utils::{ClassCursors, upcast};
 use burn::prelude::*;
 use burn::tensor::activation::softmax;

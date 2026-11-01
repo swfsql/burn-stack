@@ -9,7 +9,7 @@
 //! - an explicit config file does not read the saved config.
 
 use super::*;
-use crate::examples::training::{ConstantLr, CosineAnnealingLr, LinearLr, Lr, LrSegment, OptimizerConfig};
+use crate::examples::training::{ConstantLr, CosineAnnealingLr, LinearLr, Lr, LrLink, OptimizerConfig};
 use temp_dir::TempDir;
 
 fn scratch() -> TempDir {
@@ -113,9 +113,9 @@ fn the_batch_size_rescales_a_cosine_schedule() {
 #[test]
 fn the_flags_rescale_a_sequence() {
     let dir = scratch();
-    let mut training = config(OptimizerKind::AdamW).with_num_epochs(1).with_lr(Lr::Sequence(vec![
-        LrSegment::new(0, Lr::Linear(LinearLr::new(0.0, 4e-3, 100))),
-        LrSegment::new(1000, Lr::Constant(ConstantLr::new().with_lr(1e-3))),
+    let mut training = config(OptimizerKind::AdamW).with_num_epochs(1).with_lr(Lr::Chain(vec![
+        LrLink::new(0, Lr::Linear(LinearLr::new(0.0, 4e-3, 100))),
+        LrLink::new(1000, Lr::Constant(ConstantLr::new().with_lr(1e-3))),
     ]));
     parse(dir.path(), &["--epochs", "2", "--max-lr", "2e-3"]).override_training_config(&mut training, DType::F32);
     assert_eq!(training.lr.peak(), 2e-3);

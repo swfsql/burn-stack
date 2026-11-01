@@ -66,13 +66,13 @@ impl MuonPlan {
                 None => "fallback".to_string(),
                 Some(spec) => {
                     let muon_width: usize =
-                        spec.segments.iter().filter(|s| s.muon).map(|s| s.width).sum();
+                        spec.sub_projections.iter().filter(|s| s.muon).map(|s| s.width).sum();
                     // An untied weight holds one copy of the sub-projections
                     // per application.
                     let copies = if spec.tiled { row.dims[1] / spec.width() } else { 1 };
                     on_muon += muon_width * copies * row.dims[0];
-                    let segments = spec
-                        .segments
+                    let sub_projections = spec
+                        .sub_projections
                         .iter()
                         .map(|s| {
                             let mark = if s.muon { "" } else { "*" };
@@ -81,7 +81,7 @@ impl MuonPlan {
                         .collect::<Vec<_>>()
                         .join(" ");
                     let tiling = if spec.tiled { format!("×{copies}") } else { String::new() };
-                    format!("muon[{segments}]{tiling}")
+                    format!("muon[{sub_projections}]{tiling}")
                 }
             };
 

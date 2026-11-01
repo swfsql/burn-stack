@@ -28,7 +28,7 @@
 //! Within a fused projection, one more distinction applies. The
 //! sub-projections that emit *per-head scalars* (a step size, a decay rate)
 //! are gains, not feature maps. They stay on the fallback optimizer
-//! ([`ProjSegment::adamw`]).
+//! ([`SubProjection::adamw`]).
 //!
 //! ## Why 3-D tensors are never "stacked matrices"
 //!
@@ -76,9 +76,9 @@ pub mod sgd;
 /// [`ProjSpec`]: the sub-projections of a fused projection.
 pub mod spec;
 
-pub use segmented::{BlockState, Segmented, SegmentedState};
+pub use segmented::{Segmented, SegmentedState, SubProjectionState};
 pub use sgd::SgdConfig;
-pub use spec::{BLOCK_CONTAINERS, ProjScope, ProjSegment, ProjSpec};
+pub use spec::{BLOCK_CONTAINERS, ProjScope, ProjSpec, SubProjection};
 
 use burn::grad_clipping::GradientClipping;
 use burn::optim::{AdamW, AdamWConfig, AdjustLrFn, ModuleOptimizer, MuonConfig, Sgd};
@@ -201,8 +201,8 @@ impl MuonPlan {
                     ProjSpec::path(
                         "mlp.fc1.weight",
                         vec![
-                            ProjSegment::muon("value", hidden),
-                            ProjSegment::muon("gate", hidden),
+                            SubProjection::muon("value", hidden),
+                            SubProjection::muon("gate", hidden),
                         ],
                     ),
                     ProjSpec::path_whole("mlp.fc2.weight", mlp.d_model),
@@ -223,11 +223,11 @@ impl MuonPlan {
     /// Remove every sub-projection named `name` from the ownership of Muon (it
     /// goes to the fallback optimizer). So a caller can opt out a
     /// sub-projection without a rebuild of the plan.
-    pub fn without_segment(mut self, name: &str) -> Self {
+    pub fn without_sub_projection(mut self, name: &str) -> Self {
         for spec in &mut self.specs {
-            for segment in &mut spec.segments {
-                if segment.name == name {
-                    segment.muon = false;
+            for sub_projection in &mut spec.sub_projections {
+                if sub_projection.name == name {
+                    sub_projection.muon = false;
                 }
             }
         }

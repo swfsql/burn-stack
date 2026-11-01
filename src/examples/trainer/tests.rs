@@ -1,7 +1,7 @@
 //! The captured SGD steps of a trainer are its eager steps:
 //!
-//! - Under plain SGD, the whole step is captured (a hardware graph under
-//!   `backend-cuda`, which [`expects_graph`] asserts).
+//! - Under plain SGD, the whole step is captured (a hardware recording under
+//!   `backend-cuda`, which [`expects_recording`] asserts).
 //! - A batch of another shape steps eagerly into the same weights.
 //! - Every loss, output and final weight is what the `Sgd` of Burn gets when
 //!   it steps the same [`LossFn`] eagerly.
@@ -22,9 +22,9 @@ const D_MODEL: usize = 8;
 const LEN: usize = 5;
 const STEPS: usize = 8;
 
-/// Whether this build and device give a hardware graph (cubecl without
+/// Whether this build and device give a hardware recording (cubecl without
 /// fusion, on a CUDA/HIP device).
-fn expects_graph(device: &Device) -> bool {
+fn expects_recording(device: &Device) -> bool {
     let name = format!("{device:?}");
     cfg!(all(feature = "cubecl", not(feature = "fusion")))
         && (name.contains("Cuda") || name.contains("Hip"))
@@ -68,7 +68,7 @@ fn captured_sgd_steps_are_the_eager_steps() {
     let (eager, eager_trainer) = run(false);
     let (captured, captured_trainer) = run(true);
     assert!(!eager_trainer.is_captured());
-    assert_eq!(captured_trainer.is_captured(), expects_graph(&device));
+    assert_eq!(captured_trainer.is_captured(), expects_recording(&device));
     for (k, ((l0, y0), (l1, y1))) in eager.into_iter().zip(captured).enumerate() {
         let d = max_abs_diff(l0, l1);
         assert_eq!(d, 0.0, "loss {k} differs by {d}");

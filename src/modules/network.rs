@@ -2,8 +2,8 @@ use crate::modules::LayersBuilder;
 use crate::modules::{RmsNorm, RmsNormConfig};
 use crate::prelude::*;
 use crate::utils::class::{
-    assert_full_len_known, class_chunk_plan, class_emb_width, class_marker_output_indices,
-    class_prime_plan, class_row, init_class_emb, insert_class_markers_padded,
+    assert_full_len_known, class_emb_width, class_marker_output_indices, class_prime_plan,
+    class_row, class_window_plan, init_class_emb, insert_class_markers_padded,
 };
 use crate::utils::{ClassCursor, ClassCursors, Packed, Padding};
 use burn::module::Param;
@@ -140,7 +140,7 @@ where
             return self.step_one(x, caches, None);
         };
         let mut cursor = ClassCursor::at(class.network, class.full_len);
-        let plan = class_chunk_plan(&self.class_tokens, 1, &mut cursor, "LatentNetwork");
+        let plan = class_window_plan(&self.class_tokens, 1, &mut cursor, "LatentNetwork");
         class.network = cursor.offset;
         if plan.is_empty() {
             return self.step_one(x, caches, Some(&mut *class));
