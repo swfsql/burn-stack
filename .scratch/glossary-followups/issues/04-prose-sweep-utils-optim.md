@@ -156,12 +156,14 @@ For a later rename:
   (the `Graph` of Burn). The prose calls it "the recording", and "a hardware
   recording" when `Graph::is_hardware` is true. Bare "graph" now names only
   the autodiff graph. Open for the user: does the glossary need an entry for
-  **recording**?
-- **Captured step.** The glossary entry says "a step that the backend records
+  **recording**? The user chose to add **Recording** to `GLOSSARY.md` (the
+  Calls group).
+- **Captured step.** The glossary entry said "a step that the backend records
   once". A `CapturedStep` also holds a fixed-shape `forward` (caches `()`)
   and a training step (`Weights`). The header of `graph.rs` lists them as
   "other calls of a fixed shape". Open for the user: does the glossary entry
-  need to name them?
+  need to name them? The user chose to widen the entry: the recorded call is
+  a step, a forward or a training step.
 - **LR schedules.** `Lr::Sequence` is "a chain of LR schedules", and one
   `LrSegment` is "one schedule of the chain" (the term map of ticket 02). A
   step of an LR schedule is a "training step". "A step down" of the rate is

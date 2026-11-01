@@ -99,11 +99,16 @@ from one window to the next.
 _Avoid_: chunk (for a window)
 
 **Captured step**:
-A step that the backend records once and then replays as one dispatch.
+A call of a fixed shape that the backend records once and then replays as one
+dispatch. The call is a step, a forward or a training step.
 _Avoid_: graph (alone), CUDA graph
 
 **Replay**:
 One run of a captured step.
+
+**Recording**:
+What the backend records for a captured step. Each replay runs the recording.
+_Avoid_: graph (alone)
 
 ### Class markers
 
