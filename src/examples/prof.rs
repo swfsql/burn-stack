@@ -1,9 +1,10 @@
 //! Opt-in wall-clock timers over the phases of a training step. They show where
-//! the time of a step goes, and whether a phase grows over a run. An example
-//! flag such as `--profile <N>` calls [`init`]. Then the module prints the mean
-//! milliseconds of each phase once per `N` windows. With `sync`, it also syncs
-//! the device after each phase, so a phase then includes its GPU execution,
-//! not only its enqueueing. Every function does nothing until [`init`].
+//! the time of a training step goes, and whether a phase grows over a run. An
+//! example flag such as `--profile <N>` calls [`init`]. Then the module prints
+//! the mean milliseconds of each phase once per `N` training steps. With
+//! `sync`, it also syncs the device after each phase, so a phase then includes
+//! its GPU execution, not only its enqueueing. Every function does nothing
+//! until [`init`].
 //!
 //! Phases:
 //!
@@ -11,12 +12,16 @@
 //! - `bwd`: backward (with [`extra`], also the backward of the extra pass).
 //! - `gap`: window end → the optimizer. These are the metric reads of the loop,
 //!   that is its implicit sync.
-//! - `opt`: the optimizer step.
+//! - `opt`: the optimizer update.
 //! - `out`: optimizer → next window (logging, next batch).
 //!
-//! The calls of one step, in order: [`window_start`], [`mark`] after the
-//! forward, [`mark`] after the backward, [`window_end`], then [`opt_start`]
-//! and [`opt_end`] around the optimizer step.
+//! The calls of one training step, in order:
+//!
+//! 1. [`window_start`],
+//! 2. [`mark`] after the forward,
+//! 3. [`mark`] after the backward,
+//! 4. [`window_end`],
+//! 5. [`opt_start`] and [`opt_end`] around the optimizer update.
 
 use burn::prelude::*;
 use std::sync::{Mutex, OnceLock};
@@ -34,8 +39,8 @@ struct State {
 
 static STATE: OnceLock<Mutex<State>> = OnceLock::new();
 
-/// Start timing: print the means of the phases once per `every` windows,
-/// and sync the device after each phase if `sync` is true.
+/// Start timing: print the means of the phases once per `every` training
+/// steps, and sync the device after each phase if `sync` is true.
 pub fn init(every: usize, sync: bool) {
     let state = Mutex::new(State {
         every,
@@ -96,7 +101,7 @@ pub fn extra(t2: Instant, t3: Instant, t4: Instant) {
     }
 }
 
-/// The start of the optimizer step (`t3`). It also ends the `gap` phase.
+/// The start of the optimizer update (`t3`). It also ends the `gap` phase.
 pub fn opt_start() -> Instant {
     let now = Instant::now();
     if let Some(state) = STATE.get() {
@@ -108,8 +113,8 @@ pub fn opt_start() -> Instant {
     now
 }
 
-/// The end of the optimizer step. Once per `every` steps, print the `prof`
-/// line.
+/// The end of the optimizer update. Once per `every` training steps, print the
+/// `prof` line.
 pub fn opt_end(t3: Instant) {
     let Some(state) = STATE.get() else {
         return;

@@ -34,9 +34,10 @@ pub type FloatElement = f32;
 /// A worker that builds batches directly on a GPU (`set_device(gpu)`) issues
 /// device work from its own thread, concurrently with the loop. On CUDA,
 /// cubecl gives every thread its own stream over one memory pool. A worker
-/// upload that lands during the capture of a step invalidates the recording,
-/// and the [`CapturedStep`](crate::utils::CapturedStep) then silently steps
-/// eagerly. Whether it lands is a race against the prefetch of the loader.
+/// upload that lands during a capture invalidates the recording, and the
+/// [`CapturedStep`](crate::utils::CapturedStep) then silently runs each call
+/// eagerly. Whether it lands is a race against the
+/// prefetch of the loader.
 /// PyTorch avoids it in the same way: its workers produce only CPU tensors.
 ///
 /// Without `backend-flex`, there is no host device to name, and this is the

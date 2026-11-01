@@ -24,7 +24,7 @@ fn the_loss_adds_the_case_of_the_letters() {
         .collect();
     let targets = Tensor::<1, Int>::from_ints(pairs.concat().as_slice(), &device).reshape([batch, seq, 2]);
     let inputs = targets.zeros_like();
-    // Slot 1 has 2 real positions, then padding.
+    // Row 1 has 2 real positions, then padding.
     let scored = [seq, 2];
     let out = lm_output(logits.clone(), inputs, targets, &scored);
 

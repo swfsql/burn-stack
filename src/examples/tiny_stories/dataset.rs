@@ -44,8 +44,8 @@
 //! # Items, windows and runs
 //!
 //! One **item is one story**, and nothing is spliced between two stories. A
-//! story is a self-contained example, and no separator character stands in for
-//! its boundary. Leading and trailing whitespace is stripped, so the first
+//! story is a self-contained example, and no separator character marks its
+//! start or its end. Leading and trailing whitespace is stripped, so the first
 //! token of an item is always a real symbol. The model decides what (if
 //! anything) marks the start, not the corpus. See
 //! [`lm_output`](super::lm::lm_output) for the one hook that this side offers.
@@ -57,9 +57,9 @@
 //! length comes from the data, capped by `run_len`. The frontier gate can end
 //! it early.
 //!
-//! Every slot of a batch walks its own story, and stories differ in length. So
+//! Every row of a batch walks its own story, and stories differ in length. So
 //! a batch is padded to a whole number of windows of its longest story.
-//! [`TinyStoriesBatch::scored`] records how many positions of each slot are
+//! [`TinyStoriesBatch::scored`] records how many positions of each row are
 //! real, and [`lm_output`](super::lm::lm_output) scores only those. Padding
 //! never reaches the loss or the accuracy.
 //!
@@ -68,21 +68,21 @@
 //! The padding of a batch of stories grows with the window. So a long window
 //! wastes most of a batch on its short stories. A packed batch
 //! ([`PackedStoriesDataset`], [`PackedStoriesBatcher`]) is one window of
-//! `rows` rows. Each row holds whole stories, one after another, and each
-//! story starts from a fresh state (see [`crate::utils::packing`]). The model
-//! says where a story can start and how many opening slots it reserves
-//! ([`PackLayout`]). The packer fills the rows first-fit, over a few open rows
-//! ([`pack_rows`]). No state goes from one packed batch to the next. Only the
-//! train split is packed.
+//! `rows` rows. Each row holds whole stories, one after another, as its
+//! segments. Each segment starts from a fresh state (see
+//! [`crate::utils::packing`]). The model says where a segment can start and
+//! how many opening slots it reserves ([`PackLayout`]). The packer fills the
+//! rows first-fit, over a few open rows ([`pack_rows`]). No state goes from
+//! one packed batch to the next. Only the train split is packed.
 //!
 //! # Length buckets
 //!
 //! A model that takes no packed rows can still waste less on padding. A
 //! bucketed batch ([`BucketedStoriesDataset`], [`BucketedStoriesBatcher`]) is
 //! one window of stories of similar length: each story goes to the shortest
-//! of a few *slots* (batch lengths) that holds it ([`bucket_batches`]). Each
-//! slot takes as many stories as score about the same number of characters,
-//! so a slot has one batch shape. Only the train split is bucketed.
+//! of a few *buckets* (batch lengths) that holds it ([`bucket_batches`]). Each
+//! bucket takes as many stories as score about the same number of characters,
+//! so a bucket has one batch shape. Only the train split is bucketed.
 
 #[cfg(test)]
 mod tests;
@@ -139,9 +139,9 @@ const NO_TOKEN: u8 = u8::MAX;
 ///
 /// A blank line would be the obvious choice, and it is the wrong one. The
 /// dataset card allows `\n` as a paragraph separator, and does not forbid two
-/// in a row. 5 of the first 32,768 training stories contain one. The separator
-/// is a property of the cache file only. It is never encoded, so the model
-/// never sees it.
+/// of them one after the other. 5 of the first 32,768 training stories contain
+/// a blank line. The separator is a property of the cache file only. It is
+/// never encoded, so the model never sees it.
 pub const STORY_SEPARATOR: &str = "\u{1e}";
 
 /// Byte ↔ token-id tables for [`ALPHABET`], with `A-Z` folded onto `a-z`.
@@ -457,10 +457,10 @@ impl TinyStoriesDataset {
     }
 
     /// The windows that the split holds if every story is walked alone. This
-    /// is the number of optimizer steps of an epoch at `batch_size = 1` when
+    /// is the number of training steps of an epoch at `batch_size = 1` when
     /// the frontier never stalls. A real batch runs the windows of its
-    /// *longest* story, so it takes somewhat fewer steps over somewhat more
-    /// padding.
+    /// *longest* story, so it takes somewhat fewer training steps over
+    /// somewhat more padding.
     pub fn num_windows(&self) -> usize {
         self.stories
             .iter()
@@ -491,31 +491,31 @@ pub struct TinyStoriesBatch {
     /// Next-character targets (the inputs shifted by one), as pairs:
     /// `[batch_size, num_windows · seq_len, 2]`.
     pub targets: Tensor<3, Int>,
-    /// Real (non-padding) scored positions per batch slot: `story_len - 1` for
-    /// the whole batch, and what is left of it for a [`window`](Self::window).
+    /// Real (non-padding) scored positions per row: `story_len - 1` for the
+    /// whole batch, and what is left of it for a [`window`](Self::window).
     pub scored: Vec<usize>,
     /// Window length this batch was padded against.
     pub seq_len: usize,
     /// `Some` for a batch of packed rows (see [`PackedStoriesBatcher`]). Then
-    /// the batch is one window, and a slot holds several stories.
+    /// the batch is one window, and a row holds several segments.
     pub packed: Option<PackedRows>,
 }
 
-/// The layout of a batch of packed rows: where each story starts, and which
+/// The layout of a batch of packed rows: where each segment starts, and which
 /// positions are scored.
 #[derive(Clone, Debug)]
 pub struct PackedRows {
-    /// The resets and the opening slots of the stories, for the model.
+    /// The resets and the opening slots of the segments, for the model.
     pub layout: Packed,
     /// `[batch_size, width]`: `true` at a scored position. These are the
-    /// characters of each story after its first, plus its last opening slot
+    /// characters of each segment after its first, plus its last opening slot
     /// (scored against its first character).
     pub score_bs: Tensor<2, Bool>,
 }
 
 impl TinyStoriesBatch {
     /// The batch, built by a dataloader worker on the host, moved to `device`
-    /// by the thread that steps the model (see
+    /// by the thread that trains the model (see
     /// [`loader_device`](crate::examples::device::loader_device)).
     pub fn to_device(self, device: &Device) -> Self {
         use crate::examples::device::batch_int;
@@ -538,12 +538,12 @@ impl TinyStoriesBatch {
     }
 
     /// Window `w` of the batch: the `[batch_size, seq_len, 2]` slice of both
-    /// tensors, with [`scored`](Self::scored) narrowed to what each slot still
+    /// tensors, with [`scored`](Self::scored) narrowed to what each row still
     /// has left inside it (`0` for a story that ended earlier).
     ///
-    /// Every batch slot advances together, so window `w` continues window
-    /// `w - 1` in all of them. This makes one carried cache valid for the
-    /// whole batch.
+    /// Every row of the batch advances together, so window `w` continues
+    /// window `w - 1` in all of them. This makes one carried cache valid for
+    /// the whole batch.
     pub fn window(&self, w: usize) -> Self {
         let seq_len = self.seq_len;
         assert!(
@@ -605,7 +605,7 @@ impl Batcher<TinyStoriesItem, TinyStoriesBatch> for TinyStoriesBatcher {
         for (item, &n) in items.iter().zip(&scored) {
             // The pair (0, 0) pads both sides. `scored` drops every padded
             // position from the loss, so the pad token matters only for the
-            // state of a slot whose story is already over.
+            // state of a row whose story is already over.
             inputs.extend(item.tokens[..n].iter().flat_map(|&t| pair(t)));
             targets.extend(item.tokens[1..].iter().flat_map(|&t| pair(t)));
             inputs.resize(inputs.len() + (padded - n) * 2, 0);
@@ -629,16 +629,16 @@ impl Batcher<TinyStoriesItem, TinyStoriesBatch> for TinyStoriesBatcher {
 /// What the model asks of a packed row. The data side does not know why.
 #[derive(Clone, Copy, Debug)]
 pub struct PackLayout {
-    /// A story starts only at a multiple of this position (the positions
+    /// A segment starts only at a multiple of this position (the positions
     /// where the model accepts a reset, for example its chunk starts).
     pub align: usize,
-    /// Opening slots in front of each story (the model puts its class latents
-    /// there).
+    /// Opening slots in front of each segment (the model puts its class
+    /// latents there).
     pub lead: usize,
 }
 
 impl Default for PackLayout {
-    /// A model with no constraint: a story can start anywhere, with no
+    /// A model with no constraint: a segment can start anywhere, with no
     /// opening slots.
     fn default() -> Self {
         Self { align: 1, lead: 0 }
@@ -646,7 +646,7 @@ impl Default for PackLayout {
 }
 
 impl PackLayout {
-    /// Positions that a story of `len` tokens takes in a row: its opening
+    /// Positions that a segment of `len` tokens takes in a row: its opening
     /// slots, then every token but the last (the inputs).
     pub fn positions(&self, len: usize) -> usize {
         self.lead + len - 1
@@ -654,11 +654,11 @@ impl PackLayout {
 }
 
 /// Pack stories into rows of `width` positions, first-fit over `open_rows`
-/// open rows. Returns the stories of each row, in row order.
+/// open rows. Returns the stories of each row (its segments), in row order.
 ///
 /// `lens` holds the token count of each story, and `order` the order in which
 /// to place them (a shuffle). A story goes into the first open row that has
-/// room for it after the last story of that row (rounded up to
+/// room for it after the last segment of that row (rounded up to
 /// `layout.align`). When no open row has room, the oldest open row closes,
 /// and a new row opens with the story. So a story moves ahead of its place in
 /// `order` by at most `open_rows` rows. `open_rows = 1` keeps the order
@@ -674,7 +674,7 @@ pub fn pack_rows(
     open_rows: usize,
 ) -> Vec<Vec<usize>> {
     assert!(open_rows >= 1, "the packer keeps at least one open row");
-    assert!(layout.align >= 1, "a story starts at a multiple of at least 1");
+    assert!(layout.align >= 1, "a segment starts at a multiple of at least 1");
     let mut rows = Vec::new();
     // Each open row: its stories and its first free (aligned) position.
     let mut open: std::collections::VecDeque<(Vec<usize>, usize)> = Default::default();
@@ -699,10 +699,11 @@ pub fn pack_rows(
     rows
 }
 
-/// One packed row: the cased tokens of its stories, in row order.
+/// One packed row: the cased tokens of its segments (one story each), in row
+/// order.
 #[derive(Clone, Debug)]
 pub struct PackedItem {
-    /// The stories of the row.
+    /// The segments of the row.
     pub stories: Vec<Vec<u8>>,
 }
 
@@ -710,7 +711,7 @@ pub struct PackedItem {
 pub struct PackedStoriesDataset {
     /// The stories, each truncated to fit into one row.
     stories: Arc<Vec<Vec<u8>>>,
-    /// The stories of each row.
+    /// The segments of each row, as indices into `stories`.
     rows: Vec<Vec<usize>>,
 }
 
@@ -776,11 +777,11 @@ impl Dataset<PackedItem> for PackedStoriesDataset {
 /// Stacks [`PackedItem`]s into a one-window [`TinyStoriesBatch`] of
 /// `[rows, width]`, with its [`PackedRows`].
 ///
-/// A story takes `lead` opening slots, then its tokens but the last as
+/// A segment takes `lead` opening slots, then its tokens but the last as
 /// inputs. The next token is the target of each input. The last opening slot
-/// is scored against the first token. The next story starts at the next
-/// multiple of `align`. The pair (0, 0) fills the slots and the gaps, which are
-/// not scored. Inputs and targets are pairs (see [`pair`]).
+/// is scored against the first token. The next segment starts at the next
+/// multiple of `align`. The pair (0, 0) fills the opening slots and the gaps,
+/// which are not scored. Inputs and targets are pairs (see [`pair`]).
 #[derive(Clone)]
 pub struct PackedStoriesBatcher {
     /// Positions per row.
@@ -850,21 +851,22 @@ impl Batcher<PackedItem, TinyStoriesBatch> for PackedStoriesBatcher {
 // Length buckets
 // ===========================================================================
 
-/// Group stories into batches of similar length (the *buckets*). Returns the
-/// slot and the stories of each batch, slot after slot.
+/// Group stories into batches of similar length, one bucket (a batch length)
+/// for each batch. Returns the bucket and the stories of each batch, bucket
+/// after bucket.
 ///
 /// `lens` holds the scored count of each story (its tokens less one), and
-/// `order` the order in which to take them (a shuffle). `slots` are the batch
-/// lengths, ascending. A story goes to the shortest slot that holds it. A
-/// slot takes `round(chars / m)` stories per batch, where `m` is the mean
+/// `order` the order in which to take them (a shuffle). `slots` are the
+/// buckets, ascending. A story goes to the shortest bucket that holds it. A
+/// bucket takes `round(chars / m)` stories per batch, where `m` is the mean
 /// scored count of its own stories. So each batch scores about `chars`
-/// characters, and a slot has one batch shape. The stories that do not fill
-/// a last batch move up to the next slot. The last slot can end with one
+/// characters, and a bucket has one batch shape. The stories that do not fill
+/// a last batch move up to the next bucket. The last bucket can end with one
 /// smaller batch.
 ///
 /// # Panics
-/// If the slots do not ascend strictly, or a story is longer than the
-/// longest slot.
+/// If the buckets do not ascend strictly, or a story is longer than the
+/// longest bucket.
 pub fn bucket_batches(
     lens: &[usize],
     order: &[usize],
@@ -873,14 +875,14 @@ pub fn bucket_batches(
 ) -> Vec<(usize, Vec<usize>)> {
     assert!(
         !slots.is_empty() && slots.windows(2).all(|w| w[0] < w[1]),
-        "the slots must ascend strictly: {slots:?}"
+        "the buckets must ascend strictly: {slots:?}"
     );
     let mut members = vec![Vec::new(); slots.len()];
     for &story in order {
         let k = slots
             .iter()
             .position(|&slot| lens[story] <= slot)
-            .expect("a story is longer than the longest slot");
+            .expect("a story is longer than the longest bucket");
         members[k].push(story);
     }
     let mut batches = Vec::new();
@@ -902,11 +904,12 @@ pub fn bucket_batches(
 }
 
 /// The order of a VRAM probe over the `batches` of [`bucket_batches`]: first
-/// `k` batches of each slot, slot by slot in the order of `slots` (fewer if a
-/// slot has fewer), then the other batches in the order of a shuffle with
-/// `seed`. The memory of a step depends on the shape of its batch (its slot),
-/// not in proportion to its positions, and the pool keeps the pages of each
-/// shape. So a probe of `k · slots.len()` steps meets every shape of a run.
+/// `k` batches of each bucket, bucket by bucket in the order of `slots` (fewer
+/// if a bucket has fewer), then the other batches in the order of a shuffle
+/// with `seed`. The memory of a training step depends on the shape of its
+/// batch (its bucket), not in proportion to its positions. The pool keeps the
+/// pages of each shape. So a probe of `k · slots.len()` training steps meets
+/// every shape of a run.
 pub fn probe_order(
     batches: Vec<(usize, Vec<usize>)>,
     slots: &[usize],
@@ -932,7 +935,7 @@ pub fn probe_order(
 /// One batch of stories of similar length (see [`bucket_batches`]).
 #[derive(Clone, Debug)]
 pub struct BucketItem {
-    /// The positions of each row of the batch.
+    /// The bucket of the batch: the positions of each of its rows.
     pub slot: usize,
     /// The stories of the batch.
     pub stories: Vec<Vec<u8>>,
@@ -941,22 +944,23 @@ pub struct BucketItem {
 /// The train split as batches of similar length (see [`bucket_batches`]).
 /// One item is one whole batch, so its dataloader takes one item per batch.
 pub struct BucketedStoriesDataset {
-    /// The stories, each truncated to the longest slot.
+    /// The stories, each truncated to the longest bucket.
     stories: Arc<Vec<Vec<u8>>>,
-    /// The slot and the stories of each batch.
+    /// The bucket and the stories of each batch.
     batches: Vec<(usize, Vec<usize>)>,
 }
 
 impl BucketedStoriesDataset {
-    /// Group `n_stories` of `split` into batches of `slots` positions that
-    /// score about `chars` characters each, in the order of a shuffle with
-    /// `seed`. A story longer than the longest slot is truncated to fit. With
-    /// `probe > 0`, the batches take the order of [`probe_order`] (`k =
-    /// probe`); the loader must then keep the order (no shuffle, one worker).
+    /// Group `n_stories` of `split` into batches that score about `chars`
+    /// characters each, over the buckets `slots`, in the order of a shuffle
+    /// with `seed`. A story longer than the longest bucket is truncated to fit.
+    /// With `probe > 0`, the batches take the order of [`probe_order`]
+    /// (`k = probe`). Then the loader must keep the order (no shuffle, one
+    /// worker).
     pub fn new(split: Split, n_stories: usize, slots: &[usize], chars: usize, seed: u64, probe: usize) -> Self {
         use rand::SeedableRng;
         use rand::seq::SliceRandom;
-        let longest = *slots.iter().max().expect("at least one slot");
+        let longest = *slots.iter().max().expect("at least one bucket");
         let stories: Vec<Vec<u8>> = stories(split, n_stories)
             .iter()
             .map(|story| {
@@ -996,10 +1000,11 @@ impl BucketedStoriesDataset {
         scored as f64 / positions as f64
     }
 
-    /// Each slot as `slot: batches × stories` (the stories of its first
+    /// Each bucket as `bucket: batches × stories` (the stories of its first
     /// batch).
     pub fn summary(&self) -> String {
-        // Per slot (ascending): the batches, and the stories of its first one.
+        // Per bucket (ascending): the batches, and the stories of its first
+        // one.
         let mut slots: std::collections::BTreeMap<usize, (usize, usize)> = Default::default();
         for (slot, batch) in &self.batches {
             slots.entry(*slot).or_insert((0, batch.len())).0 += 1;
@@ -1024,8 +1029,8 @@ impl Dataset<BucketItem> for BucketedStoriesDataset {
 }
 
 /// Stacks the one [`BucketItem`] of a batch into a one-window
-/// [`TinyStoriesBatch`] of `[stories, slot]`, as [`TinyStoriesBatcher`] pads
-/// it.
+/// [`TinyStoriesBatch`] of `[stories, slot]` (`slot` is the bucket), as
+/// [`TinyStoriesBatcher`] pads it.
 #[derive(Clone, Default)]
 pub struct BucketedStoriesBatcher;
 

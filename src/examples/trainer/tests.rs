@@ -1,10 +1,11 @@
-//! The captured SGD steps of a trainer are its eager steps:
+//! The captured SGD training steps of a trainer are its eager training steps:
 //!
-//! - Under plain SGD, the whole step is captured (a hardware recording under
-//!   `backend-cuda`, which [`expects_recording`] asserts).
-//! - A batch of another shape steps eagerly into the same weights.
+//! - Under plain SGD, the whole training step is captured (a hardware
+//!   recording under `backend-cuda`, which [`expects_recording`] asserts).
+//! - A batch of another shape gets an eager training step on the same
+//!   weights.
 //! - Every loss, output and final weight is what the `Sgd` of Burn gets when
-//!   it steps the same [`LossFn`] eagerly.
+//!   it runs the training steps of the same [`LossFn`] eagerly.
 
 use super::Trainer;
 use crate::examples::training::OptimizerConfig;
@@ -46,7 +47,7 @@ fn captured_sgd_steps_are_the_eager_steps() {
         .with_grad_clipping(Some(GradientClippingConfig::Value(0.05)));
     let optimizer = OptimizerConfig::new(sgd.clone().into());
     let normal = |b| Tensor::<3>::random([b, LEN, D_MODEL], Distribution::Normal(0.0, 1.0), &device);
-    // Batches of 3, but one of 2: the shape the graph was not captured at.
+    // Batches of 3, but one of 2: a shape that the capture did not take.
     let data: Vec<(Tensor<3>, Tensor<3>)> = (0..STEPS)
         .map(|k| if k == STEPS / 2 { 2 } else { 3 })
         .map(|b| (normal(b), normal(b)))

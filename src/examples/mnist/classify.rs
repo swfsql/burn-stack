@@ -41,9 +41,9 @@ pub trait MnistModel {
     fn valid(&self) -> Self::Valid;
 
     /// One whole training step (forward, backward, optimizer). Returns the
-    /// outputs of the batch (for the metrics). Typically the step of a
-    /// [`Trainer`](crate::examples::trainer::Trainer), which replays it from a
-    /// captured graph under plain SGD.
+    /// outputs of the batch (for the metrics). Typically the training step of
+    /// a [`Trainer`](crate::examples::trainer::Trainer), which replays it as a
+    /// captured step under plain SGD.
     fn train_step(&mut self, batch: MnistBatch, optim: &mut ModuleOptimizer, lr: f64) -> ClassificationOutput;
 
     /// Checkpoint the wrapped network into the artifacts directory.
@@ -67,15 +67,15 @@ pub fn sample_images(n: usize, device: &Device) -> (Tensor<4>, Vec<u8>) {
     (images, labels)
 }
 
-/// The default cadence of the MNIST examples: every 100 steps, checkpoint and
-/// run a 10-batch validation (plus the prediction PNGs).
+/// The default cadence of the MNIST examples: every 100 training steps,
+/// checkpoint and run a 10-batch validation (plus the prediction PNGs).
 pub const CADENCE: Cadence = Cadence {
     checkpoint_every: Some(100),
     valid_every: Some(100),
     valid_batches: Some(10),
 };
 
-/// Train for (the rest of) one epoch. Step the optimizer per batch, and
+/// Train for (the rest of) one epoch. Take one training step per batch, and
 /// checkpoint and validate at the cadence of the `session`. Returns the
 /// updated model.
 ///
@@ -151,7 +151,8 @@ pub fn epoch_train<W: MnistModel>(
                 session,
             );
 
-            // Save digit + class-probability PNGs into a new per-step dir.
+            // Save digit + class-probability PNGs into a new directory for
+            // this batch.
             let sample_dir = app_args
                 .artifacts_path
                 .join(format!("epoch-{epoch}-batch-{b}"));
@@ -233,7 +234,7 @@ pub fn epoch_valid<V>(
 }
 
 /// The cross-entropy classification output for a batch, from the
-/// `[batch, 10]` logits of the last timestep.
+/// `[batch, 10]` logits of the last position.
 pub fn classification_output(logits: Tensor<2>, targets: Tensor<1, Int>) -> ClassificationOutput {
     let loss = burn::nn::loss::CrossEntropyLossConfig::new()
         .init(&logits.device())

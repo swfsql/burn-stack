@@ -3,9 +3,10 @@
 //! - the optimizer flags pick one of the four shapes,
 //! - on a loaded config, the flags replace its optimizer, unless the state
 //!   saved under that optimizer would then be ignored,
-//! - `--batch-size` rescales a cosine schedule with the step count of the
-//!   epoch, and `--epochs` and `--max-lr` rescale a sequence,
-//! - the clock of the time budget starts at the first step,
+//! - `--batch-size` rescales a cosine LR schedule with the training-step count
+//!   of the epoch, and `--epochs` and `--max-lr` rescale a chain of LR
+//!   schedules,
+//! - the clock of the time budget starts at the first training step,
 //! - an explicit config file does not read the saved config.
 
 use super::*;
@@ -120,8 +121,8 @@ fn the_flags_rescale_a_sequence() {
     parse(dir.path(), &["--epochs", "2", "--max-lr", "2e-3"]).override_training_config(&mut training, DType::F32);
     assert_eq!(training.lr.peak(), 2e-3);
     let mid_warmup = training.lr.get_lr(100);
-    assert!((mid_warmup - 1e-3).abs() < 1e-15, "the warmup ends at step 200 now: {mid_warmup}");
-    assert_eq!(training.lr.get_lr(2000), 5e-4, "the step down moves to step 2000 and scales");
+    assert!((mid_warmup - 1e-3).abs() < 1e-15, "the warmup ends at training step 200 now: {mid_warmup}");
+    assert_eq!(training.lr.get_lr(2000), 5e-4, "the drop moves to training step 2000 and scales");
 }
 
 /// With `--training-config`, the config in the artifacts directory is not
@@ -142,7 +143,7 @@ fn an_explicit_config_does_not_read_the_saved_one() {
 fn the_clock_starts_at_the_first_step() {
     let mut budget = Budget::new(None, Some(Duration::ZERO));
     assert!(budget.is_capped());
-    assert!(!budget.is_exhausted(), "no step taken, no time spent");
+    assert!(!budget.is_exhausted(), "no training step taken, no time spent");
     budget.spend();
     assert!(budget.is_exhausted());
 }

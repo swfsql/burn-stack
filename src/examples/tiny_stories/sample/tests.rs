@@ -1,18 +1,19 @@
 //! These tests assert four things:
 //!
 //! - The device draw of the id is the inverse-CDF draw of the host loop. The
-//!   tests check every running total and one step to each side, where the two
-//!   could differ.
+//!   tests check every running total and the adjacent float on each side,
+//!   where the two could differ.
 //! - The device draw of the case flag follows its logit, and a symbol never
 //!   gets a flag.
 //! - A story decodes to the same text captured, eagerly, and sampled on the
 //!   host one step at a time.
-//! - A chunked prefill is the same captured and eagerly, across prompts that
-//!   share one graph. It is within float noise of the opening and the prompt
-//!   in one pass.
+//! - A prefill in windows is the same captured and eagerly, across prompts
+//!   that share one recording. It is within float noise of the opening and
+//!   the prompt in one forward.
 //!
-//! Off a hardware-graph build (flex, the default), the captured decode runs
-//! eager steps. Under `backend-cuda`, it replays a real graph.
+//! On a build with no hardware recording (flex, the default), the captured
+//! decode runs eager steps. Under `backend-cuda`, it replays a hardware
+//! recording.
 
 use super::{Prefill, generate, sample_token};
 use crate::examples::tiny_stories::dataset::{FIRST_LETTER, UPPER, VOCAB, VOCAB_SIZE, pair, unpair};
@@ -143,7 +144,7 @@ fn an_f64_model_draws_in_f64() {
 
 /// Two real layers over the story alphabet, opened by two `Start` latents (so
 /// `generate` primes, and can capture). The block does not check its padding: a
-/// captured chunk cannot read its mask back. The flag input is random (it is
+/// captured step cannot read its mask back. The flag input is random (it is
 /// zero at init), so the flags of the inputs change the outputs.
 fn story_net(device: &Device) -> VocabNetwork<RefBlock> {
     let mut net = VocabNetworkBuilder {
@@ -228,13 +229,14 @@ fn a_story_is_the_same_captured_eager_and_host_sampled() {
 
 const CHUNK: usize = 8;
 
-/// A [`Prefill`] of `net`, in chunks of [`CHUNK`].
+/// A [`Prefill`] of `net`, in windows of [`CHUNK`] tokens.
 fn prefill_of<'a>(
     net: &'a VocabNetwork<RefBlock>,
     device: &Device,
     capture: bool,
 ) -> Prefill<'a, RefCaches> {
-    // Safety: the chunk reads nothing but its arguments and `net`, borrowed.
+    // Safety: the forward of a window reads nothing but its arguments and
+    // `net`, borrowed.
     unsafe {
         Prefill::new(device, CHUNK, capture, |x, c, pad, class| {
             net.forward(x, Some(c), (), Some(class), Some(pad))

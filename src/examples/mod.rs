@@ -1,13 +1,13 @@
 //! Example-support scaffolding shared by the consumers of this crate.
 //!
-//! None of this is part of the composition layer. It is the plumbing that
-//! every `examples/` directory would otherwise write again:
+//! None of this is part of the containers. It is the plumbing that every
+//! `examples/` directory would otherwise write again:
 //!
 //! - CLI + artifact handling ([`cli`]),
 //! - runtime dtype selection ([`device`]),
 //! - the [`training`] config (AdamW or SGD, optionally with Muon),
-//! - the [`trainer`] that steps a module under it (from a captured graph under
-//!   plain SGD),
+//! - the [`trainer`] that runs the training steps of a module under it (a
+//!   captured step under plain SGD),
 //! - the per-invocation [`session`] that every epoch loop threads (resume
 //!   position, budget, cadence, metrics log),
 //! - the watch of a training step: the phase timers ([`prof`]) and the cap on

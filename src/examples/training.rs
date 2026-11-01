@@ -115,12 +115,12 @@ impl OptimizerConfig {
 ///
 /// It is a *budget*, not a per-epoch limit. The [`Session`] of the epoch loops
 /// holds it. The session bounds their `take()` by the remaining batches, and
-/// spends one per optimizer step. So a cap of 600 stops 600 steps into the
-/// run, in whichever epoch that lands. The clock starts at the first step
-/// (data loading and an initial validation are free). A loop sees it run out
-/// when it checks [`Session::is_exhausted`] after each step. A check after
-/// each epoch breaks the outer loop (the caller still checkpoints and
-/// validates first).
+/// spends one per training step. So a cap of 600 stops 600 training steps into
+/// the run, in whichever epoch that lands. The clock starts at the first
+/// training step (data loading and an initial validation are free). A loop
+/// sees it run out when it checks [`Session::is_exhausted`] after each
+/// training step. A check after each epoch breaks the outer loop (the caller
+/// still checkpoints and validates first).
 ///
 /// [`Session`]: crate::examples::session::Session
 /// [`Session::is_exhausted`]: crate::examples::session::Session::is_exhausted
@@ -221,9 +221,10 @@ pub const ADAMW_WEIGHT_DECAY: f32 = 1e-4;
 /// The epsilon is the [`div_eps`](crate::utils::div_eps) of `dtype`, not the
 /// one of f32. Burn's AdamW keeps its moments in the dtype of the gradient.
 /// In f16, `(1 − β₂)·g²` rounds to 0 for `|g|` below about `5·10⁻³`, so the
-/// second moment `v` is often 0, and the step is `m/ε`. With the epsilon of
-/// f32 (`8.2·10⁻⁸`), that step overflows f16 for `|m|` above about `5·10⁻³`.
-/// So at small gradients, an f16 model takes other steps than an f32 model.
+/// second moment `v` is often 0, and the update is `m/ε`. With the epsilon of
+/// f32 (`8.2·10⁻⁸`), that update overflows f16 for `|m|` above about
+/// `5·10⁻³`. So at small gradients, an f16 model makes other updates than an
+/// f32 model.
 pub fn optimizer_config(dtype: burn::tensor::DType) -> AdamWConfig {
     AdamWConfig::new()
         .with_epsilon(crate::utils::div_eps(dtype))

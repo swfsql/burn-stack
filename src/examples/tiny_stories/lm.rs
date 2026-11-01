@@ -17,15 +17,15 @@
 //!
 //! One dataloader item is one **story** (see [`dataset`](super::dataset)).
 //! [`epoch_train`] walks it window by window: this is the *run*. It takes one
-//! optimizer step per window and **carries the final state** into the next
+//! training step per window and **carries the final state** into the next
 //! window. So a window is scored from the state that its own prefix produced,
 //! as inference always sees it, not from a zero state. The length of the run
 //! is that of the story, capped by `run_len`.
 //!
-//! The carry is *earned*. After each window, a [`Frontier`] gate scores it.
-//! When the window fails, the run stops and the rest of the story is
-//! discarded. To train the tail of a run on a state that the model got lost in
-//! is worth less than a move to the next story.
+//! The carried state is *earned*. After each window, a [`Frontier`] gate
+//! scores it. When the window fails, the run stops and the rest of the story
+//! is discarded. To train the tail of a run on a state that the model got lost
+//! in is worth less than a move to the next story.
 //!
 //! A gate that never opens is not a *wrong* regime. Window `0` is the
 //! beginning of the story, so its zero start state is the correct one, and
@@ -42,24 +42,25 @@
 //!
 //! The carried cache is cut off the graph ([`LmModel::detach_caches`]). So the
 //! peak memory is the activations of one window, however deep the run goes.
-//! Gradients never cross a window boundary. Backpropagation within the window
-//! does not change.
+//! Gradients never pass from one window to the next. Backpropagation within
+//! the window does not change.
 //!
 //! # Packed training
 //!
 //! With [`TinyStoriesConfig::pack`], one train item is a **packed row** of
 //! whole stories instead (see [`dataset`](super::dataset)), and a batch is one
-//! window. A story then trains whole, from a fresh state, with no carry and no
-//! frontier. The model reads the layout from [`TinyStoriesBatch::packed`], and
-//! scores with [`lm_output_packed`]. The validation is never packed, so its
-//! bits per character do not change with the packing.
+//! window. Each story is then a segment of its row. It trains whole, from a
+//! fresh state, with no carried state and no frontier. The model reads the
+//! layout from [`TinyStoriesBatch::packed`], and scores with
+//! [`lm_output_packed`]. The validation is never packed, so its bits per
+//! character do not change with the packing.
 //!
 //! # Length buckets
 //!
 //! With [`TinyStoriesConfig::bucket`], one item is one batch of stories of
 //! similar length (see [`Bucket`]), and a batch is one window. A story then
-//! trains whole, from a fresh state. The validation takes the same slots, so
-//! it also scores each of its stories whole, and `seq_len` and `run_len` do
+//! trains whole, from a fresh state. The validation takes the same buckets,
+//! so it also scores each of its stories whole, and `seq_len` and `run_len` do
 //! not apply.
 //!
 //! # The loss of a character
@@ -126,9 +127,9 @@ pub struct TinyStoriesConfig {
     /// Softmax temperature for those samples.
     #[config(default = 0.8)]
     pub sample_temperature: f64,
-    /// Train on packed rows (see [`Pack`]). `None`: one story per batch slot.
-    /// The validation always takes one story per slot, with `seq_len`,
-    /// `run_len` and the batch size of [`Self::training`].
+    /// Train on packed rows (see [`Pack`]). `None`: one story per row. The
+    /// validation always takes one story per row, with `seq_len`, `run_len`
+    /// and the batch size of [`Self::training`].
     #[config(default = "None")]
     pub pack: Option<Pack>,
     /// Train on batches of similar length (see [`Bucket`]). `None`: every
@@ -150,20 +151,21 @@ impl TinyStoriesConfig {
 }
 
 /// The geometry of length-bucketed training (see
-/// [`bucket_batches`](super::dataset::bucket_batches)). A batch is one window
-/// of its slot, so a bucketed run ignores `seq_len` and `run_len`. The
-/// validation takes the same slots and `chars`, so it scores whole stories.
+/// [`bucket_batches`](super::dataset::bucket_batches)). A batch is one window,
+/// as long as its bucket, so a bucketed run ignores `seq_len` and `run_len`.
+/// The validation takes the same buckets and `chars`, so it scores whole
+/// stories.
 #[derive(Config, Debug)]
 pub struct Bucket {
-    /// The batch lengths, ascending. A story goes to the shortest slot that
-    /// holds it. The longest slot truncates a story (4,149 characters keep
-    /// every story whole).
+    /// The buckets (the batch lengths), ascending. A story goes to the
+    /// shortest bucket that holds it. The longest bucket truncates a story
+    /// (4,149 characters keep every story whole).
     pub slots: Vec<usize>,
-    /// The scored characters per batch. A slot takes `round(chars / m)`
+    /// The scored characters per batch. A bucket takes `round(chars / m)`
     /// stories, `m` the mean length of its stories.
     pub chars: usize,
-    /// For a VRAM probe: the run opens with this many batches of each slot
-    /// (see [`probe_order`](super::dataset::probe_order)), and the loader
+    /// For a VRAM probe: the run opens with this many batches of each bucket
+    /// (see [`probe_order`](super::dataset::probe_order)). The loader then
     /// keeps the order (no shuffle, one worker). `0`: a shuffled order.
     #[config(default = 0)]
     pub probe: usize,
@@ -192,8 +194,8 @@ pub struct Pack {
 // The frontier gate
 // ===========================================================================
 
-/// When the **final state** of a window is worth a carry into the next window
-/// (the *frontier* advances), and when to discard the rest of the run.
+/// When to carry the **final state** of a window into the next window (the
+/// *frontier* advances), and when to discard the rest of the run.
 ///
 /// It is part of the trainer, never of the model. It reads one scalar per
 /// window and decides whether to pass a cache on. No gradient goes near it.
@@ -302,15 +304,15 @@ pub struct Overrides {
     pub pack_rows: Option<usize>,
     /// `--pack-open <usize>`: open rows of the packer.
     pub pack_open: Option<usize>,
-    /// `--no-pack`: train on one story per batch slot.
+    /// `--no-pack`: train on one story per row.
     pub no_pack: bool,
-    /// `--buckets <a,b,…>`: train on length buckets with these slots.
+    /// `--buckets <a,b,…>`: train on these length buckets (batch lengths).
     pub buckets: Option<Vec<usize>>,
     /// `--bucket-chars <usize>`: scored characters per bucketed batch.
     pub bucket_chars: Option<usize>,
     /// `--no-bucket`: train on batches drawn at random.
     pub no_bucket: bool,
-    /// `--bucket-probe <usize>`: open with this many batches of each slot.
+    /// `--bucket-probe <usize>`: open with this many batches of each bucket.
     pub bucket_probe: Option<usize>,
 }
 
@@ -319,7 +321,7 @@ fn parse_slots(arg: &str) -> Result<Vec<usize>, String> {
     arg.split(',')
         .map(|s| match s.trim().parse::<usize>() {
             Ok(n) if n >= 1 => Ok(n),
-            _ => Err(format!("slot {s:?} is not a positive integer")),
+            _ => Err(format!("the bucket {s:?} is not a positive integer")),
         })
         .collect()
 }
@@ -333,14 +335,14 @@ impl Overrides {
         "    --no-frontier          Carry the state through the whole story, with no gate\n",
         "    --train-stories <N>    Stories taken from the train split\n",
         "    --valid-stories <N>    Stories taken from the validation split\n",
-        "    --pack <W>             Train on packed rows of W positions, each row whole stories (needs --pack-rows once)\n",
+        "    --pack <W>             Train on packed rows of W positions. Each row holds whole stories (needs --pack-rows once)\n",
         "    --pack-rows <N>        Rows per packed batch\n",
-        "    --pack-open <K>        Open rows of the packer (default 8; 1 keeps the shuffled order)\n",
-        "    --no-pack              Train on one story per batch slot\n",
-        "    --buckets <A,B,…>      Train on batches of similar length: each story goes to the shortest slot that holds it (needs --bucket-chars once)\n",
+        "    --pack-open <K>        Open rows of the packer (default 8). With 1, the packer keeps the shuffled order\n",
+        "    --no-pack              Train on one story per row\n",
+        "    --buckets <A,B,…>      Train on batches of similar length. Each story goes to the shortest bucket (batch length) that holds it (needs --bucket-chars once)\n",
         "    --bucket-chars <N>     Scored characters per bucketed batch\n",
         "    --no-bucket            Train on batches of stories drawn at random\n",
-        "    --bucket-probe <K>     VRAM probe: open with K batches of each slot, slot by slot (no loader shuffle, one worker)",
+        "    --bucket-probe <K>     VRAM probe: open with K batches of each bucket, bucket by bucket (no loader shuffle, one worker)",
     );
 
     /// Take these flags out of the parser of the example, over the arguments
@@ -500,7 +502,8 @@ pub trait LmModel: Sized {
         class: &mut ClassCursors,
     ) -> (ClassificationOutput, Self::Caches);
 
-    /// Apply one optimizer step. Returns the updated model.
+    /// Apply the optimizer update of one training step. Returns the updated
+    /// model.
     fn optim_step(self, optim: &mut ModuleOptimizer, lr: f64, grads: GradientsParams) -> Self;
 
     /// Checkpoint the wrapped network into the artifacts directory.
@@ -557,7 +560,7 @@ pub fn dataloaders_for(
     let seed = progress.shuffle_seed(config.training.seed);
     // The workers build batches on the host, and the loops move them to the
     // device. A worker that uploads to the GPU from its own thread can
-    // invalidate a graph under capture (see `loader_device`).
+    // invalidate the recording of a captured step (see `loader_device`).
     assert!(
         config.pack.is_none() || config.bucket.is_none(),
         "packed rows and length buckets exclude each other"
@@ -574,7 +577,7 @@ pub fn dataloaders_for(
             );
             println!(
                 "corpus: {} train characters in {} bucketed batches of ~{} scored characters \
-                 ({:.3} of the positions; slot: batches × stories {})",
+                 ({:.3} of the positions, bucket: batches × stories {})",
                 train_set.num_tokens(),
                 train_set.num_batches(),
                 bucket.chars,
@@ -620,7 +623,7 @@ pub fn dataloaders_for(
             let (chars, rows) = (train_set.num_tokens(), train_set.num_rows());
             println!(
                 "corpus: {chars} train characters in {rows} packed rows of {} \
-                 ({:.3} of the positions, {} open rows, stories at multiples of {}, \
+                 ({:.3} of the positions, {} open rows, segments at multiples of {}, \
                  {} opening slots)",
                 pack.width,
                 chars as f64 / (rows * pack.width) as f64,
@@ -637,7 +640,7 @@ pub fn dataloaders_for(
         }
     };
     let dataloader_valid: Dataloader = match &config.bucket {
-        // The slots of the training: each story whole, in one window.
+        // The buckets of the training: each story whole, in one window.
         Some(bucket) => {
             let valid_set = BucketedStoriesDataset::new(
                 Split::Valid,
@@ -649,7 +652,7 @@ pub fn dataloaders_for(
             );
             println!(
                 "corpus: {} valid characters in {} bucketed batches, every story whole \
-                 (slot: batches × stories {})",
+                 (bucket: batches × stories {})",
                 valid_set.num_tokens(),
                 valid_set.num_batches(),
                 valid_set.summary(),
@@ -680,10 +683,10 @@ pub fn dataloaders_for(
     (dataloader_train, dataloader_valid)
 }
 
-/// The default cadence of the character LMs: every 300 steps, checkpoint, run
-/// a 10-batch validation, and sample a story. It counts *steps*, not
-/// dataloader iterations, because the window count of a run is that of its
-/// story, so it differs from batch to batch.
+/// The default cadence of the character LMs: every 300 training steps,
+/// checkpoint, run a 10-batch validation, and sample a story. It counts
+/// *training steps*, not dataloader iterations, because the window count of a
+/// run differs from batch to batch: it is that of its story.
 pub const CADENCE: Cadence = Cadence {
     checkpoint_every: Some(300),
     valid_every: Some(300),
@@ -691,14 +694,14 @@ pub const CADENCE: Cadence = Cadence {
 };
 
 /// Train for (the rest of) one epoch. Walk each story window by window, with
-/// one optimizer step per window. Carry the state into the next window while
+/// one training step per window. Carry the state into the next window while
 /// `frontier` admits it. Validate, sample and checkpoint at the cadence of the
 /// `session`. Returns the updated model.
 ///
 /// The epoch ends early when the budget of the session (the `--max-batches` /
 /// `--max-seconds` caps) runs out. The epoch loop of the caller should then
 /// stop, because [`Session::is_exhausted`] is true. The budget is spent per
-/// **window**, that is, per optimizer step. The position of the session within
+/// **window**, that is, per training step. The position of the session within
 /// the epoch counts batches of stories.
 #[allow(clippy::too_many_arguments)]
 pub fn epoch_train<W: LmModel>(
@@ -719,7 +722,7 @@ pub fn epoch_train<W: LmModel>(
     let batches = dataloader_train.num_items().div_ceil(config.train_batch_size());
     frontier.reset_stats();
 
-    // Training loop: one batch of stories per iteration. Every slot advances
+    // Training loop: one batch of stories per iteration. Every row advances
     // through its own story in lockstep, for as many windows as the longest
     // story spans.
     for run in dataloader_train
@@ -807,10 +810,10 @@ pub fn epoch_train<W: LmModel>(
                 session,
             );
 
-            // Sample a story into a new per-step file, to watch the text
-            // sharpen from noise into words into sentences. The sampler gets
-            // the same seed every time, so successive samples differ only by
-            // the model.
+            // Sample a story into a new file for this batch, to watch the
+            // text sharpen from noise into words into sentences. The sampler
+            // gets the same seed every time, so successive samples differ
+            // only by the model.
             let sample_path = app_args
                 .artifacts_path
                 .join(format!("sample-epoch-{epoch}-batch-{b}.txt"));
@@ -848,7 +851,7 @@ pub fn epoch_train<W: LmModel>(
 /// average loss (also as bits per character) and the next-character accuracy.
 /// The state is threaded through each whole story, *ungated*. This is the one
 /// regime that exists, because a story is scored as it is generated: opened
-/// once, and never restarted part-way through. The averages also go to the
+/// once, and never started again part-way through. The averages also go to the
 /// metrics log of the `session`. This function moves each batch to `device`,
 /// the device of the model.
 #[allow(clippy::too_many_arguments)]
@@ -941,7 +944,7 @@ pub fn epoch_valid<W: LmModel>(
 ///   sequences that way, it is also the exact position where an unprompted
 ///   sample starts.
 /// - **Padding never reaches the loss.** Stories differ in length, so `scored`
-///   gives the number of leading real positions in each batch slot. The other
+///   gives the number of leading real positions in each row. The other
 ///   positions are masked out of the cross-entropy, whose mean is normalized
 ///   by the real count. They carry [`PAD_TARGET`], so the accuracy is also per
 ///   real character.
@@ -990,7 +993,7 @@ pub fn lm_output(
     );
 
     // Padding, as a flat mask over the `[batch · positions]` axis. The real
-    // positions of a slot are its first `scored` positions, and the padding
+    // positions of a row are its first `scored` positions, and the padding
     // comes after them.
     let scored: Vec<i32> = scored.iter().map(|&n| n as i32).collect();
     let scored_bp = Tensor::<1, Int>::from_ints(scored.as_slice(), &device)

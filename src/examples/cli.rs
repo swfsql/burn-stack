@@ -50,16 +50,16 @@ BEHAVIOR OVERVIEW
 - The program reads and writes the model weights, the optimizer state and the configurations in the artifacts directory (--artifacts-path). Without --artifacts-path, the program creates a new temporary directory and prints its path.
 - With --remove-artifacts and --training, the program deletes the model and optimizer files (and the saved progress) in the artifacts directory before training.
 - The program loads the model and optimizer weights from the artifacts directory if they are present. Otherwise it creates new ones and saves them.
-- --seed, --epochs, --batch-size and --max-lr replace the value in the training config (loaded or created) before the program saves the config. So later runs from the same artifacts directory inherit the value. --epochs also rescales the step counts of the LR schedule by the same factor, so the schedule still spans the run (a cosine keeps its warmup). --batch-size rescales them and the warmup by the inverse factor (an epoch has that many fewer steps). --max-lr gives a cosine its max rate and a constant schedule its rate. It scales all rates of a ramp or a sequence, so that their peak becomes LR.
+- --seed, --epochs, --batch-size and --max-lr replace the value in the training config (loaded or created) before the program saves the config. So later runs from the same artifacts directory inherit the value. --epochs also rescales the training-step counts of the LR schedule by the same factor. So the LR schedule still spans the run (a cosine keeps its warmup). --batch-size rescales them and the warmup by the inverse factor (an epoch has that many fewer training steps). --max-lr gives a cosine its max rate and a constant LR schedule its rate. It scales all rates of a ramp or of a chain of LR schedules, so that their peak becomes LR.
 - --adamw, --sgd and --muon choose the optimizer. --muon puts the hidden weight matrices of the model on Muon, and the other flag (default --adamw) optimizes every other parameter. --adamw and --sgd are exclusive. Without these flags, a new training config gets the default optimizer of the example.
 - In a loaded config, these flags replace the optimizer and keep the LR schedule (see --max-lr). If the new optimizer would ignore the optimizer state that the old optimizer saved, the program panics. (--remove-artifacts with --training removes that state.)
-- Only plain SGD (--sgd alone) has a training step that replays from a captured graph.
-- An example that supports it replays its fixed-shape passes (training steps under plain SGD, validation, decoding) from captured CUDA graphs. --no-graph runs every pass eagerly.
-- The program saves the optimizer state together with the progress of the run: the LR-schedule step, the epoch, and the batch within it. A run that loads this state starts again at step 0 of epoch 1. With --resume, the run continues from the saved progress. The interrupted epoch then trains only its remaining batches, drawn from a new shuffle (the batch order of the dataloader workers cannot be replayed).
-- Training makes a checkpoint at every epoch end and when it stops. --checkpoint-every adds a checkpoint every N optimizer steps. --valid-every adds a validation every N optimizer steps. --valid-batches caps the batches that a validation reads. Each example has its own defaults for these three flags.
+- Only plain SGD (--sgd alone) has a training step that the program can capture and replay.
+- An example that supports it captures its fixed-shape calls (training steps under plain SGD, validation, decoding), and then replays them. The replay needs a backend that can record the calls (for example, CUDA). --no-graph runs every call eagerly.
+- The program saves the optimizer state together with the progress of the run: the training step, the epoch, and the batch within the epoch. A run that loads this state starts again at training step 0 of epoch 1. With --resume, the run continues from the saved progress. The interrupted epoch then trains only its remaining batches, drawn from a new shuffle (the batch order of the dataloader workers cannot be replayed).
+- Training makes a checkpoint at every epoch end and when it stops. --checkpoint-every adds a checkpoint every N training steps. --valid-every adds a validation every N training steps. --valid-batches caps the batches that a validation reads. Each example has its own defaults for these three flags.
 - Every training step and every validation appends one JSON line to metrics.jsonl in the artifacts directory. Each run starts with a \"start\" line.
 - With both --training and --inference, training runs first. Inference then uses the trained model.
-- With --max-batches, training stops after that many mini-batches in total (counted across epochs), and makes a checkpoint as usual before it returns. One mini-batch is one optimizer step. For the character LM, this is one window of a run, not one dataloader item. --max-seconds stops training in the same way, when that much wall-clock time has passed since its first step.
+- With --max-batches, training stops after that many mini-batches in total (counted across epochs), and makes a checkpoint as usual before it returns. One mini-batch is one training step. For the character LM, this is one window of a run, not one dataloader item. --max-seconds stops training in the same way, when that much wall-clock time has passed since its first training step.
 - The program forwards all the arguments after -- unchanged to the flags of the example (-- --help lists them).
 
 FLAGS:
@@ -75,19 +75,19 @@ OPTIONS:
     -m, --model-config <PATH>   Load the model config from this file (overrides the config in the artifacts directory)
     -b, --max-batches <N>       Stop training after N mini-batches in total (across epochs), for any configured
                                 number of epochs. Unlimited when absent.
-        --max-seconds <S>       Stop training when S seconds have passed since its first step. Unlimited when absent.
+        --max-seconds <S>       Stop training when S seconds have passed since its first training step. Unlimited when absent.
     -s, --seed <N>              Replace the RNG seed of the training config (model init, data shuffle, sampling)
         --epochs <N>            Replace the number of epochs of the training config (rescales the LR schedule)
         --batch-size <N>        Replace the mini-batch size of the training config (rescales the LR schedule)
-        --max-lr <LR>           Replace the peak rate of the LR schedule (a sequence scales all its rates)
+        --max-lr <LR>           Replace the peak rate of the LR schedule (in a chain of LR schedules, it scales all the rates)
         --adamw                 Optimize with AdamW (with --muon: every parameter that Muon does not own)
         --sgd                   Optimize with plain SGD (with --muon: every parameter that Muon does not own)
         --muon                  Put the hidden weight matrices on Muon
-        --no-graph              Run every pass eagerly, not from captured CUDA graphs
-        --resume                Continue from the progress saved with the optimizer state (schedule step, epoch,
-                                batch), not from step 0 (no effect on a new optimizer)
-        --checkpoint-every <N>  Also make a checkpoint every N optimizer steps (0: only at epoch ends)
-        --valid-every <N>       Validate every N optimizer steps (0: no periodic validation)
+        --no-graph              Run every call eagerly, with no captured step
+        --resume                Continue from the progress saved with the optimizer state (training step, epoch,
+                                batch), not from training step 0 (no effect on a new optimizer)
+        --checkpoint-every <N>  Also make a checkpoint every N training steps (0: only at epoch ends)
+        --valid-every <N>       Validate every N training steps (0: no periodic validation)
         --valid-batches <N>     The batches that a periodic validation reads
     -a, --artifacts-path <PATH>
                                 Directory to save and load the configs, the model weights and the optimizer state.
@@ -137,10 +137,12 @@ pub struct AppArgs {
     /// replacement in a loaded config (see
     /// [`AppArgs::override_training_config`]).
     pub optimizer: Option<OptimizerKind>,
-    /// Whether captured graphs are off (`--no-graph`). See [`AppArgs::graphs`].
+    /// Whether the captured steps are off (`--no-graph`). See
+    /// [`AppArgs::graphs`].
     pub no_graph: bool,
     /// Whether a loaded optimizer continues from its saved [`TrainingProgress`]
-    /// (see [`AppArgs::load_or_save_optim`]) rather than from step `0`.
+    /// (see [`AppArgs::load_or_save_optim`]) rather than from training step
+    /// `0`.
     pub resume: bool,
     /// Optional override of [`Cadence::checkpoint_every`] (`0` ⇒ none).
     pub checkpoint_every: Option<usize>,
@@ -252,7 +254,8 @@ impl AppArgs {
         self.optimizer.unwrap_or(default)
     }
 
-    /// Whether to replay passes from captured graphs (unless `--no-graph`).
+    /// Whether to capture the fixed-shape calls and replay them (unless
+    /// `--no-graph`).
     pub fn graphs(&self) -> bool {
         !self.no_graph
     }
@@ -332,13 +335,14 @@ impl AppArgs {
     /// `--epochs`, `--max-lr`, the optimizer flags) to `training`, the loaded
     /// or newly created config, before it is saved.
     ///
-    /// `--epochs` rescales the step counts of the schedule by the same factor
-    /// ([`Lr::scale_steps`](crate::examples::training::Lr::scale_steps)). So a
-    /// schedule sized to the run still spans it (a resumed run then lands
-    /// where the longer or shorter schedule has it). The warmup of a cosine
-    /// does not change. `--batch-size` rescales the step counts and the warmup
-    /// by the inverse factor, because an epoch then takes that many fewer
-    /// steps. `--max-lr` sets the peak rate
+    /// `--epochs` rescales the training-step counts of the LR schedule by the
+    /// same factor
+    /// ([`Lr::scale_steps`](crate::examples::training::Lr::scale_steps)). So
+    /// an LR schedule sized to the run still spans it (a resumed run then
+    /// lands where the longer or shorter LR schedule has it). The warmup of a
+    /// cosine does not change. `--batch-size` rescales the training-step
+    /// counts and the warmup by the inverse factor, because an epoch then
+    /// takes that many fewer training steps. `--max-lr` sets the peak rate
     /// ([`Lr::set_peak`](crate::examples::training::Lr::set_peak)).
     ///
     /// An optimizer flag that disagrees with the optimizer of `training`
@@ -475,7 +479,7 @@ impl AppArgs {
         match (self.resume, saved) {
             (true, Some(progress)) => {
                 println!(
-                    "Resuming at step {}, epoch {}, batch {}",
+                    "Resuming at training step {}, epoch {}, batch {}",
                     progress.step, progress.epoch, progress.batch
                 );
                 progress
@@ -486,7 +490,7 @@ impl AppArgs {
             ),
             (false, Some(progress)) if progress.step > 0 => {
                 println!(
-                    "Starting over at step 0 (saved at step {}; --resume continues it)",
+                    "Starting again at training step 0. The saved progress is at training step {}, and --resume continues it.",
                     progress.step
                 );
                 TrainingProgress::new()
@@ -522,7 +526,8 @@ pub struct StepFlags {
     pub max_vram_mib: Option<u64>,
     /// `--vram-cleanup-every <N>`: with `--max-vram`, clean up the memory
     /// before each N-th window (see [`vram`](crate::examples::vram)).
-    /// `None`: the default schedule.
+    /// `None`: the default cleanup windows of
+    /// [`vram::cleanup`](crate::examples::vram::cleanup).
     pub vram_cleanup_every: Option<u64>,
     /// `--grad-checkpointing`: the training device gets the `Balanced`
     /// gradient checkpointing of Burn.
@@ -532,7 +537,7 @@ pub struct StepFlags {
 impl StepFlags {
     /// The help lines of these flags, for the `-- --help` of an example.
     pub const HELP: &str = concat!(
-        "    --profile <N>          Print the mean milliseconds of each training-step phase once per N windows\n",
+        "    --profile <N>          Print the mean milliseconds of each training-step phase once per N training steps\n",
         "    --profile-sync         Also sync the device after each phase (with --profile)\n",
         "    --grad-checkpointing   Train with the balanced gradient checkpointing of Burn. The backward computes the memory-bound ops again and keeps the outputs of the compute-bound ops. This uses less vram and more time\n",
         "    --max-vram <MiB>       Stop the process with an error when the memory pools hold more than this, after a backward. Also clean up the memory before windows 0, 1, 2, 4, 8, ... and before each 256th window\n",
@@ -681,8 +686,8 @@ pub fn save_model(artifact_dir: &Path, model: &impl Module) {
 /// Load model weights from `artifact_dir`, or `None` if absent.
 ///
 /// `load_record` restores the saved `ParamId` of each parameter. So the
-/// optimizer state, keyed by `ParamId`, stays associated across process
-/// restarts.
+/// optimizer state, keyed by `ParamId`, stays with its parameter from one
+/// process to the next.
 pub fn load_model<ModelConfig: ModelConfigExt>(
     artifact_dir: &Path,
     model_config: &ModelConfig,
@@ -730,7 +735,7 @@ pub const PROGRESS_NAME: &str = "progress";
 pub fn save_progress(artifact_dir: &Path, progress: &TrainingProgress) {
     let path = artifact_dir.join(PROGRESS_NAME).with_added_extension("json");
     println!(
-        "Saving progress (step {}, epoch {}, batch {}) into {path:?}",
+        "Saving progress (training step {}, epoch {}, batch {}) into {path:?}",
         progress.step, progress.epoch, progress.batch
     );
     progress.save(path).expect("Failed to save the progress");

@@ -1,8 +1,9 @@
 //! A cap on the device memory of a training run (an example flag such as
 //! `--max-vram <MiB>`).
 //!
-//! After each backward (the peak of a step), [`check`] reads the bytes that the
-//! memory pools reserve. Above the cap, the process stops with an error.
+//! After each backward (the peak of a training step), [`check`] reads the
+//! bytes that the memory pools reserve. Above the cap, the process stops with
+//! an error.
 //!
 //! # What the report misses
 //!
@@ -19,13 +20,13 @@
 //! - **The CUDA context and the loaded kernels** (one module per kernel
 //!   shape). No pool holds them (~140 MiB).
 //!
-//! So with the cap, [`cleanup`] also runs on a schedule. The default runs
-//! before windows 0, 1, 2, 4, 8, … and before each 256th window. With a period
-//! of 1 (`--vram-cleanup-every 1`), the queue never outlives a window. Then
-//! the reserved bytes after a backward are the pool memory of the device at
-//! the peak of the step, apart from the pages dropped within that step. The
-//! cost: each cleanup also gives back the empty pages, so the next window
-//! allocates them again.
+//! So with the cap, [`cleanup`] also runs before some windows. The default
+//! runs before windows 0, 1, 2, 4, 8, … and before each 256th window. With a
+//! period of 1 (`--vram-cleanup-every 1`), the queue never outlives a window.
+//! Then the reserved bytes after a backward are the pool memory of the device
+//! at the peak of the training step. They miss only the pages that the pools
+//! dropped within that training step. The cost: each cleanup also gives back
+//! the empty pages, so the next window allocates them again.
 
 use burn::prelude::*;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -62,7 +63,7 @@ pub fn check(device: &Device, max_mib: u64) {
         PEAK.fetch_max(usage.bytes_reserved, Ordering::Relaxed);
         let reserved_mib = usage.bytes_reserved >> 20;
         if reserved_mib > max_mib {
-            eprintln!("VRAM LIMIT: the memory pools reserve {reserved_mib} MiB > --max-vram {max_mib} MiB; stopping");
+            eprintln!("VRAM LIMIT: the memory pools reserve {reserved_mib} MiB > --max-vram {max_mib} MiB. The process stops.");
             std::process::exit(3);
         }
     }

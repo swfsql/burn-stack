@@ -291,7 +291,7 @@ impl Batcher<MnistFlatItem, MnistBatch> for MnistBatcher {
 
 impl MnistBatch {
     /// The batch, built by a dataloader worker on the host, moved to `device`
-    /// by the thread that steps the model (see
+    /// by the thread that trains the model (see
     /// [`loader_device`](crate::examples::device::loader_device)).
     pub fn to_device(self, device: &Device) -> Self {
         use crate::examples::device::{batch_float, batch_int};

@@ -2,11 +2,11 @@
 //!
 //! - [`pack_rows`] places every story exactly once, at aligned starts, and no
 //!   row overflows. One open row keeps the order of the stories.
-//! - [`PackedStoriesBatcher`] lays out the slots, the inputs, the targets and
-//!   the scored positions of each story where the packer put it, and splits
-//!   each cased token into its pair `(id, flag)`.
-//! - [`bucket_batches`] places every story exactly once, in a slot that holds
-//!   it, with one batch shape per slot.
+//! - [`PackedStoriesBatcher`] lays out the opening slots, the inputs, the
+//!   targets and the scored positions of each segment where the packer put
+//!   it. It also splits each cased token into its pair `(id, flag)`.
+//! - [`bucket_batches`] places every story exactly once, in a bucket that
+//!   holds it, with one batch shape per bucket.
 //! - The cased tokens of a text keep its case, and fold onto the ids of
 //!   [`VOCAB::encode`](super::Vocab::encode).
 
@@ -67,18 +67,18 @@ fn bucket_batches_place_every_story_once_and_fit() {
         assert!(!batch.is_empty(), "no empty batch");
         for &story in batch {
             seen[story] += 1;
-            assert!(lens[story] <= *slot, "a story is longer than its slot");
+            assert!(lens[story] <= *slot, "a story is longer than its bucket");
         }
     }
     assert!(seen.iter().all(|&n| n == 1), "every story in exactly one batch");
-    // One batch shape per slot, except one smaller last batch.
+    // One batch shape per bucket, except one smaller last batch.
     for &slot in &slots {
         let sizes: Vec<usize> =
             batches.iter().filter(|(s, _)| *s == slot).map(|(_, b)| b.len()).collect();
         let tail = usize::from(slot == 64);
         assert!(
             sizes[..sizes.len() - tail].iter().all(|&n| n == sizes[0]),
-            "slot {slot}: sizes {sizes:?}"
+            "bucket {slot}: sizes {sizes:?}"
         );
     }
 }
@@ -91,7 +91,7 @@ fn probe_order_opens_with_each_slot_and_keeps_every_batch() {
     let batches = bucket_batches(&lens, &order, &slots, 120);
     let probed = probe_order(batches.clone(), &slots, 2, 7);
     let first: Vec<usize> = probed[..6].iter().map(|(slot, _)| *slot).collect();
-    assert_eq!(first, [16, 16, 32, 32, 64, 64], "k batches of each slot, slot by slot");
+    assert_eq!(first, [16, 16, 32, 32, 64, 64], "k batches of each bucket, bucket by bucket");
     let key = |b: &[(usize, Vec<usize>)]| {
         let mut b = b.to_vec();
         b.sort();
@@ -104,9 +104,9 @@ fn probe_order_opens_with_each_slot_and_keeps_every_batch() {
 fn packed_batcher_lays_out_each_story() {
     let layout = PackLayout { align: 4, lead: 2 };
     let width = 16;
-    // Row 0: a story of 3 tokens at 0 (slots 0..2, inputs 2..4, next at 4).
-    // Then a story of 5 tokens at 4 (slots 4..6, inputs 6..10). Row 1: one
-    // story of 2 tokens at 0. Some tokens are upper case.
+    // Row 0: a segment of 3 tokens at 0 (opening slots 0..2, inputs 2..4,
+    // next at 4). Then a segment of 5 tokens at 4 (opening slots 4..6, inputs
+    // 6..10). Row 1: one segment of 2 tokens at 0. Some tokens are upper case.
     let (s0, s1, s2) = (
         [30 | UPPER, 31, 32],
         [40, 41 | UPPER, 42, 43, 44 | UPPER],
