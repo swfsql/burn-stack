@@ -1,20 +1,21 @@
-//! [`Segmented`]: run a different optimizer on each column block of a fused
-//! projection weight.
+//! [`Segmented`]: run a different optimizer on each sub-projection of a fused
+//! projection.
 //!
 //! The [`Muon`](burn::optim::Muon) of Burn orthogonalises the *whole* matrix
 //! that it gets. A fused `in_proj` would then couple the singular values of
 //! unrelated maps (a gate, the values, the keys and queries, the per-head
 //! scalars, …). [`Segmented`] slices the weight and its gradient along the
-//! fused axis, steps each block with its own optimizer, and concatenates the
-//! results. So each sub-matrix is orthogonalised (and shape-LR-adjusted) on
-//! its own, exactly as if it were a separate `Linear`.
+//! fused axis, steps each sub-projection with its own optimizer, and
+//! concatenates the results. So each sub-projection is orthogonalised (and
+//! shape-LR-adjusted) on its own, exactly as if it were a separate `Linear`.
 //!
 //! The *model* does not change: the forward pass keeps one fused GEMM.
 //!
 //! A slice along columns is exact for every optimizer used here: AdamW and SGD
 //! are elementwise, and the Newton–Schulz of Muon is per-matrix. So a
-//! [`Segmented`] whose blocks are all AdamW is bit-comparable to plain AdamW
-//! on the whole tensor (the test suite of a block family asserts this).
+//! [`Segmented`] with all its sub-projections on AdamW is bit-comparable to
+//! plain AdamW on the whole tensor (the test suite of a block family asserts
+//! this).
 
 use burn::optim::{
     AdamW, AdamWState, LearningRate, Muon, MuonState, Optimizer, RecordState, Sgd, StateSink,
@@ -25,12 +26,13 @@ use burn::prelude::*;
 use super::Fallback;
 use super::spec::ProjSpec;
 
-/// The optimizer owning one column block.
+/// The optimizer that owns one sub-projection.
 #[derive(Clone)]
 enum BlockOptim {
     /// Muon: orthogonalised momentum-SGD, for genuine feature maps.
     Muon(Muon),
-    /// The fallback for scalar-producing (or otherwise unsuitable) blocks: AdamW …
+    /// The fallback for scalar-producing (or otherwise unsuitable)
+    /// sub-projections: AdamW …
     AdamW(AdamW),
     /// … or plain SGD, which has no state and so no entry in a
     /// [`SegmentedState`].
@@ -43,31 +45,32 @@ impl BlockOptim {
     }
 }
 
-/// The optimizer state of one column block.
-// The AdamW variant is the bigger one. Only a few of these exist per fused
-// weight, so the padding is not worth an extra indirection.
+/// The optimizer state of one sub-projection.
+// The AdamW variant is the bigger one. Only a few of these exist for each
+// fused projection, so the padding is not worth an extra indirection.
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone)]
 pub enum BlockState<const D: usize> {
-    /// State of a [`Muon`] block.
+    /// State of a sub-projection on [`Muon`].
     Muon(MuonState<D>),
-    /// State of an [`AdamW`] block.
+    /// State of a sub-projection on [`AdamW`].
     AdamW(AdamWState<D>),
 }
 
-/// State of a [`Segmented`] optimizer: one entry per stateful column block
-/// (every block but an SGD one), in order.
+/// State of a [`Segmented`] optimizer: one entry for each stateful
+/// sub-projection (each one that is not on SGD), in order.
 #[derive(Clone)]
 pub struct SegmentedState<const D: usize> {
-    /// Per-block states, in the same order as the [`ProjSpec`] segments.
+    /// The states of the sub-projections, in the order of the sub-projections
+    /// of the [`ProjSpec`].
     pub blocks: Vec<BlockState<D>>,
 }
 
-/// Per-column-block optimizer over a fused projection weight.
+/// One optimizer for each sub-projection of a fused projection.
 ///
 /// The [`ProjSpec`]-driven assembly of a [`MuonPlan`](super::MuonPlan) builds
-/// it. The widths of the blocks must sum to the size of the parameter along
-/// [`Self::dim`].
+/// it. The widths of the sub-projections must sum to the size of the
+/// parameter along [`Self::dim`].
 #[derive(Clone)]
 pub struct Segmented {
     optims: Vec<BlockOptim>,
@@ -77,9 +80,9 @@ pub struct Segmented {
 }
 
 impl Segmented {
-    /// Build the per-block optimizers for `spec`: `muon` on its Muon segments,
-    /// `fallback` on the others. The split is along `dim` (`1` for a Burn
-    /// `Linear` weight, whose layout is `[d_input, d_output]`).
+    /// Build the optimizers of the sub-projections of `spec`: `muon` on those
+    /// that Muon owns, `fallback` on the others. The split is along `dim`
+    /// (`1` for a Burn `Linear` weight, whose layout is `[d_input, d_output]`).
     pub fn new(spec: &ProjSpec, muon: Muon, fallback: impl Into<Fallback>, dim: usize) -> Self {
         let fallback = match fallback.into() {
             Fallback::AdamW(adamw) => BlockOptim::AdamW(adamw),
@@ -100,7 +103,7 @@ impl Segmented {
         Self { optims, widths, dim, tiled: spec.tiled }
     }
 
-    /// The axis of the blocks.
+    /// The fused axis, along which the sub-projections lie.
     pub fn dim(&self) -> usize {
         self.dim
     }
@@ -123,7 +126,8 @@ impl Optimizer for Segmented {
         );
         let per_copy: usize = self.widths.iter().sum();
         let width = tensor.shape().dims::<D>()[self.dim];
-        // An untied weight holds one copy of the segments per application.
+        // An untied weight holds one copy of the sub-projections per
+        // application.
         let copies = if self.tiled { width / per_copy } else { 1 };
         assert_eq!(
             width,
@@ -138,9 +142,9 @@ impl Optimizer for Segmented {
         let tensors = tensor.split_with_sizes(widths.clone(), self.dim);
         let grads = grad.split_with_sizes(widths, self.dim);
 
-        // A missing (first-step) state, or one whose length drifted from the
-        // spec, restarts every block from scratch. This prevents a wrong
-        // pairing.
+        // A missing state (at the first training step), or one whose length
+        // differs from the spec, gives every sub-projection a fresh state.
+        // This prevents a wrong pairing.
         let mut prev = match state {
             Some(s) if s.blocks.len() == n_states => s.blocks,
             _ => Vec::new(),
@@ -195,7 +199,7 @@ impl Optimizer for Segmented {
 
 /// Hand-written, for two reasons. The `RecordState` derive covers
 /// `Vec<Tensor>`, but not a `Vec` of nested states. Also, the reload has no
-/// access to the spec. So the leaf names tell the two block kinds apart
+/// access to the spec. So the leaf names identify the kind of each state
 /// (`momentum.velocity` for Muon, `momentum.moment_1`/`moment_2` for AdamW).
 /// These names never overlap.
 impl<const D: usize> RecordState for SegmentedState<D> {

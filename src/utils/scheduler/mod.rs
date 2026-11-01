@@ -2,28 +2,29 @@
 // https://github.com/huy209vn/burn-jepa/blob/588d3654fbcfdcfce2ecdb7bcaf7a2e5bd5a70ea/src/train/scheduler.rs
 // slight adaptions: added Config derives and a unified enum.
 
-//! Learning rate schedulers for controlling the optimization process.
+//! LR schedules: the learning rate of each training step.
 //!
-//! [`Lr`] is the schedule of a run: the rate as a function of the global
-//! step. The primitive kinds are a cosine annealing with a linear warmup, a
-//! constant rate and a linear ramp. [`Lr::Sequence`] puts schedules one after
-//! another. Each segment starts at a global step, and its schedule counts the
+//! [`Lr`] is the LR schedule of a run: the rate as a function of the global
+//! training step. The primitive kinds are a cosine annealing with a linear
+//! warmup, a constant rate and a linear ramp. [`Lr::Sequence`] is a chain of
+//! LR schedules, one after another. Each schedule of the chain
+//! ([`LrSegment`]) starts at a global training step, and counts the training
 //! steps from there. So one config can hold a whole run: a warmup, constant
-//! stages that step down, and a cooldown.
+//! stages that each go lower, and a cooldown.
 
 use burn::prelude::*;
 use std::f64::consts::PI;
 
-/// A learning-rate schedule, dispatching to one of the concrete schedulers.
+/// An LR schedule: one of the primitive LR schedules, or a chain of them.
 #[derive(Config, Debug)]
 pub enum Lr {
     /// Cosine annealing with linear warmup. See [`CosineAnnealingLr`].
     CosineAnnealing(CosineAnnealingLr),
-    /// Fixed learning rate for all steps. See [`ConstantLr`].
+    /// A fixed learning rate for all training steps. See [`ConstantLr`].
     Constant(ConstantLr),
     /// A linear ramp. See [`LinearLr`].
     Linear(LinearLr),
-    /// Schedules one after another. See [`LrSegment`].
+    /// A chain of LR schedules, one after another. See [`LrSegment`].
     Sequence(Vec<LrSegment>),
 }
 
@@ -39,25 +40,25 @@ impl Lr {
                     .iter()
                     .rev()
                     .find(|segment| segment.from <= step)
-                    .expect("the first segment of a sequence starts at step 0");
+                    .expect("the first schedule of an LR chain must start at training step 0");
                 segment.lr.get_lr(step - segment.from)
             }
         }
     }
 
-    /// Panic if the schedule cannot run. A sequence must have segments, its
-    /// first segment must start at step 0, and the starts must increase. The
-    /// check includes the schedule of each segment.
+    /// Panic if the LR schedule cannot run. A chain must have at least one
+    /// schedule, its first schedule must start at training step 0, and the
+    /// starts must increase. The check includes each schedule of the chain.
     pub fn validate(&self) {
         let Lr::Sequence(segments) = self else {
             return;
         };
-        assert!(!segments.is_empty(), "an LR sequence needs at least one segment");
-        assert_eq!(segments[0].from, 0, "the first segment of an LR sequence must start at step 0");
+        assert!(!segments.is_empty(), "an LR chain needs at least one schedule");
+        assert_eq!(segments[0].from, 0, "the first schedule of an LR chain must start at training step 0");
         for pair in segments.windows(2) {
             assert!(
                 pair[0].from < pair[1].from,
-                "the segments of an LR sequence must start at increasing steps ({} then {})",
+                "the schedules of an LR chain must start at increasing training steps ({} then {})",
                 pair[0].from,
                 pair[1].from
             );
@@ -65,7 +66,7 @@ impl Lr {
         segments.iter().for_each(|segment| segment.lr.validate());
     }
 
-    /// The highest rate that the schedule sets.
+    /// The highest rate that the LR schedule sets.
     pub fn peak(&self) -> f64 {
         match self {
             Lr::CosineAnnealing(inner) => inner.max_lr.max(inner.min_lr),
@@ -77,7 +78,7 @@ impl Lr {
 
     /// Replace the peak rate with `peak` (`--max-lr`). A cosine annealing
     /// gets `peak` as its `max_lr` (its `min_lr` does not change). A constant
-    /// rate becomes `peak`. A ramp or a sequence scales all its rates by one
+    /// rate becomes `peak`. A ramp or a chain scales all its rates by one
     /// factor, so its shape does not change.
     pub fn set_peak(&mut self, peak: f64) {
         match self {
@@ -85,13 +86,13 @@ impl Lr {
             Lr::Constant(inner) => inner.lr = peak,
             Lr::Linear(_) | Lr::Sequence(_) => {
                 let old = self.peak();
-                assert!(old > 0.0, "a schedule with a peak of 0 cannot get the peak {peak}");
+                assert!(old > 0.0, "an LR schedule with a peak of 0 cannot get the peak {peak}");
                 self.scale_rates(peak / old);
             }
         }
     }
 
-    /// Multiply every rate of the schedule by `factor`.
+    /// Multiply every rate of the LR schedule by `factor`.
     pub fn scale_rates(&mut self, factor: f64) {
         match self {
             Lr::CosineAnnealing(inner) => {
@@ -107,10 +108,11 @@ impl Lr {
         }
     }
 
-    /// Multiply every step count of the schedule by `num / den` (integer
-    /// division). A cosine annealing at the top level keeps its warmup unless
-    /// `warmup` is set. A sequence scales as a whole: the starts of its
-    /// segments and every length in them, the warmups too.
+    /// Multiply every count of training steps of the LR schedule by
+    /// `num / den` (integer division). A cosine annealing outside a chain
+    /// keeps its warmup unless `warmup` is set. A chain scales as a whole: the
+    /// start of each of its schedules and every length in them, the warmups
+    /// too.
     pub fn scale_steps(&mut self, num: usize, den: usize, warmup: bool) {
         let scale = |steps: &mut usize| *steps = *steps * num / den;
         match self {
@@ -134,7 +136,7 @@ impl Lr {
 
 /// # Cosine Annealing Learning Rate Scheduler with Linear Warmup.
 ///
-/// This scheduler:
+/// This LR schedule:
 /// 1. Linearly increases LR from 0 to `max_lr` during warmup phase
 /// 2. Applies cosine annealing from `max_lr` to `min_lr` after warmup
 ///
@@ -149,7 +151,7 @@ pub struct CosineAnnealingLr {
     pub min_lr: f64,
     /// The total number of training steps
     pub total_steps: usize,
-    /// The number of warmup steps
+    /// The number of training steps in the warmup
     #[config(default = 0)]
     pub warmup_steps: usize,
 }
@@ -161,7 +163,7 @@ impl CosineAnnealingLr {
     /// * `step` - Current training step (0-indexed)
     ///
     /// # Returns
-    /// * Learning rate for this step
+    /// * Learning rate for this training step
     pub fn get_lr(&self, step: usize) -> f64 {
         // Warmup phase: linear increase from 0 to max_lr
         if step < self.warmup_steps {
@@ -182,11 +184,11 @@ impl CosineAnnealingLr {
 
 /// # Constant Learning Rate Scheduler.
 ///
-/// Simply returns a fixed learning rate for all steps.
-/// Useful for simple experiments or when learning rate scheduling is not needed.
+/// Returns a fixed learning rate for all training steps. Use it for simple
+/// experiments, or when a run needs no LR schedule.
 #[derive(Config, Debug)]
 pub struct ConstantLr {
-    /// The fixed learning rate returned for every step.
+    /// The fixed learning rate returned for every training step.
     #[config(default = 1e-4)]
     pub lr: f64,
 }
@@ -200,16 +202,17 @@ impl ConstantLr {
 
 /// # Linear Learning Rate Ramp.
 ///
-/// The rate goes linearly from `start` at step 0 to `end` at step `steps`,
-/// and stays at `end` after it. A warmup is a ramp from 0. A linear cooldown
-/// is a ramp down.
+/// The rate goes linearly from `start` at training step 0 to `end` at
+/// training step `steps`, and stays at `end` after it. A warmup is a ramp from
+/// 0. A linear cooldown is a ramp down.
 #[derive(Config, Debug)]
 pub struct LinearLr {
-    /// The rate at step 0.
+    /// The rate at training step 0.
     pub start: f64,
-    /// The rate at step `steps` and after it.
+    /// The rate at training step `steps` and after it.
     pub end: f64,
-    /// The length of the ramp. With 0, every step gets `end`.
+    /// The length of the ramp, in training steps. With 0, every training step
+    /// gets `end`.
     pub steps: usize,
 }
 
@@ -223,14 +226,14 @@ impl LinearLr {
     }
 }
 
-/// One segment of [`Lr::Sequence`]: the schedule `lr` from the global step
-/// `from` until the next segment starts.
+/// One schedule of the chain [`Lr::Sequence`]: the LR schedule `lr` from the
+/// global training step `from` until the next schedule of the chain starts.
 #[derive(Config, Debug)]
 pub struct LrSegment {
-    /// The global step where the segment starts.
+    /// The global training step where this schedule of the chain starts.
     pub from: usize,
-    /// The schedule of the segment. It counts the steps from `from`: its step
-    /// 0 is the global step `from`.
+    /// The LR schedule. It counts the training steps from `from`: its training
+    /// step 0 is the global training step `from`.
     pub lr: Lr,
 }
 

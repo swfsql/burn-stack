@@ -93,7 +93,7 @@ fn grad_horizon_depth_keeps_every_real_layer() {
     assert_eq!(t(Some(&Schedule::Stretched), 2), ".TT.TTTT");
     assert_eq!(t(Some(&Schedule::Stretched), 3), "TTTTTTTT");
 
-    // No virtual scheduling: one application per real layer, so any k >= 1
+    // No layer schedule: one application per real layer, so any k >= 1
     // tracks the whole stack (`GradHorizon::last` is the suffix cut there).
     assert_eq!(
         GradHorizon::Depth(1).tracked(None, 3, 3),
@@ -114,7 +114,7 @@ fn grad_horizon_last_is_a_plain_suffix() {
     assert_eq!(mask(GradHorizon::last(0, 3)), vec![false, false, false]);
     assert_eq!(mask(GradHorizon::last(2, 3)), vec![false, true, true]);
     assert_eq!(mask(GradHorizon::last(9, 3)), vec![true, true, true]);
-    // A mask is taken as given, whatever the schedule.
+    // A mask is taken as given, whatever the layer schedule.
     let m = vec![true, false, true, false, false, true, false, true];
     assert_eq!(
         GradHorizon::Mask(m.clone()).tracked(Some(&Schedule::Stretched), 8, 3),
@@ -141,7 +141,7 @@ fn applications_count_each_real_layers_uses_bottom_up() {
     let apps = Schedule::Custom(vec![0, 0, 2, 0]).applications(4, 3);
     assert_eq!(apps.index, vec![0, 1, 0, 2]);
     assert_eq!(apps.count, vec![3, 1, 1]);
-    // Both directions of a bidirectional stack count against the real layer
+    // Both passes of a bidirectional stack count against the real layer that
     // they index: `SymmetricCyclic` runs 0 0 1 1 0 0 1 1.
     let apps = BidiSchedule::SymmetricCyclic.applications(8, 2);
     assert_eq!(apps.index, vec![0, 1, 0, 1, 2, 3, 2, 3]);

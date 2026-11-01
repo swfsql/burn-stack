@@ -18,10 +18,10 @@
 //!
 //! **What it leaves alone, on purpose.** It touches only a parameter whose own
 //! field is `weight` (and is a matrix) or `bias`. Consider the bespoke
-//! parameters of a block: a log-decay, a step-size bias, the `γ` of a norm,
-//! the 3-D kernel of a depthwise convolution, a class-token table. Their
-//! initialisations *mean* something (a spread of timescales, a decay that
-//! cannot amplify). A global rule would silently erase them.
+//! parameters: a log-decay, the bias of a discretisation step size, the `γ`
+//! of a norm, the 3-D kernel of a depthwise convolution, a class marker table.
+//! Their initialisations *mean* something (a spread of timescales, a decay
+//! that cannot amplify). A global rule would silently erase them.
 //!
 //! **The residual rescale** ([`InitPolicy::residual_paths`]) is the GPT-2
 //! scheme: a weight that writes into the residual stream is divided by
@@ -55,9 +55,9 @@ pub struct InitPolicy {
     pub residual_paths: Vec<String>,
 
     /// The total number of residual branches of the stack: layers × branches
-    /// per layer (a mixer, plus a feed-forward when there is one). `None` with
-    /// a non-empty [`Self::residual_paths`] is a caller error and panics: the
-    /// rescale has no meaning without a depth to count.
+    /// per layer (the block, plus the feed-forward when there is one). `None`
+    /// with a non-empty [`Self::residual_paths`] is a caller error and panics:
+    /// the rescale has no meaning without a depth to count.
     #[config(default = "None")]
     pub residual_depth: Option<usize>,
 }
@@ -122,8 +122,9 @@ impl ModuleMapper for Reinit<'_> {
 
     fn map_float<const D: usize>(&mut self, param: Param<Tensor<D>>) -> Param<Tensor<D>> {
         // A matrix stored as `weight` is a `Linear` or an `Embedding`, and a
-        // 1-D `bias` is theirs too. Anything else is a parameter of a block,
-        // whose initialisation carries a meaning that this rule does not know.
+        // 1-D `bias` is theirs too. Every other parameter (a parameter of a
+        // block, a class marker table) has an initialisation with a meaning
+        // that this rule does not know.
         match self.field() {
             "weight" if D == 2 => {
                 let std = self.policy.std_for(&self.path.join("."));

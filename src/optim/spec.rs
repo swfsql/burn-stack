@@ -1,13 +1,14 @@
-//! Column layout of the fused projection weights: the data that the Muon
+//! The sub-projections of a fused projection: the data that the Muon
 //! parameter groups are built from.
 //!
-//! Every family fuses several independent linear maps into one `Linear`. So
-//! the weight tensor of a block is a *concatenation* of matrices along its
-//! output (column) axis. Muon orthogonalises a whole matrix at once, so it
-//! must know where those seams are. A [`ProjSpec`] is that description. The
+//! Every family fuses several independent linear maps (the sub-projections)
+//! into one `Linear`, a fused projection. So its weight is a *concatenation*
+//! of matrices along its output (column) axis. Muon orthogonalises a whole
+//! matrix at once, so it must know where those seams are. A [`ProjSpec`] is
+//! that description. The
 //! [`BlockConfig::muon_projections`](crate::modules::BlockConfig::muon_projections)
-//! of each family builds one per fused weight, right next to the code that
-//! sizes them.
+//! of each family builds one for each fused projection, right next to the
+//! code that sizes them.
 
 use burn::module::ParamGroup;
 
@@ -25,7 +26,7 @@ pub const BLOCK_CONTAINERS: [&str; 3] = ["block.", "straight_block.", "reverse_b
 /// Where in the module tree the path of a [`ProjSpec`] is anchored.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProjScope {
-    /// A weight of the mixer block: the path is matched under each of
+    /// A weight of the block: the path is matched under each of
     /// [`BLOCK_CONTAINERS`].
     Block,
     /// Any other weight: the path is matched as a plain substring of the
@@ -33,28 +34,29 @@ pub enum ProjScope {
     Path,
 }
 
-/// One contiguous column block of a fused projection weight.
+/// One sub-projection of a fused projection: a contiguous run of its columns.
 ///
-/// `width` is the number of *columns* that the block owns (the `Linear` weight
-/// of Burn is `[d_input, d_output]`, so the fused axis is dim 1).
+/// `width` is the number of *columns* that the sub-projection owns (the
+/// `Linear` weight of Burn is `[d_input, d_output]`, so the fused axis is
+/// dim 1).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProjSegment {
     /// Name of the sub-projection, for diagnostics (`"value"`, `"gate"`, …).
     pub name: &'static str,
-    /// Number of columns that this segment spans.
+    /// Number of columns that this sub-projection spans.
     pub width: usize,
-    /// Whether Muon owns this segment (`false` ⇒ it stays on the fallback
-    /// optimizer, [`FallbackConfig`](super::FallbackConfig)).
+    /// Whether Muon owns this sub-projection (`false` ⇒ it stays on the
+    /// fallback optimizer, [`FallbackConfig`](super::FallbackConfig)).
     pub muon: bool,
 }
 
 impl ProjSegment {
-    /// A segment that Muon orthogonalises on its own.
+    /// A sub-projection that Muon orthogonalises on its own.
     pub fn muon(name: &'static str, width: usize) -> Self {
         Self { name, width, muon: true }
     }
 
-    /// A segment left to the fallback optimizer.
+    /// A sub-projection left to the fallback optimizer.
     ///
     /// For the channels that produce *per-head scalars*, not a feature vector
     /// (a step size, a decay rate). To orthogonalise a `[d_model, nheads]` slab
@@ -67,7 +69,7 @@ impl ProjSegment {
     }
 }
 
-/// One 2-D weight tensor and how its columns split into independent maps.
+/// One 2-D weight tensor and how its columns split into sub-projections.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProjSpec {
     /// Trailing part of the parameter path that identifies the weight, e.g.
@@ -75,12 +77,12 @@ pub struct ProjSpec {
     pub path: String,
     /// Where `path` is anchored.
     pub scope: ProjScope,
-    /// The column blocks, in order. Their widths must sum to the output width
-    /// of the weight (or, when [`Self::tiled`], to one copy of it).
+    /// The sub-projections, in order. Their widths must sum to the output
+    /// width of the weight (or, when [`Self::tiled`], to one copy of it).
     pub segments: Vec<ProjSegment>,
     /// The weight is [untied](crate::utils::untied) along its fused axis: any
     /// whole number of copies of `segments` side by side, one per application.
-    /// The blocks of each copy are stepped on their own.
+    /// The optimizer steps the sub-projections of each copy on their own.
     pub tiled: bool,
     /// More path substrings that the parameter must contain (empty ⇒ none).
     /// They scope the spec to one part of a model. A model that holds stacks
@@ -90,7 +92,7 @@ pub struct ProjSpec {
 }
 
 impl ProjSpec {
-    /// A fused weight of the mixer block.
+    /// A fused projection of the block.
     pub fn block(path: impl Into<String>, segments: Vec<ProjSegment>) -> Self {
         Self {
             path: path.into(),
@@ -101,12 +103,12 @@ impl ProjSpec {
         }
     }
 
-    /// An unfused weight of the mixer block. Muon owns it in full.
+    /// An unfused weight of the block. Muon owns it in full.
     pub fn block_whole(path: impl Into<String>, width: usize) -> Self {
         Self::block(path, vec![ProjSegment::muon("all", width)])
     }
 
-    /// A fused weight matched by plain path substring.
+    /// A fused projection matched by plain path substring.
     pub fn path(path: impl Into<String>, segments: Vec<ProjSegment>) -> Self {
         Self {
             path: path.into(),
@@ -137,17 +139,17 @@ impl ProjSpec {
         Self::path(path, vec![ProjSegment::muon("all", width)])
     }
 
-    /// Total output width (sum of the segment widths).
+    /// Total output width (the sum of the widths of the sub-projections).
     pub fn width(&self) -> usize {
         self.segments.iter().map(|s| s.width).sum()
     }
 
-    /// Whether Muon owns any segment.
+    /// Whether Muon owns any sub-projection.
     pub fn has_muon(&self) -> bool {
         self.segments.iter().any(|s| s.muon)
     }
 
-    /// Whether Muon owns the whole tensor as a single block (so stock
+    /// Whether Muon owns the whole tensor as a single sub-projection (so stock
     /// [`Muon`](burn::optim::Muon) applies directly, with no split). Never
     /// true for a [tiled](Self::tiled) weight, whose copies are separate
     /// matrices.

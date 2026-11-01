@@ -1,6 +1,6 @@
-//! Muon support: which weights the optimizer can touch, and how the fused
-//! projections are split before it sees them. (Also [`sgd`]: the plain SGD
-//! that a captured training step can replay.)
+//! The Muon plan: which weights Muon steps, and how the fused projections
+//! split into sub-projections before Muon sees them. (Also [`sgd`]: the plain
+//! SGD that a captured training step can replay.)
 //!
 //! [Muon](burn::optim::Muon) replaces the momentum update of a 2-D weight with
 //! the nearest orthogonal matrix (Newton–Schulz). That makes sense only for a
@@ -13,39 +13,40 @@
 //!    them. This is why the plan built here is an **allowlist**: only the
 //!    weights that a [`ProjSpec`] names move off the fallback (AdamW or plain
 //!    SGD, [`FallbackConfig`]).
-//! 2. **Embedding-like matrices.** The token embedding, the LM head, the
-//!    input/output projections of `LatentNetwork` and the class-token/latent
-//!    tables are rank-2. But they are lookup/readout tables at the model
-//!    boundary, and the usual Muon recipe keeps them on AdamW. The plan never
-//!    lists them.
+//! 2. **I/O weights.** The token embedding, the LM head, the input and output
+//!    projections of `LatentNetwork` and the class marker tables are rank 2.
+//!    But they are I/O weights: lookup and readout tables at the input or the
+//!    output of a network. The usual Muon recipe keeps them on AdamW. The plan
+//!    never lists them.
 //! 3. **Fused projections.** Every family concatenates several independent
 //!    maps into one `Linear` (`in_proj` most of all). To orthogonalise that
 //!    concatenation ties together maps that share nothing but an allocation.
-//!    So the plan carries the column seams, and [`Segmented`] applies Muon
-//!    **per block**. The model does not change: the forward pass keeps its
-//!    single fused GEMM.
+//!    So the plan holds the column seams, and [`Segmented`] applies Muon **to
+//!    each sub-projection**. The model does not change: the forward pass keeps
+//!    its single fused GEMM.
 //!
-//! Within a fused projection, one more distinction applies. Blocks that emit
-//! *per-head scalars* (a step size, a decay rate) are gains, not feature maps,
-//! and stay on the fallback optimizer ([`ProjSegment::adamw`]).
+//! Within a fused projection, one more distinction applies. The
+//! sub-projections that emit *per-head scalars* (a step size, a decay rate)
+//! are gains, not feature maps. They stay on the fallback optimizer
+//! ([`ProjSegment::adamw`]).
 //!
 //! ## Why 3-D tensors are never "stacked matrices"
 //!
 //! A `[heads, r, dim]` tensor looks like a stack of matrices that a
 //! stack-aware Muon could take one slice at a time. In practice, it almost
-//! never is one. The shapes at rank 3 in a mixer block are per-head
-//! *diagonals* (a learnable gain vector broadcast over the output of a
-//! projection), a bias, an initial condition, or a depthwise filter. To
-//! orthogonalise any of them would constrain a set of gains, not a linear
-//! map. The part of a block that really is an R-fold matrix expansion lives
-//! in a fused 2-D projection, and a [`ProjSpec`] segment reaches it. So the
-//! rule stays simple: rank 2, named explicitly, or the fallback.
+//! never is one. The shapes at rank 3 in a block are per-head *diagonals* (a
+//! learnable gain vector broadcast over the output of a projection), a bias,
+//! an initial condition, or a depthwise filter. To orthogonalise any of them
+//! would constrain a set of gains, not a linear map. The part of a block that
+//! really is an R-fold matrix expansion lives in a fused 2-D projection. A
+//! sub-projection of a [`ProjSpec`] reaches it. So the rule stays simple:
+//! rank 2, named explicitly, or the fallback.
 //!
 //! So the seams of a [`ProjSpec`] are **per named sub-projection**, not per
-//! head or group. These are the same boundaries as the `split_into` of the
+//! head or group. These are the same seams as the `split_into` of the
 //! forward, and the usual Muon convention (the `W_q` of a transformer goes to
 //! Muon with all heads fused). A caller who wants to test a finer split can
-//! give [`ProjSpec::block`] more segments.
+//! give [`ProjSpec::block`] more sub-projections.
 //!
 //! ## Usage
 //!
@@ -64,15 +65,15 @@
 //! [`AdjustLrFn::Original`] instead expects a Muon-specific (typically much
 //! larger) LR.
 
-/// [`MuonPlan::describe`]: the per-parameter optimizer assignment, to check a
-/// plan against a real model.
+/// [`MuonPlan::describe`]: the optimizer of each parameter, to check a plan
+/// against a real model.
 pub mod report;
-/// [`Segmented`]: a different optimizer per column block of a fused weight.
+/// [`Segmented`]: one optimizer for each sub-projection of a fused projection.
 pub mod segmented;
 /// [`SgdConfig`]: plain SGD, the optimizer that a captured training step can
 /// replay.
 pub mod sgd;
-/// The column layout of the fused projection weights.
+/// [`ProjSpec`]: the sub-projections of a fused projection.
 pub mod spec;
 
 pub use segmented::{BlockState, Segmented, SegmentedState};
@@ -114,7 +115,7 @@ impl FallbackConfig {
         }
     }
 
-    /// The bare optimizer, for a [`Segmented`] block.
+    /// The bare optimizer, for one sub-projection of a [`Segmented`].
     pub fn build(&self) -> Fallback {
         match self {
             Self::AdamW(adamw) => Fallback::AdamW(adamw.build()),
@@ -156,7 +157,8 @@ impl From<Sgd> for Fallback {
     }
 }
 
-/// Which weights Muon owns in a model, and where their fused columns split.
+/// Which weights Muon owns in a model, and the sub-projections of each fused
+/// projection.
 ///
 /// It is built from a *block* config (through
 /// [`BlockConfig::muon_projections`]), so it is independent of the network
@@ -166,7 +168,7 @@ impl From<Sgd> for Fallback {
 /// [`BlockConfig::muon_projections`]: crate::modules::BlockConfig::muon_projections
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MuonPlan {
-    /// The fused (or plain) weights that Muon can touch.
+    /// The fused projections (and the plain weights) that Muon can step.
     pub specs: Vec<ProjSpec>,
 }
 
@@ -218,9 +220,9 @@ impl MuonPlan {
         self
     }
 
-    /// Remove every segment named `name` from the ownership of Muon (it goes
-    /// to the fallback optimizer). So a caller can opt out a sub-projection
-    /// without a rebuild of the plan.
+    /// Remove every sub-projection named `name` from the ownership of Muon (it
+    /// goes to the fallback optimizer). So a caller can opt out a
+    /// sub-projection without a rebuild of the plan.
     pub fn without_segment(mut self, name: &str) -> Self {
         for spec in &mut self.specs {
             for segment in &mut spec.segments {
@@ -237,7 +239,7 @@ impl MuonPlan {
     ///
     /// The group of the fallback must match everything. So any parameter that
     /// the plan does not name (every 1-D and 3-D tensor included) keeps it,
-    /// and so does every non-Muon segment of a fused weight. The gradient
+    /// and so does every sub-projection that Muon does not own. The gradient
     /// clipping of the fallback applies to every group.
     pub fn build(&self, fallback: &FallbackConfig, muon: &MuonConfig) -> ModuleOptimizer {
         let mut optim = fallback.init();

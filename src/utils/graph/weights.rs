@@ -8,14 +8,14 @@ use std::collections::VecDeque;
 
 /// The float parameters of `M` as the caches of a
 /// [`CapturedStep`](super::CapturedStep): what a captured *training* step
-/// advances. Int and bool parameters come along untouched.
+/// advances. Int and bool parameters stay as they are.
 ///
-/// The closure of the step receives the module, trains it one step, and gives
+/// The closure receives the module, runs one training step on it, and gives
 /// back the updated module. `CapturedStep` then writes those values into the
-/// parameters that it holds (in place, so a replay advances them), and rolls
-/// back the steps that `capture` ran. The optimizer inside must be one that a
-/// replay can advance: stateless, with its learning rate as an input tensor
-/// ([`SgdConfig::step`]).
+/// parameters that it holds (in place, so a replay advances them), and undoes
+/// the training steps that `capture` ran. The optimizer inside must be one
+/// that a replay can advance: stateless, with its learning rate as an input
+/// tensor ([`SgdConfig::step`]).
 ///
 /// Every tensor goes through the zip on the inner backend, flattened:
 ///

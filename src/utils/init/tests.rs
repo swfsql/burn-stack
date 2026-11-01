@@ -8,7 +8,7 @@ use crate::utils::test_helpers::test_device;
 
 const D_MODEL: usize = 16;
 const STD: f64 = 0.5;
-/// Two layers, each a mixer plus a feed-forward.
+/// Two layers, each with a block and a feed-forward.
 const RESIDUAL_DEPTH: usize = 4;
 
 type Device = burn::prelude::Device;
@@ -58,7 +58,8 @@ fn weights_are_redrawn_and_biases_zeroed() {
         "block in_proj drawn at std {sampled}, expected {STD}",
     );
 
-    // The boundary projections of `LatentNetwork` carry a bias. It is zeroed.
+    // The input and output projections of `LatentNetwork` have a bias. The
+    // policy zeroes it.
     let bias = net.in_proj.bias.as_ref().expect("in_proj has a bias");
     assert!(values(bias).iter().all(|v| *v == 0.0));
 }
@@ -86,7 +87,8 @@ fn residual_weights_are_rescaled_by_depth() {
         );
     }
 
-    // The mixer's *input* map is not on the residual path, so it keeps `std`.
+    // The *input* projection of the block is not on the residual path, so it
+    // keeps `std`.
     let entry = std_of(&values(&layer.block.in_proj.weight));
     assert!(entry > expected * 1.5, "in_proj was rescaled too: {entry}");
 }

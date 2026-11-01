@@ -3,7 +3,7 @@
 //! This cuts the gradient flow through a module. **It does not save memory**
 //! (see the warning below).
 //! [`Layers::grad_horizon`](crate::modules::Layers::grad_horizon) moves its
-//! untracked segments to the inner backend instead.
+//! untracked spans to the inner backend instead.
 //!
 //! # Why a detach of the *activations* is not sufficient
 //!
@@ -17,8 +17,8 @@
 //! So a cut of the gradient flow through a prefix takes *both* halves:
 //!
 //! - [`detach_params`] on a **clone** of the module. The original keeps its
-//!   tracked params, which lets a weight-shared layer receive gradient from
-//!   its tracked applications only.
+//!   tracked params. So a real layer with several applications gets the
+//!   gradient of its tracked applications only.
 //! - `.detach()` on every tensor that enters the prefix from outside.
 //!
 //! # Warning: this frees no memory
@@ -62,7 +62,8 @@ impl ModuleMapper for DetachParams {
 ///
 /// Call it on a **clone**. The no-grad part runs the detached copy, and the
 /// original keeps the tracked parameters that the back-propagated part needs.
-/// Under weight sharing, both refer to the same weights, and the gradient then
+/// The clone and the original refer to the same weights. So when several
+/// applications of a real layer share its tied parameters, the gradient
 /// accumulates from the tracked applications alone.
 ///
 /// In effect a no-op when the module is not on an autodiff backend. And, as

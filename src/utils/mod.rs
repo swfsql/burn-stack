@@ -2,14 +2,14 @@
 //!
 //! The lower-level plumbing under the composition modules:
 //!
-//! - virtual-layer scheduling (`schedule`) and untied parameters (`untied`),
-//! - class tokens (`class`), right-padded batches (`padding`) and packed rows
-//!   (`packing`),
+//! - layer schedules and the gradient horizon (`schedule`), and untied
+//!   parameters (`untied`),
+//! - class markers (`class`), right-padded batches (`padding`) and packed
+//!   rows (`packing`),
 //! - the custom-backward helpers that a block family needs to register its own
 //!   memory-efficient kernels (`backend_macros` / `combined_grad` / `fprim`),
-//! - no-grad regions (`detach`) and graph capture of a recurrent step
-//!   (`graph`),
-//! - the whole-model init policy (`init`) and the LR `scheduler`s,
+//! - no-grad regions (`detach`) and the captured step (`graph`),
+//! - the whole-model init policy (`init`) and the LR schedules (`scheduler`),
 //! - the per-dtype numerical constants below.
 
 use burn::prelude::ToElement;
@@ -18,7 +18,8 @@ use burn::tensor::{DType, FloatDType, Tensor};
 /// Macros emitting per-backend `BackendExt` impls + autodiff marker traits.
 #[macro_use]
 pub mod backend_macros;
-/// Learnable `[CLS]`-style class tokens/latents spliced into the sequence.
+/// Class markers: the learnable class tokens and class latents that the
+/// containers splice into a sequence.
 pub mod class;
 /// Flatten/unflatten `(y, final_state)` into one tracked tensor for the custom
 /// backward.
@@ -29,25 +30,30 @@ pub mod detach;
 /// Rank-tagged `FloatTensor` primitive wrapper mirroring the `Tensor` method
 /// API, used by custom-backward gradient math.
 pub mod fprim;
-/// Graph capture/replay of a recurrent step, its caches written back in place.
+/// The captured step: a step that the backend records once and then replays,
+/// with its caches written back in place.
 pub mod graph;
 /// A whole-model init policy, applied to a module after its build.
 pub mod init;
-/// Packed rows: several sequences one after another in each slot, each from a
+/// Packed rows: several segments one after another in each row, each from a
 /// reset, with reserved opening slots for the class latents.
 pub mod packing;
-/// Right-padded batches: which rows are padding, and each row's place in its
-/// own slot's sequence once class markers are spliced.
+/// Right-padded batches: which positions are padding, and the place of each
+/// position in the sequence of its own row after the class markers are
+/// spliced.
 pub mod padding;
-/// Virtual-layer → real-weight index scheduling shared by all block families.
+/// Layer schedules (the real layer of each virtual layer), applications and
+/// the gradient horizon.
 pub mod schedule;
-/// Learning-rate schedulers (cosine-annealing + warmup, constant).
+/// LR schedules: cosine annealing with a warmup, constant, a linear ramp, and
+/// a chain of LR schedules.
 pub mod scheduler;
 /// The test device, dtype-aware tolerances and comparisons, and the
 /// gradient-comparison macros used across the test suites.
 #[cfg(any(test, feature = "test-helpers"))]
 pub mod test_helpers;
-/// Parameters held once per application of a real layer instead of tied.
+/// Untied parameters: a real layer holds them once for each of its
+/// applications.
 pub mod untied;
 
 pub use class::{ClassCursor, ClassCursors, ClassLatent, ClassToken};

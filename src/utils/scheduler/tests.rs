@@ -7,7 +7,7 @@ fn test_cosine_annealing_warmup() {
         .with_min_lr(0.01)
         .with_warmup_steps(100);
 
-    // At step 0, LR should be 0
+    // At training step 0, LR should be 0
     assert_eq!(scheduler.get_lr(0), 0.);
 
     // At half warmup, LR should be max_lr / 2
@@ -16,7 +16,7 @@ fn test_cosine_annealing_warmup() {
     // At end of warmup, LR should be max_lr
     assert_eq!(scheduler.get_lr(100), 1.0);
 
-    // After total steps, LR should be min_lr
+    // After total_steps, LR should be min_lr
     assert_eq!(scheduler.get_lr(1000), 0.01);
 }
 
@@ -35,11 +35,11 @@ fn a_linear_ramp_holds_its_end() {
     assert_eq!(ramp.get_lr(2), 1.0);
     assert_eq!(ramp.get_lr(8), 4.0);
     assert_eq!(ramp.get_lr(100), 4.0);
-    assert_eq!(LinearLr::new(1.0, 2.0, 0).get_lr(0), 2.0, "a ramp of 0 steps is its end");
+    assert_eq!(LinearLr::new(1.0, 2.0, 0).get_lr(0), 2.0, "a ramp of 0 training steps is its end");
 }
 
-/// A warmup, a step down, and a cosine cooldown: the schedule of a whole
-/// run in one sequence.
+/// A warmup, a drop, and a cosine cooldown: the LR schedule of a whole run in
+/// one chain.
 fn run_schedule() -> Lr {
     Lr::Sequence(vec![
         LrSegment::new(0, Lr::Linear(LinearLr::new(0.0, 4.0, 4))),
@@ -57,13 +57,17 @@ fn a_sequence_counts_each_segment_from_its_start() {
     lr.validate();
     assert_eq!(lr.get_lr(0), 0.0);
     assert_eq!(lr.get_lr(2), 2.0, "the warmup ramp");
-    assert_eq!(lr.get_lr(9), 4.0, "the end of the ramp holds until the next segment");
-    assert_eq!(lr.get_lr(10), 1.0, "the step down");
-    assert_eq!(lr.get_lr(20), 1.0, "the cosine starts at its max: its step 0 is step 20");
+    assert_eq!(lr.get_lr(9), 4.0, "the end of the ramp holds until the next schedule of the chain");
+    assert_eq!(lr.get_lr(10), 1.0, "the drop");
+    assert_eq!(
+        lr.get_lr(20),
+        1.0,
+        "the cosine starts at its max: its training step 0 is the global training step 20"
+    );
     let mid = lr.get_lr(25);
     assert!((mid - 0.505).abs() < 1e-12, "half of the cosine: {mid}");
     assert_eq!(lr.get_lr(30), 0.01);
-    assert_eq!(lr.get_lr(1000), 0.01, "the last segment runs to the end");
+    assert_eq!(lr.get_lr(1000), 0.01, "the last schedule of the chain runs to the end");
 }
 
 #[test]
@@ -71,26 +75,26 @@ fn a_sequence_survives_a_json_round_trip() {
     let lr = run_schedule();
     let json = lr.to_string();
     assert!(json.contains("\"Sequence\"") && json.contains("\"from\""), "{json}");
-    let back = Lr::load_binary(json.as_bytes()).expect("the JSON of a sequence loads");
+    let back = Lr::load_binary(json.as_bytes()).expect("the JSON of a chain loads");
     for step in [0, 2, 9, 10, 19, 20, 25, 30, 100] {
-        assert_eq!(back.get_lr(step), lr.get_lr(step), "step {step}");
+        assert_eq!(back.get_lr(step), lr.get_lr(step), "training step {step}");
     }
 }
 
 #[test]
-#[should_panic(expected = "at least one segment")]
+#[should_panic(expected = "at least one schedule")]
 fn an_empty_sequence_is_invalid() {
     Lr::Sequence(vec![]).validate();
 }
 
 #[test]
-#[should_panic(expected = "must start at step 0")]
+#[should_panic(expected = "must start at training step 0")]
 fn a_sequence_starts_at_step_zero() {
     Lr::Sequence(vec![LrSegment::new(5, Lr::Constant(ConstantLr::new()))]).validate();
 }
 
 #[test]
-#[should_panic(expected = "increasing steps")]
+#[should_panic(expected = "increasing training steps")]
 fn the_segments_start_at_increasing_steps() {
     let constant = || Lr::Constant(ConstantLr::new());
     Lr::Sequence(vec![
@@ -102,7 +106,7 @@ fn the_segments_start_at_increasing_steps() {
 }
 
 #[test]
-#[should_panic(expected = "increasing steps")]
+#[should_panic(expected = "increasing training steps")]
 fn validate_checks_the_inner_sequences() {
     let constant = || Lr::Constant(ConstantLr::new());
     let inner = Lr::Sequence(vec![LrSegment::new(0, constant()), LrSegment::new(0, constant())]);
@@ -135,11 +139,11 @@ fn scale_steps_moves_every_step_of_a_sequence() {
     lr.validate();
     assert_eq!(lr.get_lr(4), 2.0, "the ramp is twice as long");
     assert_eq!(lr.get_lr(19), 4.0);
-    assert_eq!(lr.get_lr(20), 1.0, "the step down moves to step 20");
+    assert_eq!(lr.get_lr(20), 1.0, "the drop moves to training step 20");
     assert_eq!(lr.get_lr(40), 1.0);
     assert_eq!(lr.get_lr(60), 0.01, "the cooldown is twice as long");
     let mut cosine = Lr::CosineAnnealing(CosineAnnealingLr::new(100).with_warmup_steps(10));
     cosine.scale_steps(1, 2, false);
     let Lr::CosineAnnealing(inner) = &cosine else { panic!() };
-    assert_eq!((inner.total_steps, inner.warmup_steps), (50, 10), "a top-level cosine keeps its warmup");
+    assert_eq!((inner.total_steps, inner.warmup_steps), (50, 10), "a cosine outside a chain keeps its warmup");
 }

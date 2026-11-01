@@ -1,6 +1,8 @@
-//! Graph capture/replay of a recurrent step ([`burn::tensor::capture`]). One
-//! `(input, caches) → (output, caches')` call is recorded once, then replayed
-//! as a single dispatch per step.
+//! The captured step: the backend records one
+//! `(input, caches) → (output, caches')` call once
+//! ([`burn::tensor::capture`]). Each later step call is a replay of that
+//! recording, as a single dispatch. In this module, "the recording" is the
+//! [`Graph`](burn::tensor::Graph) of Burn that the capture returns.
 //!
 //! A small model on CUDA is host-bound. A step spends its time on the enqueue
 //! of hundreds of tiny launches while the device idles, and a replay collapses
@@ -15,15 +17,17 @@
 //!   [`CacheTensors::assign_in_place`](crate::modules::CacheTensors::assign_in_place),
 //!   so that every replay advances the state.
 //! - The closure *runs* before it is recorded: the warm-ups of
-//!   [`capture`](burn::tensor::capture) (and on a backend without graphs,
+//!   [`capture`](burn::tensor::capture) (and on a backend that cannot record,
 //!   also the recorded run). So the caches are saved first and restored
 //!   after. The first [`step`](CapturedStep::step) continues from the caches
 //!   that it was given.
 //! - A replay is correct only if every write landed in place. The capture
 //!   checks this once, with a comparison of buffer ids across the capture.
-//!   Where this cannot be confirmed (no hardware graph: flex, ndarray, …, or a
-//!   primitive that the check cannot see into: fusion), the graph is dropped
-//!   and the step runs eagerly: the same results, without the speed-up.
+//!   Where the capture cannot confirm this, [`CapturedStep`] drops the
+//!   recording and runs each step call eagerly: the same results, without
+//!   the speed-up.
+//!   This occurs on a backend with no hardware recording (flex, ndarray, …),
+//!   and with a primitive that the check cannot see into (fusion).
 //!   [`is_captured`](CapturedStep::is_captured) says which.
 //!
 //! Shapes and the launch sequence are frozen at capture: one batch size, and a
@@ -39,12 +43,14 @@
 //! eagerly, and no error shows it. See `examples::device::loader_device` for
 //! the cause, and for the device on which the examples build their batches.
 //!
-//! A stateless call (a fixed-shape `forward`) is the step with caches `()`:
-//! `|x, ()| (f(x), ())`. A training step is the step whose state is the
-//! parameters of the model, [`Weights`]: forward, backward, and an optimizer
-//! whose update a replay can advance
-//! ([`SgdConfig::step`](crate::optim::SgdConfig::step), with the learning rate
-//! as an input).
+//! A [`CapturedStep`] can also hold other calls of a fixed shape:
+//!
+//! - A stateless call (a fixed-shape `forward`) takes the caches `()`:
+//!   `|x, ()| (f(x), ())`.
+//! - A training step takes the parameters of the model as its state,
+//!   [`Weights`]: forward, backward, and an optimizer whose update a replay
+//!   can advance ([`SgdConfig::step`](crate::optim::SgdConfig::step), with
+//!   the learning rate as an input).
 
 #[cfg(test)]
 mod tests;
@@ -66,10 +72,10 @@ use std::rc::Rc;
 /// and their outputs are used like any other.
 ///
 /// By default, none are necessary. Fusion and autotune get one more warm-up.
-/// Their first runs build and tune the fused/tuned variants, which is a
+/// Their first runs build the fused kernels and tune the kernels, which is a
 /// different launch sequence from the one that a replay should record. Also,
 /// the benchmark buffers of autotune, allocated inside the capture window,
-/// would be pinned to the graph.
+/// would be pinned to the recording.
 pub const WARMUP_STEPS: usize = if cfg!(any(feature = "fusion", feature = "dev-autotune")) {
     1
 } else {
@@ -237,29 +243,29 @@ fn whole<const D: usize, K: Basic>(t: &Tensor<D, K>) -> [core::ops::Range<usize>
 type StepFn<'a, I, Y, C> = dyn FnMut(I, C) -> (Y, C) + 'a;
 type Shared<T> = Rc<RefCell<Option<T>>>;
 
-/// A recurrent step, captured once and replayed per call (see the
-/// [module docs](self)).
+/// A captured step: the backend records a step once, and each call replays
+/// it (see the [module docs](self)).
 ///
 /// `I` is the input (e.g. token ids `Tensor<1, Int>`, or a tuple of tensors),
 /// `Y` the output of the step, `C` its caches. Not `Send`: every refresh,
-/// replay and read must be issued on the stream where the graph was captured,
-/// that is, from this thread.
+/// replay and read must be issued on the stream of the capture, that is,
+/// from this thread.
 pub struct CapturedStep<'a, I: StepInput + 'a, Y: 'a, C: CacheTensors + 'a> {
-    // Declared first, so it drops first. The destruction of the graph waits
+    // Declared first, so it drops first. When the recording drops, it waits
     // for its replays, before the buffers below can go.
     graph: Option<Graph<Y, Box<dyn FnMut() -> Y + 'a>>>,
     step: Rc<RefCell<Box<StepFn<'a, I, Y, C>>>>,
     input: Shared<I>,
     caches: Shared<C>,
-    /// The output of the last eager step (only without a graph).
+    /// The output of the last eager step (only without a recording).
     output: Option<Y>,
     device: Device,
 }
 
 impl<'a, I: StepInput + 'a, Y: 'a, C: CacheTensors + 'a> CapturedStep<'a, I, Y, C> {
     /// Capture `step` at `input` and `caches` (every later call keeps these
-    /// shapes). Nothing is stepped: the first [`step`](Self::step) continues
-    /// from `caches`.
+    /// shapes). The capture leaves the state as it is: the first
+    /// [`step`](Self::step) continues from `caches`.
     ///
     /// # Safety
     ///
@@ -318,8 +324,8 @@ impl<'a, I: StepInput + 'a, Y: 'a, C: CacheTensors + 'a> CapturedStep<'a, I, Y, 
         }
     }
 
-    /// Whether calls replay a hardware graph (`false`: they step eagerly, see
-    /// the [module docs](self)).
+    /// Whether the calls replay a hardware recording (`false`: they run the
+    /// step eagerly, see the [module docs](self)).
     pub fn is_captured(&self) -> bool {
         self.graph.is_some()
     }
@@ -331,8 +337,8 @@ impl<'a, I: StepInput + 'a, Y: 'a, C: CacheTensors + 'a> CapturedStep<'a, I, Y, 
     }
 
     /// Step on the device tensor(s) `x`, which must have the shapes of the
-    /// captured input. On a captured graph, the next call overwrites the
-    /// output: read or copy it first.
+    /// captured input. When the calls replay a recording, the next call
+    /// overwrites the output: read or copy it first.
     pub fn step(&mut self, x: I) -> &Y {
         if self.graph.is_none() {
             return self.eager(x);
@@ -350,7 +356,7 @@ impl<'a, I: StepInput + 'a, Y: 'a, C: CacheTensors + 'a> CapturedStep<'a, I, Y, 
     }
 
     /// A copy of the current caches, in buffers of its own (the stable buffers
-    /// stay with the graph).
+    /// stay with the captured step).
     pub fn caches(&self) -> C {
         self.caches
             .borrow()
@@ -375,7 +381,7 @@ impl<'a, I: StepInput + 'a, Y: 'a, C: CacheTensors + 'a> CapturedStep<'a, I, Y, 
         *slot = Some(stable);
     }
 
-    /// Release the graph and give back the current caches.
+    /// Drop the recording, and give back the current caches.
     pub fn into_caches(mut self) -> C {
         self.graph = None;
         self.caches.borrow_mut().take().expect("caches are always put back")
@@ -389,21 +395,21 @@ impl<'a, I: StepInput + 'a, Y: 'a, C: CacheTensors + 'a> CapturedStep<'a, I, Y, 
     }
 
     fn replay(&mut self) -> &Y {
-        let graph = self.graph.as_mut().expect("only called with a graph");
-        // Safety: the graph touches three sets of buffers:
+        let graph = self.graph.as_mut().expect("replay needs a recording");
+        // Safety: the recording touches three sets of buffers:
         // - the stable input and caches, held by `self` and by the closure
-        //   that the graph owns, and only written in place (checked at capture
-        //   and at every refresh),
+        //   that the recording owns, and only written in place (checked at
+        //   capture and at every refresh),
         // - the buffers that `step` borrows for `'a` (the contract of
         //   `capture`),
-        // - the buffers that the graph retains itself.
+        // - the buffers that the recording retains itself.
         // `self` is not `Send`, so every refresh, replay and read comes from
         // this thread, on the stream of the capture.
         unsafe { graph.replay() }
     }
 }
 
-/// A step on one tensor, which the host can also feed directly.
+/// A captured step on one tensor, which the host can also feed directly.
 impl<'a, const D: usize, K: InputKind + 'a, Y: 'a, C: CacheTensors + 'a>
     CapturedStep<'a, Tensor<D, K>, Y, C>
 {
@@ -413,9 +419,9 @@ impl<'a, const D: usize, K: InputKind + 'a, Y: 'a, C: CacheTensors + 'a>
     }
 
     /// [`step`](Self::step) on host data (converted to the dtype of the
-    /// input). On a captured graph, a contiguous input gets the data as a
-    /// host write straight into its buffer. A strided input gets it through
-    /// [`step`](Self::step): an upload, then a copy in place.
+    /// input). When the calls replay a recording, a contiguous input gets the
+    /// data as a host write straight into its buffer. A strided input gets it
+    /// through [`step`](Self::step): an upload, then a copy in place.
     pub fn step_data(&mut self, data: TensorData) -> &Y {
         let dtype = self.input.borrow().as_ref().expect("the input is always present").dtype();
         let data = data.convert_dtype(dtype);
@@ -430,8 +436,8 @@ impl<'a, const D: usize, K: InputKind + 'a, Y: 'a, C: CacheTensors + 'a>
                 let slot = self.input.borrow();
                 let stable = slot.as_ref().expect("the input is always present");
                 assert_eq!(&stable.shape(), data.shape(), "a captured step keeps its input shape");
-                // A graph is kept only after the id of the input was read, so
-                // the input has one.
+                // The capture keeps a recording only after it read the id of
+                // the input, so the input has one.
                 let c = cube(stable).expect("a captured input is a cubecl tensor");
                 // `write` copies the bytes in row-major order from the start
                 // of the buffer. Only a contiguous input has that layout. A
@@ -452,6 +458,6 @@ impl<'a, const D: usize, K: InputKind + 'a, Y: 'a, C: CacheTensors + 'a>
             }
         }
         #[cfg(not(all(feature = "cubecl", not(feature = "fusion"))))]
-        unreachable!("a graph is only kept where buffer ids can be read: {data:?}")
+        unreachable!("the capture keeps a recording only where it can read the buffer ids: {data:?}")
     }
 }

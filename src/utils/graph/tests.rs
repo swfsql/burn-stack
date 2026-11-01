@@ -3,10 +3,11 @@
 //! continues from a state set in place. A stateless forward (caches `()`) is
 //! the eager one.
 //!
-//! Off a hardware-graph build (flex, the default), the captured step runs
-//! eager steps. These still run the closure of `capture`, so the tests pin the
-//! snapshot/restore around it. Under `backend-cuda`, the same suite replays a
-//! real graph, and [`expects_graph`] asserts that it got one.
+//! On a build that cannot record (flex, the default), the captured step runs
+//! each step call eagerly. These calls still run the closure of `capture`, so
+//! the tests pin the snapshot/restore around it. Under `backend-cuda`, the same
+//! suite replays a hardware recording, and [`expects_graph`] asserts that the
+//! capture made one.
 
 use super::CapturedStep;
 use crate::modules::{Layers, LayersBuilder, VocabNetwork, VocabNetworkBuilder};
@@ -22,7 +23,7 @@ const VOCAB: usize = 11;
 const BATCH: usize = 3;
 const STEPS: usize = 12;
 
-/// Whether this build and device give a hardware graph (cubecl without
+/// Whether this build and device give a hardware recording (cubecl without
 /// fusion, on a CUDA/HIP device).
 fn expects_graph(device: &Device) -> bool {
     let name = format!("{device:?}");
@@ -107,15 +108,15 @@ fn captured_token_steps_are_the_eager_steps() {
     }
     assert_caches("final caches", &captured.caches(), &eager_caches);
 
-    // Setting the state in place restarts from it.
+    // A state set in place: the next steps continue from it.
     captured.set_caches(opening);
     for k in 1..STEPS {
         let data = TensorData::new(tokens(k), [BATCH, 2]);
         let y = captured.step_data(data).clone();
         let d = max_abs_diff(y, eager[k].clone());
-        assert_eq!(d, 0.0, "restarted step {k} differs by {d}");
+        assert_eq!(d, 0.0, "step {k} after set_caches differs by {d}");
     }
-    assert_caches("restarted caches", &captured.into_caches(), &eager_caches);
+    assert_caches("caches after set_caches", &captured.into_caches(), &eager_caches);
 }
 
 #[test]
@@ -212,8 +213,9 @@ fn host_data_fills_a_strided_input() {
 }
 
 /// A captured SGD training step is the eager `Sgd` of Burn, bit for bit: the
-/// loss at every step and the final weights. The learning rate changes at
-/// every step, and weight decay and gradient clipping are on.
+/// loss at every training step and the final weights. The learning rate
+/// changes at every training step, and weight decay and gradient clipping are
+/// on.
 #[cfg(feature = "optim")]
 #[test]
 fn captured_sgd_training_is_the_eager_training() {
@@ -253,7 +255,8 @@ fn captured_sgd_training_is_the_eager_training() {
         eager_losses.push(l.inner());
     }
 
-    // Captured: the whole step, the weights its state, the rate an input.
+    // Captured: the whole training step, the weights its state, the rate an
+    // input.
     let rate = |k: usize| Tensor::<1>::from_floats([lr(k)], &device);
     let step = |(x, y, lr): (Tensor<3>, Tensor<3>, Tensor<1>), w: Weights<Layers<RefBlock>>| {
         let layers = w.0;
@@ -262,7 +265,8 @@ fn captured_sgd_training_is_the_eager_training() {
         (l.inner(), Weights(sgd.step(layers, grads, lr)))
     };
     let (x, y) = data[0].clone();
-    // Safety: the step reads nothing but its arguments and `sgd`, borrowed.
+    // Safety: the training step reads nothing but its arguments and `sgd`,
+    // borrowed.
     let mut captured = unsafe { CapturedStep::capture(&device, (x, y, rate(0)), Weights(layers), step) };
     assert_eq!(captured.is_captured(), expects_graph(&device));
     for (k, (x, y)) in data.iter().enumerate() {

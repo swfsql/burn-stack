@@ -1,8 +1,8 @@
-//! A padded batch is each of its slots run alone. Every row that a slot owns
-//! (its user tokens, and the class markers placed against its own length)
-//! comes out as the forward of that slot alone gives it, with the same caches
-//! and gradients. The tests compose [`RefBlock`], so they pin the half of the
-//! contract that belongs to the containers.
+//! A padded batch is each of its rows run alone. A row owns its user tokens
+//! and the class markers placed against its own length. Each of these
+//! positions comes out as the forward of that row alone gives it, with the
+//! same caches and gradients. The tests compose [`RefBlock`], so they pin the
+//! half of the contract that belongs to the containers.
 
 use crate::modules::bidi::{BidiLayersBuilder, OutputMergeConfig};
 use crate::modules::{LatentNetworkBuilder, Layers, LayersBuilder, ResidualsConfig};
@@ -18,14 +18,15 @@ use crate::utils::test_helpers::test_device;
 const D_MODEL: usize = 8;
 const TOL: f32 = 1e-4;
 /// The gradient tolerance for f16 and bf16 gradients. The padded batch and the
-/// slots alone add in different orders, and each rounds on its own. In f16,
+/// rows alone add in different orders, and each rounds on its own. In f16,
 /// the multi-gate layers differ by `3·10⁻³` to `2.2·10⁻²` (30 runs), above
 /// `dtype_tol(TOL)` (`1.8·10⁻²`). In f64, they agree to `6.5·10⁻¹⁶`. A padding
 /// error gives a difference of order 1, so this tolerance still finds it.
 const HALF_GRAD_TOL: f32 = 5e-2;
 
-/// One row of a container's output: user token `t`, or marker `i` of the
-/// `level`-th splice (network tokens, stack latents, then each layer's).
+/// One position of the output of a container: user token `t`, or marker `i`
+/// of the `level`-th splice. The splices are the class tokens of the network,
+/// the class latents of the stack, then those of each layer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Row {
     User(usize),
@@ -36,7 +37,8 @@ fn users(len: usize) -> Vec<Row> {
     (0..len).map(Row::User).collect()
 }
 
-/// Splice one level's markers into `rows`, as a whole-sequence call places them.
+/// Splice the markers of one marker level into `rows`, as a whole-sequence
+/// call places them.
 fn place<M: ClassMarker>(rows: Vec<Row>, markers: &[M], level: usize) -> Vec<Row> {
     let mut cursor = ClassCursor::whole(rows.len());
     let plan = class_chunk_plan(markers, rows.len(), &mut cursor, "test");
@@ -51,8 +53,8 @@ fn place<M: ClassMarker>(rows: Vec<Row>, markers: &[M], level: usize) -> Vec<Row
     out
 }
 
-/// The rows a stack (no virtual layers) outputs from `rows`: its own latents,
-/// then each layer's.
+/// The positions that a stack (no virtual layers) outputs from `rows`: its own
+/// class latents, then those of each layer.
 fn stack_rows(layers: &Layers<RefBlock>, rows: Vec<Row>, level: usize) -> Vec<Row> {
     let mut rows = place(rows, &layers.class_latents, level);
     for (i, layer) in layers.real_layers.iter().enumerate() {
@@ -61,7 +63,7 @@ fn stack_rows(layers: &Layers<RefBlock>, rows: Vec<Row>, level: usize) -> Vec<Ro
     rows
 }
 
-/// `[batch, padded]`, `true` past each slot's length.
+/// `[batch, padded]`, `true` past the length of each row.
 fn pad_mask(lens: &[usize], padded: usize, device: &Device) -> Tensor<2, Bool> {
     let batch = lens.len();
     let lens: Vec<i32> = lens.iter().map(|&l| l as i32).collect();
@@ -81,7 +83,7 @@ fn indices(rows: &[Row], owned: &[Row], device: &Device) -> Tensor<1, Int> {
         .map(|r| {
             rows.iter()
                 .position(|p| p == r)
-                .unwrap_or_else(|| panic!("{r:?}, owned by a slot, is missing from the padded batch"))
+                .unwrap_or_else(|| panic!("{r:?}, owned by a row, is missing from the padded batch"))
                 as i32
         })
         .collect();
@@ -133,10 +135,10 @@ fn assert_grads_match(padded: Vec<Option<Tensor<1>>>, solo: Vec<Option<Tensor<1>
     }
 }
 
-/// Run `forward` on the padded batch and on each slot alone. Compare every row
-/// that each slot owns, every cache slot, and the gradient of every parameter
-/// for a loss over those rows. `rows(len)` names the rows that a `len`-token
-/// input comes out as.
+/// Run `forward` on the padded batch and on each row alone. Compare every
+/// position that each row owns, every cache slot, and the gradient of every
+/// parameter for a loss over those positions. `rows(len)` names the positions
+/// that a `len`-token input comes out as.
 fn check_each_slot_alone<M: Module>(
     module: &M,
     lens: &[usize],
@@ -163,10 +165,10 @@ fn check_each_slot_alone<M: Module>(
         let idx = indices(&padded_rows, &owned, &device);
         let y_owned = y.clone().narrow(0, b, 1).select(1, idx.clone());
         let diff = max_rel_diff(y_owned.clone(), y_solo.clone());
-        assert!(diff < dtype_tol(TOL), "slot {b} (length {len}): its rows differ by {diff}");
+        assert!(diff < dtype_tol(TOL), "row {b} (length {len}): its positions differ by {diff}");
         for (l, (c, c_solo)) in caches.caches.iter().zip(&caches_solo.caches).enumerate() {
             let diff = max_rel_diff(c.state_bd.clone().narrow(0, b, 1), c_solo.state_bd.clone());
-            assert!(diff < dtype_tol(TOL), "slot {b} (length {len}): cache {l} differs by {diff}");
+            assert!(diff < dtype_tol(TOL), "row {b} (length {len}): cache {l} differs by {diff}");
         }
         let weight = weight.clone().select(0, idx).unsqueeze::<3>();
         loss_padded = loss_padded + (y_owned * weight.clone()).sum();
@@ -178,9 +180,9 @@ fn check_each_slot_alone<M: Module>(
     );
 }
 
-/// Three layers with every marker kind at both levels, over slots down to a
-/// single token. So `Middle`/`End` land at the length of each slot, a `Custom`
-/// past the end of a short slot is absent there, and several markers share a
+/// Three layers with every marker kind at both levels, over rows down to a
+/// single token. So `Middle`/`End` land at the length of each row, a `Custom`
+/// past the end of a short row is absent there, and several markers share a
 /// place.
 fn marked_layers(residuals: ResidualsConfig, device: &Device) -> Layers<RefBlock> {
     let mut layers = LayersBuilder {
@@ -257,8 +259,8 @@ fn padded_layers_under_a_grad_horizon_are_each_slot_alone() {
     );
 }
 
-/// A network's own class tokens are placed per slot too, one level below the
-/// stack's latents.
+/// A network also places its own class tokens for each row, one marker level
+/// below the class latents of the stack.
 #[test]
 fn padded_latent_network_is_each_slot_alone() {
     let device = test_device().autodiff();
@@ -282,8 +284,9 @@ fn padded_latent_network_is_each_slot_alone() {
     );
 }
 
-/// The reversed direction reads each slot from its own last row — not from the
-/// batch's, whose padding would then lead.
+/// The reversed pass reads each row from its own last real token. It does
+/// not start at the last position of the batch, because the padding would
+/// then come first.
 #[test]
 fn padded_bidi_layers_are_each_slot_alone() {
     let device = test_device().autodiff();
@@ -308,9 +311,9 @@ fn padded_bidi_layers_are_each_slot_alone() {
     );
 }
 
-/// Split into chunks, a padded batch is still each slot alone. The slot that
-/// ends in the first chunk carries its state through the second chunk
-/// untouched. Its `End` lands there, in the chunk that closes the batch.
+/// Split into windows, a padded batch is still each row alone. The row that
+/// ends in the first window carries its state through the second window
+/// untouched. Its `End` lands there, in the window that closes the batch.
 #[test]
 fn chunked_padded_layers_are_each_slot_alone() {
     let device = test_device().autodiff();

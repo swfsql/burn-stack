@@ -23,8 +23,8 @@
 //!   element, and [`retie`](crate::utils::untied::retie) undoes that.
 //! - **Every application must train.** Only its own application reads a copy.
 //!   So an untracked application leaves it without a gradient, and
-//!   [`Layers::grad_horizon`](crate::modules::Layers::grad_horizon) panics on a
-//!   cut through a layer that unties anything.
+//!   [`Layers::grad_horizon`](crate::modules::Layers::grad_horizon) panics
+//!   when it leaves an application untracked in a layer that unties anything.
 //! - **The count is fixed at the build.** A real layer that runs more often
 //!   than it was built for has no copy for the extra applications, and
 //!   [`view`](crate::utils::untied::view) panics.

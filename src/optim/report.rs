@@ -37,10 +37,11 @@ impl ModuleVisitor for Collect {
 }
 
 impl MuonPlan {
-    /// A per-parameter report of this plan applied to `module`: path, shape,
-    /// and the owning optimizer (with the column segments for a fused weight,
-    /// and `*` on the ones left on the fallback). It ends with the share of
-    /// parameters on Muon.
+    /// A report of this plan applied to `module`, with one line for each
+    /// parameter: its path, its shape and the optimizer that owns it. The line
+    /// of a fused projection also lists its sub-projections, with `*` on those
+    /// left on the fallback. The report ends with the share of parameters on
+    /// Muon.
     ///
     /// Purely diagnostic: print it once to confirm that the plan matches the
     /// model that you built.
@@ -66,7 +67,8 @@ impl MuonPlan {
                 Some(spec) => {
                     let muon_width: usize =
                         spec.segments.iter().filter(|s| s.muon).map(|s| s.width).sum();
-                    // An untied weight holds one copy of the segments per application.
+                    // An untied weight holds one copy of the sub-projections
+                    // per application.
                     let copies = if spec.tiled { row.dims[1] / spec.width() } else { 1 };
                     on_muon += muon_width * copies * row.dims[0];
                     let segments = spec
@@ -99,7 +101,7 @@ impl MuonPlan {
         };
         let _ = writeln!(
             out,
-            "total params: {total}; on muon: {on_muon} ({share:.1}%)  (* = segment left on the fallback)"
+            "total params: {total}; on muon: {on_muon} ({share:.1}%)  (* = sub-projection left on the fallback)"
         );
         out
     }

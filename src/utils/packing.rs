@@ -1,44 +1,47 @@
-//! Packed rows: in each slot of a batch, several sequences one after another.
+//! Packed rows: in each row of a batch, several sequences one after another.
 //!
 //! A batch of sequences of different lengths wastes the padding of its short
-//! slots. A packed batch fills each slot with whole sequences instead. Each
-//! sequence starts at a **reset**. There, every block restarts from a zero
-//! cache (see [`Block::block_forward_packed`]). So each sequence gives the
-//! outputs that it gives alone.
+//! rows. A packed batch fills each row with whole sequences instead. Each
+//! sequence of a packed row is a **segment**, and it starts at a **reset**.
+//! There, every block starts again from a zero cache (see
+//! [`Block::block_forward_packed`]). So each segment gives the outputs that
+//! it gives alone.
 //!
-//! The class latents of a stack (all `Start`) open every sequence, not only
-//! the slot. A splice would move every later row of the slot. So a packed row
-//! **reserves** the opening rows instead. The first `lead` rows of each
-//! sequence are slots. The stack puts its latent `k` into slot `k`, in place
-//! of the input row. The reset is at the first slot. The shapes stay fixed.
+//! The class latents of a stack (all `Start`) open every segment, not only
+//! the row. A splice would move every later position of the row. So a packed
+//! row **reserves** the opening positions instead. The first `lead` positions
+//! of each segment are slots. The stack puts its latent `k` into slot `k`, in
+//! place of the input at that position. The reset is at the first slot. The
+//! shapes stay fixed.
 //!
-//! A block can accept a reset only at some rows (for example, only at a chunk
-//! start). The caller that packs the rows places the resets there. The rows
-//! after the last sequence of a slot are free. They reach only the returned
-//! cache.
+//! A block can accept a reset only at some positions (for example, only at
+//! the start of a chunk). The caller that packs the rows puts the resets
+//! there. The positions after the last segment of a row are free. They reach
+//! only the returned cache.
 //!
 //! [`Block::block_forward_packed`]: crate::modules::Block::block_forward_packed
 
 use burn::prelude::*;
 
-/// The layout of a packed batch: where each sequence starts, and its opening
+/// The layout of a packed batch: where each segment starts, and its opening
 /// slots. See the [module docs](self).
 #[derive(Clone, Debug)]
 pub struct Packed {
-    /// `[batch, rows]`: `true` at the first row of each sequence.
+    /// `[batch, sequence]`: `true` at the first position of each segment.
     pub reset_bs: Tensor<2, Bool>,
-    /// `[batch, rows]`: `k` at the `k`-th opening slot of a sequence, `-1` at
-    /// every other row.
+    /// `[batch, sequence]`: `k` at the `k`-th opening slot of a segment, `-1`
+    /// at every other position.
     pub latent_bs: Tensor<2, Int>,
 }
 
 impl Packed {
-    /// The layout of `rows` rows per slot. `starts[b]` holds the first row of
-    /// each sequence of slot `b`, and each sequence opens with `lead` slots.
+    /// The layout of a batch whose rows have `rows` positions each.
+    /// `starts[b]` holds the first position of each segment of row `b`, and
+    /// each segment opens with `lead` slots.
     ///
     /// # Panics
     /// - If a start is past the end of the row.
-    /// - If the opening slots of a sequence reach the next start or the end
+    /// - If the opening slots of a segment reach the next start or the end
     ///   of the row.
     pub fn from_starts(starts: &[Vec<usize>], lead: usize, rows: usize, device: &Device) -> Self {
         let batch = starts.len();
@@ -47,8 +50,8 @@ impl Packed {
         for (b, starts) in starts.iter().enumerate() {
             let mut end = 0;
             for &start in starts {
-                assert!(start >= end, "the sequences of a slot start in order, after the opening slots");
-                assert!(start + lead.max(1) <= rows, "a sequence starts past the end of the row");
+                assert!(start >= end, "the segments of a row must start in order, after the opening slots");
+                assert!(start + lead.max(1) <= rows, "a segment starts past the end of the row");
                 reset[b * rows + start] = true;
                 for k in 0..lead {
                     latent[b * rows + start + k] = k as i64;
@@ -63,7 +66,7 @@ impl Packed {
         }
     }
 
-    /// `[batch, rows]`.
+    /// `[batch, sequence]`.
     pub fn dims(&self) -> [usize; 2] {
         self.reset_bs.dims()
     }
@@ -85,13 +88,14 @@ impl Packed {
     }
 
     /// Put the rows of `table` (`[lead, width]`) into the opening slots of `x`
-    /// (`[batch, rows, width]`): row `k` at every slot `k`. The other rows of
-    /// `x` pass unchanged. The gradient of a slot goes to its row of `table`.
+    /// (`[batch, sequence, width]`): row `k` at every slot `k`. The other
+    /// positions of `x` pass unchanged. The gradient of a slot goes to its row
+    /// of `table`.
     pub fn place(&self, x: Tensor<3>, table: Tensor<2>) -> Tensor<3> {
         let [batch, rows, width] = x.dims();
         assert_eq!(self.dims(), [batch, rows], "the layout of a packed batch has its shape");
         let [lead, table_width] = table.dims();
-        assert_eq!(table_width, width, "one opening row per latent, of the width of the rows");
+        assert_eq!(table_width, width, "the table must have one row per latent, with the width of `x`");
         let device = x.device();
         // Row `lead` of the extended table is the zero row of every other
         // position. The mask below discards it.

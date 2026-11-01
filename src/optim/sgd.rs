@@ -1,17 +1,18 @@
 //! Plain SGD that a captured training step can replay.
 //!
 //! The optimizers of Burn do not survive a replay (tracel-ai/burn#5779). The
-//! graph bakes in their host scalars (the learning rate, the bias correction
-//! of Adam). Also, their update lands back in the buffer of its input only by
-//! operand order, so a replay can read state that stops advancing. Plain SGD
-//! has no state, which leaves the learning rate. [`SgdConfig::step`] takes it
-//! as a `[1]` device tensor: an input that the host refreshes before each
-//! replay, so a schedule keeps moving. The capture writes back the weights
-//! themselves ([`Weights`](crate::utils::graph::Weights)).
+//! recording of the captured step bakes in their host scalars (the learning
+//! rate, the bias correction of Adam). Also, their update lands back in the
+//! buffer of its input only by operand order, so a replay can read state that
+//! stops advancing. Plain SGD has no state, which leaves the learning rate.
+//! [`SgdConfig::step`] takes it as a `[1]` device tensor: an input that the
+//! host refreshes before each replay, so an LR schedule keeps moving. The
+//! capture writes back the weights themselves
+//! ([`Weights`](crate::utils::graph::Weights)).
 //!
-//! The step is the `Sgd` of Burn without momentum, op for op (clip, decay,
-//! scale, subtract). So a captured run trains exactly as the eager optimizer
-//! of [`SgdConfig::init`] does.
+//! [`SgdConfig::step`] is the `Sgd` of Burn without momentum, op for op (clip,
+//! decay, scale, subtract). So a captured run trains exactly as the eager
+//! optimizer of [`SgdConfig::init`] does.
 
 use burn::grad_clipping::{GradientClipping, GradientClippingConfig};
 use burn::module::{ModuleMapper, Param};
@@ -37,8 +38,8 @@ impl SgdConfig {
     }
 
     /// The bare optimizer that [`init`](Self::init) wraps, for one parameter
-    /// group (or one [`Segmented`](super::Segmented) block): no gradient
-    /// clipping, no state.
+    /// group (or one sub-projection of a [`Segmented`](super::Segmented)): no
+    /// gradient clipping, no state.
     pub fn build(&self) -> burn::optim::Sgd {
         self.burn().build()
     }
@@ -49,11 +50,11 @@ impl SgdConfig {
             .with_gradient_clipping(self.grad_clipping.clone())
     }
 
-    /// One step on `module` at learning rate `lr` (`[1]`, on the device of the
-    /// gradients, in the float dtype of the parameters). Every parameter with
-    /// a gradient in `grads` becomes `w − lr·g`. Parameters without one stay as
-    /// they are. This is the step of [`init`](Self::init), op for op, with the
-    /// rate as a tensor.
+    /// One training step on `module` at learning rate `lr` (`[1]`, on the
+    /// device of the gradients, in the float dtype of the parameters). Every
+    /// parameter with a gradient in `grads` becomes `w − lr·g`. Parameters
+    /// without one stay as they are. This is the update of
+    /// [`init`](Self::init), op for op, with the rate as a tensor.
     pub fn step<M: Module>(&self, module: M, grads: GradientsParams, lr: Tensor<1>) -> M {
         module.map(&mut Step {
             weight_decay: self.weight_decay,
