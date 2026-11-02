@@ -9,9 +9,16 @@ the Multi-Gate Residuals paper looks up a source word there. It finds our term,
 the difference, and the wrong port that the word can cause. The docs of this
 repo also follow the new definition of `Layer` and the `_Avoid_` rule.
 
-The input is `../burn-mamba/.scratch/third-party-terms/research.md`. Load the
-`asd-ste100` and `mattpocock-skills:writing-for-agents` skills before you write.
-The user approved reads of `../papers/` for this ticket.
+The input is `../burn-mamba/.scratch/third-party-terms/research.md`. It is a
+best-effort draft, so each of its rows is a lead and not a fact. Ticket 02 checks
+each row against its citations. Load the `asd-ste100` and
+`mattpocock-skills:writing-for-agents` skills before you write. The user approved
+reads of `../papers/` for this ticket.
+
+**Expected length.** One session, under 150k tokens. `research.md` is about 30k
+tokens. Do not check rows against the sources here, because that work is large
+and has its own ticket. Read a cited line only if you cannot understand a row
+without it.
 
 Line numbers are those of commit `4609abe`.
 
@@ -61,15 +68,13 @@ it cites that source.
 - `src/modules/mod.rs:85` keeps "a selective SSM", because it names a class of
   models.
 - burn-mamba does not move its pin, because this ticket changes only docs.
-- No verification ticket follows, because this doc cites only papers.
 
 ## Links
 
-- `docs/agents/domain.md`: tell an agent to read this doc before it reads or
-  ports from a source.
-- "Where to look" in `CLAUDE.md`: add the doc.
 - The File Map of `CLAUDE.md`: add the file if the rule of that section requires
   it.
+- Do not add other links. Ticket 02 adds them after its check, so no agent reads
+  an unchecked doc.
 
 ## Acceptance criteria
 
@@ -80,7 +85,7 @@ it cites that source.
       code has a line number.
 - [ ] `rg -i 'pre-ln residual' src/lib.rs src/modules/mod.rs` finds no hit.
 - [ ] `CLAUDE.md` has the `_Avoid_` rule.
-- [ ] `docs/agents/domain.md` and `CLAUDE.md` have the links.
+- [ ] `docs/agents/domain.md` and "Where to look" do not name the doc yet.
 - [ ] `cargo check` and `cargo doc --all --no-deps` give no warnings.
 - [ ] `scripts/ste-lint.py` of the `asd-ste100` skill gives no hard violation on
       the doc.
