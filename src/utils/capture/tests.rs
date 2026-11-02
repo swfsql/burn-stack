@@ -232,10 +232,10 @@ fn captured_sgd_training_is_the_eager_training() {
     let sgd = SgdConfig::new()
         .with_weight_decay(Some(1e-2))
         .with_grad_clipping(Some(GradientClippingConfig::Value(0.05)));
-    let schedule = Lr::CosineAnnealing(
-        CosineAnnealingLr::new(STEPS).with_max_lr(0.5).with_min_lr(0.01).with_warmup_steps(3),
+    let lr_schedule = Lr::CosineAnnealing(
+        CosineAnnealingLr::new(STEPS).with_max_lr(0.5).with_min_lr(0.01).with_warmup_training_steps(3),
     );
-    let lr = |k: usize| schedule.get_lr(k + 1);
+    let lr = |k: usize| lr_schedule.get_lr(k + 1);
     let batch = |_| Tensor::<3>::random([BATCH, LEN, D_MODEL], Distribution::Normal(0.0, 1.0), &device);
     let data: Vec<(Tensor<3>, Tensor<3>)> = (0..STEPS).map(|k| (batch(k), batch(k))).collect();
     let loss = |layers: &Layers<RefBlock>, x: Tensor<3>, y: Tensor<3>| {
@@ -258,7 +258,7 @@ fn captured_sgd_training_is_the_eager_training() {
     // Captured: the whole training step, the weights its state, the rate an
     // input.
     let rate = |k: usize| Tensor::<1>::from_floats([lr(k)], &device);
-    let step = |(x, y, lr): (Tensor<3>, Tensor<3>, Tensor<1>), w: Weights<Layers<RefBlock>>| {
+    let training_step = |(x, y, lr): (Tensor<3>, Tensor<3>, Tensor<1>), w: Weights<Layers<RefBlock>>| {
         let layers = w.0;
         let l = loss(&layers, x, y);
         let grads = GradientsParams::from_grads(l.backward(), &layers);
@@ -267,7 +267,8 @@ fn captured_sgd_training_is_the_eager_training() {
     let (x, y) = data[0].clone();
     // Safety: the training step reads nothing but its arguments and `sgd`,
     // borrowed.
-    let mut captured = unsafe { CapturedStep::capture(&device, (x, y, rate(0)), Weights(layers), step) };
+    let mut captured =
+        unsafe { CapturedStep::capture(&device, (x, y, rate(0)), Weights(layers), training_step) };
     assert_eq!(captured.is_captured(), expects_recording(&device));
     for (k, (x, y)) in data.iter().enumerate() {
         let l = captured.step((x.clone(), y.clone(), rate(k))).clone();

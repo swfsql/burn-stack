@@ -1,4 +1,4 @@
-//! The Muon plan: which weights Muon steps, and how the fused projections
+//! The Muon plan: which weights Muon updates, and how the fused projections
 //! split into sub-projections before Muon sees them. (Also [`sgd`]: the plain
 //! SGD that a captured training step can replay.)
 //!
@@ -168,7 +168,7 @@ impl From<Sgd> for Fallback {
 /// [`BlockConfig::muon_projections`]: crate::modules::BlockConfig::muon_projections
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MuonPlan {
-    /// The fused projections (and the plain weights) that Muon can step.
+    /// The fused projections (and the plain weights) that Muon can update.
     pub specs: Vec<ProjSpec>,
 }
 

@@ -1,6 +1,6 @@
 # 10: Add the training terms to the glossary
 
-Status: ready-for-agent
+Status: resolved
 
 Blocked by: None (can start immediately)
 
@@ -102,15 +102,63 @@ The LR schedule under other names:
 
 ## Acceptance criteria
 
-- [ ] `GLOSSARY.md` has the three entries, with the text above.
-- [ ] `rg -e total_steps -e warmup_steps -e '\.steps\b' -e 'Muon steps'
+- [x] `GLOSSARY.md` has the three entries, with the text above.
+- [x] `rg -e total_steps -e warmup_steps -e '\.steps\b' -e 'Muon steps'
       -e 'optimizer steps' -e 'steps each' -e 'Learning Rate Scheduler'
       -e 'Learning-rate schedule'` over `src`, `docs`, `CLAUDE.md` and
       `GLOSSARY.md` finds nothing.
-- [ ] `cargo check --all-targets`, `cargo check --features examples-common`,
+- [x] `cargo check --all-targets`, `cargo check --features examples-common`,
       `cargo test --lib -- --test-threads=1` and
       `cargo test --lib --features examples-common -- --test-threads=1` pass
       (flex).
-- [ ] `cargo doc --no-deps --features examples-common` has no warnings.
+- [x] `cargo doc --no-deps --features examples-common` has no warnings.
 
 ## Comments
+
+- A config that has an old key in place of its new key does not load. This also
+  applies to a config with only the old `warmup_steps`, although
+  `warmup_training_steps` has a default. The error names the missing new key,
+  for example ``missing field `total_training_steps` ``. A throwaway test showed
+  this for each key of the rename map.
+- The Sites above do not list these prose sites. They have the same meaning, so
+  this ticket also changes them:
+  - The verb "step" for an optimizer update:
+    `docs/adr/0004-muon-sees-split-projections.md:27`,
+    `docs/adr/0008-untied-copies-on-an-existing-axis.md:31`,
+    `src/optim/mod.rs:171`, `src/reference.rs:99`.
+  - `src/optim/sgd.rs:53`: the doc of `SgdConfig::step` said "One training
+    step". This call is only the optimizer update, so the doc now says that.
+  - `src/examples/trainer.rs:2`: "the update of the optimizer" is "the optimizer
+    update".
+- The rename map does not name these private names. `CLAUDE.md` asks for the
+  glossary terms in code and test names, and a private name cannot break a
+  consumer. So this ticket also changes them:
+  - `src/reference/tests.rs`: the test
+    `muon_steps_an_untied_projection_one_copy_at_a_time` is
+    `muon_updates_an_untied_projection_one_copy_at_a_time`, and its local
+    `stepped` is `updated`.
+  - `src/utils/scheduler/tests.rs`: the local `step` of
+    `a_chain_survives_a_json_round_trip` is `training_step`.
+  - `src/utils/capture/tests.rs`: the closure `step` that holds a whole training
+    step is `training_step`.
+  - `src/optim/sgd.rs`: the private struct `Step` is `OptimizerUpdate`.
+- These public names still say "step". The rename map does not name them, so
+  they stay until the user decides:
+  - `Lr::scale_steps` and its test
+    `scale_steps_moves_every_training_step_of_a_chain`. burn-mamba and
+    burn-deltanet do not call this method.
+  - `SgdConfig::step`. It has the name of `Optimizer::step` of Burn.
+- burn-deltanet has no issue tracker. These files use a renamed name:
+  - `with_warmup_steps`: `examples/mnist-class/main.rs:81`,
+    `examples/tiny-stories/main.rs:115`,
+    `examples/register/carousel/main.rs:110`,
+    `examples/register/majority/main.rs:89`.
+  - The local `total_steps`: `examples/register/carousel/main.rs:96,107`,
+    `examples/register/majority/main.rs:78,86`. This name is a name of
+    burn-deltanet, so the compiler does not find it. It holds the argument of
+    `CosineAnnealingLr::new`.
+
+  burn-deltanet builds against burn-stack rev `984d42d`. So the Comments of
+  ticket 09 also apply.
+- `cargo test --lib -- --test-threads=1`: 87 tests pass. With
+  `--features examples-common`: 112 tests pass.

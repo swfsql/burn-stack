@@ -28,4 +28,4 @@ real layer with one application keeps its stock shape. So the default case
 - A saved record holds the longer shape.
 - `InitPolicy` redraws every value, so `retie` makes the copies equal again
   after it.
-- `ProjSpec::tiled` lets Muon step each copy alone.
+- `ProjSpec::tiled` lets Muon update each copy alone.

@@ -1,5 +1,5 @@
 //! [`Trainer`]: the whole training step of an example (forward, backward and
-//! the update of the optimizer). Under plain SGD, it replays a captured step.
+//! the optimizer update). Under plain SGD, it replays a captured step.
 //! Under any other optimizer, it runs each training step eagerly.
 //!
 //! Either way, one [`LossFn`] defines the training step: the loss of the

@@ -2,30 +2,30 @@ use super::*;
 
 #[test]
 fn test_cosine_annealing_warmup() {
-    let scheduler = CosineAnnealingLr::new(1000)
+    let lr_schedule = CosineAnnealingLr::new(1000)
         .with_max_lr(1.)
         .with_min_lr(0.01)
-        .with_warmup_steps(100);
+        .with_warmup_training_steps(100);
 
     // At training step 0, LR should be 0
-    assert_eq!(scheduler.get_lr(0), 0.);
+    assert_eq!(lr_schedule.get_lr(0), 0.);
 
     // At half warmup, LR should be max_lr / 2
-    assert_eq!(scheduler.get_lr(50), 0.5);
+    assert_eq!(lr_schedule.get_lr(50), 0.5);
 
     // At end of warmup, LR should be max_lr
-    assert_eq!(scheduler.get_lr(100), 1.0);
+    assert_eq!(lr_schedule.get_lr(100), 1.0);
 
-    // After total_steps, LR should be min_lr
-    assert_eq!(scheduler.get_lr(1000), 0.01);
+    // After total_training_steps, LR should be min_lr
+    assert_eq!(lr_schedule.get_lr(1000), 0.01);
 }
 
 #[test]
 fn test_constant_lr() {
-    let scheduler = ConstantLr::new().with_lr(0.001);
-    assert_eq!(scheduler.get_lr(0), 0.001);
-    assert_eq!(scheduler.get_lr(1000), 0.001);
-    assert_eq!(scheduler.get_lr(10000), 0.001);
+    let lr_schedule = ConstantLr::new().with_lr(0.001);
+    assert_eq!(lr_schedule.get_lr(0), 0.001);
+    assert_eq!(lr_schedule.get_lr(1000), 0.001);
+    assert_eq!(lr_schedule.get_lr(10000), 0.001);
 }
 
 #[test]
@@ -76,8 +76,8 @@ fn a_chain_survives_a_json_round_trip() {
     let json = lr.to_string();
     assert!(json.contains("\"Chain\"") && json.contains("\"from\""), "{json}");
     let back = Lr::load_binary(json.as_bytes()).expect("the JSON of a chain loads");
-    for step in [0, 2, 9, 10, 19, 20, 25, 30, 100] {
-        assert_eq!(back.get_lr(step), lr.get_lr(step), "training step {step}");
+    for training_step in [0, 2, 9, 10, 19, 20, 25, 30, 100] {
+        assert_eq!(back.get_lr(training_step), lr.get_lr(training_step), "training step {training_step}");
     }
 }
 
@@ -142,8 +142,12 @@ fn scale_steps_moves_every_training_step_of_a_chain() {
     assert_eq!(lr.get_lr(20), 1.0, "the drop moves to training step 20");
     assert_eq!(lr.get_lr(40), 1.0);
     assert_eq!(lr.get_lr(60), 0.01, "the cooldown is twice as long");
-    let mut cosine = Lr::CosineAnnealing(CosineAnnealingLr::new(100).with_warmup_steps(10));
+    let mut cosine = Lr::CosineAnnealing(CosineAnnealingLr::new(100).with_warmup_training_steps(10));
     cosine.scale_steps(1, 2, false);
     let Lr::CosineAnnealing(inner) = &cosine else { panic!() };
-    assert_eq!((inner.total_steps, inner.warmup_steps), (50, 10), "a cosine outside a chain keeps its warmup");
+    assert_eq!(
+        (inner.total_training_steps, inner.warmup_training_steps),
+        (50, 10),
+        "a cosine outside a chain keeps its warmup"
+    );
 }

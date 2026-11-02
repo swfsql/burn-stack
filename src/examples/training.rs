@@ -202,7 +202,7 @@ pub struct TrainingConfig {
     /// Number of dataloader worker threads.
     #[config(default = 2)]
     pub num_workers: usize,
-    /// Learning-rate schedule.
+    /// The LR schedule.
     #[config(default = "Lr::Constant(ConstantLr::new())")]
     pub lr: Lr,
     /// RNG seed for reproducibility.

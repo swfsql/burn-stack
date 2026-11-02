@@ -50,13 +50,13 @@ impl SgdConfig {
             .with_gradient_clipping(self.grad_clipping.clone())
     }
 
-    /// One training step on `module` at learning rate `lr` (`[1]`, on the
+    /// One optimizer update of `module` at learning rate `lr` (`[1]`, on the
     /// device of the gradients, in the float dtype of the parameters). Every
     /// parameter with a gradient in `grads` becomes `w − lr·g`. Parameters
     /// without one stay as they are. This is the update of
     /// [`init`](Self::init), op for op, with the rate as a tensor.
     pub fn step<M: Module>(&self, module: M, grads: GradientsParams, lr: Tensor<1>) -> M {
-        module.map(&mut Step {
+        module.map(&mut OptimizerUpdate {
             weight_decay: self.weight_decay,
             clipping: self.grad_clipping.as_ref().map(|config| config.init()),
             grads,
@@ -65,14 +65,14 @@ impl SgdConfig {
     }
 }
 
-struct Step {
+struct OptimizerUpdate {
     weight_decay: Option<f32>,
     clipping: Option<GradientClipping>,
     grads: GradientsParams,
     lr: Tensor<1>,
 }
 
-impl ModuleMapper for Step {
+impl ModuleMapper for OptimizerUpdate {
     fn map_float<const D: usize>(&mut self, param: Param<Tensor<D>>) -> Param<Tensor<D>> {
         let (id, tensor, mapper) = param.consume();
         let Some(grad) = self.grads.remove::<D>(id) else {

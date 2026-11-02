@@ -96,7 +96,7 @@ pub enum RefUntied {
     /// The decay [`RefBlock::decay_raw`], its copies along its only axis.
     Decay,
     /// The gate map [`RefBlock::gate_proj`], its copies along the output axis.
-    /// This is the untied 2-D weight that Muon must step one copy at a time.
+    /// This is the untied 2-D weight that Muon must update one copy at a time.
     GateProj,
 }
 

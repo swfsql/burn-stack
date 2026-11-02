@@ -5,7 +5,7 @@
 //! that it gets. A fused `in_proj` would then couple the singular values of
 //! unrelated maps (a gate, the values, the keys and queries, the per-head
 //! scalars, …). [`Segmented`] slices the weight and its gradient along the
-//! fused axis, steps each sub-projection with its own optimizer, and
+//! fused axis, updates each sub-projection with its own optimizer, and
 //! concatenates the results. So each sub-projection is orthogonalised (and
 //! shape-LR-adjusted) on its own, exactly as if it were a separate `Linear`.
 //!

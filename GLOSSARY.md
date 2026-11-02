@@ -98,6 +98,11 @@ The part of a sequence that one forward takes. The cache carries the state
 from one window to the next.
 _Avoid_: chunk (for a window)
 
+**Training step**:
+The forward, the backward and the optimizer update of one batch (one window,
+in an LM run).
+_Avoid_: optimizer step
+
 **Captured step**:
 A call of a fixed shape that the backend records once and then replays as one
 dispatch. The call is a step, a forward or a training step.
@@ -244,11 +249,18 @@ One of the independent linear maps in a fused projection.
 _Avoid_: segment, column block
 
 **Muon plan**:
-The allowlist of the weights and sub-projections that Muon steps.
+The allowlist of the weights and sub-projections that Muon updates.
 
 **Fallback optimizer**:
 The optimizer of each parameter that the Muon plan does not name: AdamW or
 plain SGD.
+
+**Optimizer update**:
+The part of a training step that applies the gradients to the weights.
+
+**LR schedule**:
+The map from the count of training steps to the learning rate.
+_Avoid_: schedule (alone)
 
 **I/O weight**:
 A weight at the input or the output of a network. Examples: the embedding, the

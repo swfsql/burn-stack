@@ -82,7 +82,7 @@ pub struct ProjSpec {
     pub sub_projections: Vec<SubProjection>,
     /// The weight is [untied](crate::utils::untied) along its fused axis: any
     /// whole number of copies of `sub_projections` side by side, one per application.
-    /// The optimizer steps the sub-projections of each copy on their own.
+    /// The optimizer updates the sub-projections of each copy on their own.
     pub tiled: bool,
     /// More path substrings that the parameter must contain (empty ⇒ none).
     /// They scope the spec to one part of a model. A model that holds stacks

@@ -5,10 +5,10 @@ its `in_proj`. Muon orthogonalises a whole 2-D matrix. On a fused weight, that
 couples maps that share only their allocation. So the model keeps its fused
 weights and its single GEMM, and the optimizer splits them. A family gives
 the column seams of each fused weight in a `ProjSpec`, with the widths that
-the `split_into` of its forward uses. `Segmented` then steps each
+the `split_into` of its forward uses. `Segmented` then updates each
 sub-projection with its own optimizer.
 
-The plan is an allowlist. Muon steps only the weights that a `ProjSpec`
+The plan is an allowlist. Muon updates only the weights that a `ProjSpec`
 names. Every other parameter stays on the fallback optimizer (AdamW or plain
 SGD). These are:
 
@@ -24,7 +24,7 @@ SGD). These are:
 - **Muon on the whole fused weight**: it couples independent maps.
 - **A denylist**: the Muon of Burn asserts rank 2. A new parameter that the
   list does not name makes a run panic.
-- **A Muon that steps a 3-D tensor as a stack of matrices**: no 3-D tensor
+- **A Muon that updates a 3-D tensor as a stack of matrices**: no 3-D tensor
   of a block is a stack of linear maps. Each one is a per-head gain, a bias,
   an initial condition or a depthwise filter.
 

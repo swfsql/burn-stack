@@ -29,19 +29,19 @@ pub enum Lr {
 }
 
 impl Lr {
-    /// Learning rate for the given (0-indexed) training `step`.
-    pub fn get_lr(&self, step: usize) -> f64 {
+    /// Learning rate for the given (0-indexed) `training_step`.
+    pub fn get_lr(&self, training_step: usize) -> f64 {
         match self {
-            Lr::CosineAnnealing(inner) => inner.get_lr(step),
-            Lr::Constant(inner) => inner.get_lr(step),
-            Lr::Linear(inner) => inner.get_lr(step),
+            Lr::CosineAnnealing(inner) => inner.get_lr(training_step),
+            Lr::Constant(inner) => inner.get_lr(training_step),
+            Lr::Linear(inner) => inner.get_lr(training_step),
             Lr::Chain(links) => {
                 let link = links
                     .iter()
                     .rev()
-                    .find(|link| link.from <= step)
+                    .find(|link| link.from <= training_step)
                     .expect("the first schedule of an LR chain must start at training step 0");
-                link.lr.get_lr(step - link.from)
+                link.lr.get_lr(training_step - link.from)
             }
         }
     }
@@ -114,16 +114,16 @@ impl Lr {
     /// start of each of its schedules and every length in them, the warmups
     /// too.
     pub fn scale_steps(&mut self, num: usize, den: usize, warmup: bool) {
-        let scale = |steps: &mut usize| *steps = *steps * num / den;
+        let scale = |training_steps: &mut usize| *training_steps = *training_steps * num / den;
         match self {
             Lr::CosineAnnealing(inner) => {
-                scale(&mut inner.total_steps);
+                scale(&mut inner.total_training_steps);
                 if warmup {
-                    scale(&mut inner.warmup_steps);
+                    scale(&mut inner.warmup_training_steps);
                 }
             }
             Lr::Constant(_) => {}
-            Lr::Linear(inner) => scale(&mut inner.steps),
+            Lr::Linear(inner) => scale(&mut inner.training_steps),
             Lr::Chain(links) => {
                 for link in links {
                     scale(&mut link.from);
@@ -134,7 +134,7 @@ impl Lr {
     }
 }
 
-/// # Cosine Annealing Learning Rate Scheduler with Linear Warmup.
+/// # Cosine Annealing LR Schedule with Linear Warmup.
 ///
 /// This LR schedule:
 /// 1. Linearly increases LR from 0 to `max_lr` during warmup phase
@@ -150,39 +150,39 @@ pub struct CosineAnnealingLr {
     #[config(default = 1e-6)]
     pub min_lr: f64,
     /// The total number of training steps
-    pub total_steps: usize,
+    pub total_training_steps: usize,
     /// The number of training steps in the warmup
     #[config(default = 0)]
-    pub warmup_steps: usize,
+    pub warmup_training_steps: usize,
 }
 
 impl CosineAnnealingLr {
     /// Get the learning rate for the current training step.
     ///
     /// # Arguments
-    /// * `step` - Current training step (0-indexed)
+    /// * `training_step` - Current training step (0-indexed)
     ///
     /// # Returns
     /// * Learning rate for this training step
-    pub fn get_lr(&self, step: usize) -> f64 {
+    pub fn get_lr(&self, training_step: usize) -> f64 {
         // Warmup phase: linear increase from 0 to max_lr
-        if step < self.warmup_steps {
-            return self.max_lr * (step as f64) / (self.warmup_steps as f64);
+        if training_step < self.warmup_training_steps {
+            return self.max_lr * (training_step as f64) / (self.warmup_training_steps as f64);
         }
 
-        // After total_steps, return min_lr
-        if step >= self.total_steps {
+        // After total_training_steps, return min_lr
+        if training_step >= self.total_training_steps {
             return self.min_lr;
         }
 
         // Cosine annealing phase
-        let progress =
-            (step - self.warmup_steps) as f64 / (self.total_steps - self.warmup_steps) as f64;
+        let progress = (training_step - self.warmup_training_steps) as f64
+            / (self.total_training_steps - self.warmup_training_steps) as f64;
         self.min_lr + 0.5 * (self.max_lr - self.min_lr) * (1.0 + (PI * progress).cos())
     }
 }
 
-/// # Constant Learning Rate Scheduler.
+/// # Constant LR Schedule.
 ///
 /// Returns a fixed learning rate for all training steps. Use it for simple
 /// experiments, or when a run needs no LR schedule.
@@ -194,8 +194,8 @@ pub struct ConstantLr {
 }
 
 impl ConstantLr {
-    /// Returns the fixed learning rate (independent of `step`).
-    pub fn get_lr(&self, _step: usize) -> f64 {
+    /// Returns the fixed learning rate (independent of `training_step`).
+    pub fn get_lr(&self, _training_step: usize) -> f64 {
         self.lr
     }
 }
@@ -203,26 +203,26 @@ impl ConstantLr {
 /// # Linear Learning Rate Ramp.
 ///
 /// The rate goes linearly from `start` at training step 0 to `end` at
-/// training step `steps`, and stays at `end` after it. A warmup is a ramp from
-/// 0. A linear cooldown is a ramp down.
+/// training step `training_steps`, and stays at `end` after it. A warmup is a
+/// ramp from 0. A linear cooldown is a ramp down.
 #[derive(Config, Debug)]
 pub struct LinearLr {
     /// The rate at training step 0.
     pub start: f64,
-    /// The rate at training step `steps` and after it.
+    /// The rate at training step `training_steps` and after it.
     pub end: f64,
     /// The length of the ramp, in training steps. With 0, every training step
     /// gets `end`.
-    pub steps: usize,
+    pub training_steps: usize,
 }
 
 impl LinearLr {
-    /// The rate at `step`.
-    pub fn get_lr(&self, step: usize) -> f64 {
-        if step >= self.steps {
+    /// The rate at `training_step`.
+    pub fn get_lr(&self, training_step: usize) -> f64 {
+        if training_step >= self.training_steps {
             return self.end;
         }
-        self.start + (self.end - self.start) * step as f64 / self.steps as f64
+        self.start + (self.end - self.start) * training_step as f64 / self.training_steps as f64
     }
 }
 

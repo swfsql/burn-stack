@@ -27,7 +27,7 @@ fn config(kind: OptimizerKind) -> TrainingConfig {
     TrainingConfig::new(OptimizerConfig::of(kind, DType::F32))
         .with_batch_size(16)
         .with_lr(Lr::CosineAnnealing(
-            CosineAnnealingLr::new(1000).with_max_lr(1e-2).with_warmup_steps(50),
+            CosineAnnealingLr::new(1000).with_max_lr(1e-2).with_warmup_training_steps(50),
         ))
 }
 
@@ -108,7 +108,7 @@ fn the_batch_size_rescales_a_cosine_lr_schedule() {
     parse(dir.path(), &["--batch-size", "32"]).override_training_config(&mut training, DType::F32);
     assert_eq!(training.batch_size, 32);
     let Lr::CosineAnnealing(cosine) = &training.lr else { panic!() };
-    assert_eq!((cosine.total_steps, cosine.warmup_steps), (500, 25));
+    assert_eq!((cosine.total_training_steps, cosine.warmup_training_steps), (500, 25));
 }
 
 #[test]

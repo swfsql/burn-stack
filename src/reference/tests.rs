@@ -800,7 +800,7 @@ fn muon_plan_matches_only_existing_rank_2_weights() {
 /// per-copy update.
 #[cfg(feature = "optim")]
 #[test]
-fn muon_steps_an_untied_projection_one_copy_at_a_time() {
+fn muon_updates_an_untied_projection_one_copy_at_a_time() {
     use crate::optim::{MuonPlan, ProjSpec, Segmented, muon_config};
     use burn::optim::{AdamWConfig, Optimizer};
 
@@ -811,8 +811,8 @@ fn muon_steps_an_untied_projection_one_copy_at_a_time() {
     let segmented = Segmented::new(&spec, muon.clone(), AdamWConfig::new().build(), 1);
     let w = Tensor::<2>::random([D_MODEL, n * D_MODEL], Distribution::Normal(0.0, 1.0), &device);
     let g = Tensor::<2>::random([D_MODEL, n * D_MODEL], Distribution::Normal(0.0, 1.0), &device);
-    let (stepped, _) = segmented.step(1e-2, w.clone(), g.clone(), None);
-    for ((got, w), g) in stepped.chunk(n, 1).into_iter().zip(w.chunk(n, 1)).zip(g.chunk(n, 1)) {
+    let (updated, _) = segmented.step(1e-2, w.clone(), g.clone(), None);
+    for ((got, w), g) in updated.chunk(n, 1).into_iter().zip(w.chunk(n, 1)).zip(g.chunk(n, 1)) {
         let (want, _) = muon.step(1e-2, w, g, None);
         assert!(max_abs_diff(got, want) < dtype_tol(TOL));
     }
