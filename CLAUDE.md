@@ -2,8 +2,9 @@
 
 burn-stack holds the block-agnostic containers of [Burn](https://github.com/tracel-ai/burn/)
 models: layers, layer stacks, networks, caches and their training helpers. A
-family connects through `Block`, `BlockConfig` and `CacheStack`. burn-mamba
-and burn-deltanet are its consumers.
+family connects through `Block`, `BlockConfig` and `CacheStack`. burn-mamba is
+its active consumer. burn-deltanet is also a consumer, but it is outdated: a
+change does not need to update it.
 
 ## Where to look
 
@@ -19,8 +20,8 @@ and burn-deltanet are its consumers.
   and the three calls.
 - `docs/agents/`: how the agent skills use this repo (see
   [Agent skills](#agent-skills)).
-- `../burn-mamba`, `../burn-deltanet`: the consumers. Their tests run the
-  containers with real blocks.
+- `../burn-mamba`: the active consumer. Its tests run the containers with real
+  blocks.
 
 ## Build and test
 
@@ -87,10 +88,13 @@ Test-device rules:
 - A new term goes to `GLOSSARY.md`, through the `/domain-modeling` skill. A
   new decision with a trade-off goes to an ADR in `docs/adr/`.
 - **Commits**: when a skill or the user asks for a commit, commit to the
-  current branch. Do not push.
+  current branch.
   When the user asks only for a commit message, write it as text for the user
   to copy. A commit message has a title line and a short body, and it ends
   with the `Co-Authored-By:` trailer.
+- **Pushes**: push the current branch to `origin` when a ticket is complete and
+  reviewed, or when the user tells you to. Ask the user before a force-push or
+  a tag.
 
 ## Notation
 
@@ -180,7 +184,7 @@ src/
 ### Issue tracker
 
 Local markdown files in `.scratch/<feature>/`. See
-`docs/agents/issue-tracker.md`.
+`docs/agents/issue-tracker.md`. It also covers a change in both repos.
 
 ### Triage labels
 
@@ -191,3 +195,7 @@ The five default roles, as the `Status:` line of an issue file. See
 
 Single-context: one `GLOSSARY.md` + `docs/adr/` at the repo root. See
 `docs/agents/domain.md`.
+
+### Test seams
+
+The seams to propose for `/to-spec` and `/tdd`. See `docs/agents/testing.md`.

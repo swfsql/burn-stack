@@ -24,6 +24,12 @@ not exist.
 Read the file at the given path. Usually, the user gives the path or the issue
 number.
 
+## Changes in both repos
+
+A change that also touches `../burn-mamba` starts in a burn-mamba session. Its
+spec, its tickets, its reviews and the burn-stack pin follow the "Changes in
+both repos" section of `../burn-mamba/docs/agents/issue-tracker.md`.
+
 ## Wayfinding operations
 
 `/wayfinder` uses these. The **map** is one file, and each **child** ticket is

@@ -1,10 +1,11 @@
 # The code is block-agnostic, the docs can cite a family
 
 burn-stack holds the containers around a block: layers, layer stacks,
-networks, caches and optimizer plans. More than one family uses it:
-burn-mamba and burn-deltanet. So the *code* of burn-stack is block-agnostic.
-It has no family name and no shape assumption that only one family makes. An
-item that only one family needs goes into the crate of that family.
+networks, caches and optimizer plans. More than one family uses it: Mamba-1,
+Mamba-2 and Mamba-3 of burn-mamba. So the *code* of burn-stack is
+block-agnostic. It has no family name and no shape assumption that only one
+family makes. An item that only one family needs goes into the crate of that
+family.
 
 The *docs* can name a family as a citation: the origin of a mechanism, a
 reference implementation, or a consumer. For example, the H-Net header says
