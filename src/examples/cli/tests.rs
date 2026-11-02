@@ -102,7 +102,7 @@ fn plain_sgd_saves_nothing_to_lose() {
 }
 
 #[test]
-fn the_batch_size_rescales_a_cosine_schedule() {
+fn the_batch_size_rescales_a_cosine_lr_schedule() {
     let dir = scratch();
     let mut training = config(OptimizerKind::AdamW);
     parse(dir.path(), &["--batch-size", "32"]).override_training_config(&mut training, DType::F32);
@@ -112,7 +112,7 @@ fn the_batch_size_rescales_a_cosine_schedule() {
 }
 
 #[test]
-fn the_flags_rescale_a_sequence() {
+fn the_flags_rescale_a_chain() {
     let dir = scratch();
     let mut training = config(OptimizerKind::AdamW).with_num_epochs(1).with_lr(Lr::Chain(vec![
         LrLink::new(0, Lr::Linear(LinearLr::new(0.0, 4e-3, 100))),
@@ -140,7 +140,7 @@ fn an_explicit_config_does_not_read_the_saved_one() {
 }
 
 #[test]
-fn the_clock_starts_at_the_first_step() {
+fn the_clock_starts_at_the_first_training_step() {
     let mut budget = Budget::new(None, Some(Duration::ZERO));
     assert!(budget.is_capped());
     assert!(!budget.is_exhausted(), "no training step taken, no time spent");

@@ -111,7 +111,7 @@ pub fn epoch_train<W: MnistModel>(
     {
         let b = session.begin_batch();
         let [batch_size, _, _, _] = batch.images.dims();
-        let (_step, lr) = session.begin_step(batch_size);
+        let (_training_step, lr) = session.begin_training_step(batch_size);
 
         // Built on the host by a worker, moved here (see `loader_device`).
         let pre_metrics = training_model.train_step(batch.to_device(&valid_device), optim, lr);

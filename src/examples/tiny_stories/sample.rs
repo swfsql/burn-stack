@@ -263,7 +263,7 @@ pub unsafe fn decode<C: CacheTensors>(
         .collect()
 }
 
-/// A prompt consumed into a cache in windows of `chunk` tokens, with the last
+/// A prompt consumed into a cache in windows of `window` tokens, with the last
 /// window right-padded. Every window of every prompt has one shape. So with
 /// `capture`, the backend records one captured step at the first window after
 /// [`WARMUP_STEPS`] eager windows. All later windows replay it, while the
@@ -280,7 +280,7 @@ pub unsafe fn decode<C: CacheTensors>(
 /// of [`Layers::forward`](crate::modules::Layers::forward).
 pub struct Prefill<'a, C: CacheTensors> {
     device: Device,
-    chunk: usize,
+    window: usize,
     capture: bool,
     /// The cache of the opening and the cursors that it leaves (`None`: the
     /// model has no opening), after the first prompt ran it.
@@ -288,22 +288,22 @@ pub struct Prefill<'a, C: CacheTensors> {
     /// The cursors that the opening left. Every window starts from them.
     opened: Rc<RefCell<ClassCursors>>,
     /// The forward of one window, until it is captured.
-    run: Option<Box<ChunkFn<'a, C>>>,
+    run: Option<Box<WindowFn<'a, C>>>,
     captured: Option<CapturedStep<'a, Tensor<3, Int>, Tensor<2>, C>>,
     /// The windows run eagerly so far. [`WARMUP_STEPS`] of them precede a
     /// capture.
-    eager_chunks: usize,
+    eager_windows: usize,
 }
 
-/// One window: its pairs `[1, chunk, 2]` (id `-1` at the padding) and the
+/// One window: its pairs `[1, window, 2]` (id `-1` at the padding) and the
 /// cache before it → the logits of its last real token and the cache after it.
-type ChunkFn<'a, C> = dyn FnMut(Tensor<3, Int>, C) -> (Tensor<2>, C) + 'a;
+type WindowFn<'a, C> = dyn FnMut(Tensor<3, Int>, C) -> (Tensor<2>, C) + 'a;
 
 impl<'a, C: CacheTensors + 'a> Prefill<'a, C> {
-    /// `forward` runs one window from a cache. It takes the `[1, chunk, 2]`
+    /// `forward` runs one window from a cache. It takes the `[1, window, 2]`
     /// token pairs, the cache, the `pad` mask of the window (`true` at
     /// padding) and the cursors that the opening left. It returns the logits
-    /// `[1, chunk, vocab + 1]` and the cache after the window. Where no
+    /// `[1, window, vocab + 1]` and the cache after the window. Where no
     /// hardware recording is available, the captured step runs eagerly. So
     /// `capture` changes the speed, never the text.
     ///
@@ -315,12 +315,12 @@ impl<'a, C: CacheTensors + 'a> Prefill<'a, C> {
     /// that `forward` borrows.
     pub unsafe fn new(
         device: &Device,
-        chunk: usize,
+        window: usize,
         capture: bool,
         mut forward: impl FnMut(Tensor<3, Int>, C, Tensor<2, Bool>, &mut ClassCursors) -> (Tensor<3>, C)
         + 'a,
     ) -> Self {
-        assert!(chunk > 0, "a prefill window holds at least one token");
+        assert!(window > 0, "a prefill window holds at least one token");
         let opened = Rc::new(RefCell::new(ClassCursors::stream()));
         let run = {
             let opened = opened.clone();
@@ -336,13 +336,13 @@ impl<'a, C: CacheTensors + 'a> Prefill<'a, C> {
         };
         Self {
             device: device.clone(),
-            chunk,
+            window,
             capture,
             opening: None,
             opened,
             run: Some(Box::new(run)),
             captured: None,
-            eager_chunks: 0,
+            eager_windows: 0,
         }
     }
 
@@ -366,19 +366,19 @@ impl<'a, C: CacheTensors + 'a> Prefill<'a, C> {
         assert!(!prompt.is_empty(), "an empty prompt has nothing to prefill");
         let (caches, class) = self.opening.get_or_insert_with(open).clone()?;
         *self.opened.borrow_mut() = class.clone();
-        let chunk = self.chunk;
+        let window = self.window;
         // The pairs of window `k`, with the pair (-1, 0) at the padding.
         let ids = |k: usize| {
-            let mut pairs = vec![[-1i32, 0]; chunk];
-            for (p, &token) in pairs.iter_mut().zip(&prompt[k * chunk..]) {
+            let mut pairs = vec![[-1i32, 0]; window];
+            for (p, &token) in pairs.iter_mut().zip(&prompt[k * window..]) {
                 *p = pair(token);
             }
-            TensorData::new(pairs.concat(), [1, chunk, 2])
+            TensorData::new(pairs.concat(), [1, window, 2])
         };
         let mut caches = Some(caches);
         let mut logits = None;
-        for k in 0..prompt.len().div_ceil(chunk) {
-            if self.capture && self.captured.is_none() && self.eager_chunks >= WARMUP_STEPS {
+        for k in 0..prompt.len().div_ceil(window) {
+            if self.capture && self.captured.is_none() && self.eager_windows >= WARMUP_STEPS {
                 let run = self.run.take().expect("captured once");
                 let x = Tensor::from_data(ids(k), &self.device);
                 let caches = caches.take().expect("run eagerly until captured");
@@ -398,7 +398,7 @@ impl<'a, C: CacheTensors + 'a> Prefill<'a, C> {
                     let x = Tensor::from_data(ids(k), &self.device);
                     let (logits, next) = run(x, caches.take().expect("run eagerly until captured"));
                     caches = Some(next);
-                    self.eager_chunks += 1;
+                    self.eager_windows += 1;
                     logits
                 }
             });

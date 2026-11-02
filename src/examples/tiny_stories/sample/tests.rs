@@ -227,9 +227,9 @@ fn a_story_is_the_same_captured_eager_and_host_sampled() {
     }
 }
 
-const CHUNK: usize = 8;
+const WINDOW: usize = 8;
 
-/// A [`Prefill`] of `net`, in windows of [`CHUNK`] tokens.
+/// A [`Prefill`] of `net`, in windows of [`WINDOW`] tokens.
 fn prefill_of<'a>(
     net: &'a VocabNetwork<RefBlock>,
     device: &Device,
@@ -238,7 +238,7 @@ fn prefill_of<'a>(
     // Safety: the forward of a window reads nothing but its arguments and
     // `net`, borrowed.
     unsafe {
-        Prefill::new(device, CHUNK, capture, |x, c, pad, class| {
+        Prefill::new(device, WINDOW, capture, |x, c, pad, class| {
             net.forward(x, Some(c), (), Some(class), Some(pad))
         })
     }
@@ -269,7 +269,7 @@ fn a_prefill_is_the_same_captured_and_eager_and_is_the_prompt_in_one_pass() {
     let mut eager = prefill_of(&net, &device, false);
     // One capture, reused by every prompt after the first.
     let mut captured = prefill_of(&net, &device, true);
-    for len in [CHUNK + 1, 1, CHUNK - 1, CHUNK, 3 * CHUNK] {
+    for len in [WINDOW + 1, 1, WINDOW - 1, WINDOW, 3 * WINDOW] {
         let prompt = prompt(len);
         let (logits, prefilled, _) = eager.run(&prompt, || Some(opening(&net))).unwrap();
         let (logits_captured, prefilled_captured, _) =
@@ -286,8 +286,8 @@ fn a_prefill_is_the_same_captured_and_eager_and_is_the_prompt_in_one_pass() {
         let pairs: Vec<i32> = prompt.iter().flat_map(|&t| pair(t)).collect();
         let x = Tensor::<1, Int>::from_ints(pairs.as_slice(), &device).reshape([1, len, 2]);
         let (whole, whole_caches) = net.forward(x, None, (), Some(&mut ClassCursors::stream()), None);
-        let rows = whole.dims()[1];
-        let d = max_rel_diff(logits, whole.narrow(1, rows - 1, 1).squeeze_dim(1));
+        let positions = whole.dims()[1];
+        let d = max_rel_diff(logits, whole.narrow(1, positions - 1, 1).squeeze_dim(1));
         assert!(d < dtype_tol(1e-4), "length {len}: logits differ from one pass by {d}");
         for (a, b) in prefilled.caches.iter().zip(&whole_caches.caches) {
             let d = max_abs_diff(a.state_bd.clone(), b.state_bd.clone());

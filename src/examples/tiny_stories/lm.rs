@@ -57,8 +57,8 @@
 //!
 //! # Length buckets
 //!
-//! With [`TinyStoriesConfig::bucket`], one item is one batch of stories of
-//! similar length (see [`Bucket`]), and a batch is one window. A story then
+//! With [`TinyStoriesConfig::bucketing`], one item is one batch of stories of
+//! similar length (see [`Bucketing`]), and a batch is one window. A story then
 //! trains whole, from a fresh state. The validation takes the same buckets,
 //! so it also scores each of its stories whole, and `seq_len` and `run_len` do
 //! not apply.
@@ -132,17 +132,17 @@ pub struct TinyStoriesConfig {
     /// and the batch size of [`Self::training`].
     #[config(default = "None")]
     pub pack: Option<Pack>,
-    /// Train on batches of similar length (see [`Bucket`]). `None`: every
+    /// Train on batches of similar length (see [`Bucketing`]). `None`: every
     /// batch draws `batch_size` stories at random. Not with [`Self::pack`].
     #[config(default = "None")]
-    pub bucket: Option<Bucket>,
+    pub bucketing: Option<Bucketing>,
 }
 
 impl TinyStoriesConfig {
     /// Items per train batch: rows when packed, one batch when bucketed, else
     /// stories.
     pub fn train_batch_size(&self) -> usize {
-        match (&self.pack, &self.bucket) {
+        match (&self.pack, &self.bucketing) {
             (Some(pack), _) => pack.rows,
             (None, Some(_)) => 1,
             (None, None) => self.training.batch_size,
@@ -153,17 +153,17 @@ impl TinyStoriesConfig {
 /// The geometry of length-bucketed training (see
 /// [`bucket_batches`](super::dataset::bucket_batches)). A batch is one window,
 /// as long as its bucket, so a bucketed run ignores `seq_len` and `run_len`.
-/// The validation takes the same buckets and `chars`, so it scores whole
+/// The validation takes the same buckets and `batch_chars`, so it scores whole
 /// stories.
 #[derive(Config, Debug)]
-pub struct Bucket {
+pub struct Bucketing {
     /// The buckets (the batch lengths), ascending. A story goes to the
     /// shortest bucket that holds it. The longest bucket truncates a story
     /// (4,149 characters keep every story whole).
-    pub slots: Vec<usize>,
-    /// The scored characters per batch. A bucket takes `round(chars / m)`
-    /// stories, `m` the mean length of its stories.
-    pub chars: usize,
+    pub buckets: Vec<usize>,
+    /// The scored characters per batch. A bucket takes
+    /// `round(batch_chars / m)` stories, `m` the mean length of its stories.
+    pub batch_chars: usize,
     /// For a VRAM probe: the run opens with this many batches of each bucket
     /// (see [`probe_order`](super::dataset::probe_order)). The loader then
     /// keeps the order (no shuffle, one worker). `0`: a shuffled order.
@@ -308,8 +308,8 @@ pub struct Overrides {
     pub no_pack: bool,
     /// `--buckets <a,b,…>`: train on these length buckets (batch lengths).
     pub buckets: Option<Vec<usize>>,
-    /// `--bucket-chars <usize>`: scored characters per bucketed batch.
-    pub bucket_chars: Option<usize>,
+    /// `--batch-chars <usize>`: scored characters per bucketed batch.
+    pub batch_chars: Option<usize>,
     /// `--no-bucket`: train on batches drawn at random.
     pub no_bucket: bool,
     /// `--bucket-probe <usize>`: open with this many batches of each bucket.
@@ -317,7 +317,7 @@ pub struct Overrides {
 }
 
 /// A comma-separated list of positive integers (`--buckets`).
-fn parse_slots(arg: &str) -> Result<Vec<usize>, String> {
+fn parse_buckets(arg: &str) -> Result<Vec<usize>, String> {
     arg.split(',')
         .map(|s| match s.trim().parse::<usize>() {
             Ok(n) if n >= 1 => Ok(n),
@@ -339,8 +339,8 @@ impl Overrides {
         "    --pack-rows <N>        Rows per packed batch\n",
         "    --pack-open <K>        Open rows of the packer (default 8). With 1, the packer keeps the shuffled order\n",
         "    --no-pack              Train on one story per row\n",
-        "    --buckets <A,B,…>      Train on batches of similar length. Each story goes to the shortest bucket (batch length) that holds it (needs --bucket-chars once)\n",
-        "    --bucket-chars <N>     Scored characters per bucketed batch\n",
+        "    --buckets <A,B,…>      Train on batches of similar length. Each story goes to the shortest bucket (batch length) that holds it (needs --batch-chars once)\n",
+        "    --batch-chars <N>      Scored characters per bucketed batch\n",
         "    --no-bucket            Train on batches of stories drawn at random\n",
         "    --bucket-probe <K>     VRAM probe: open with K batches of each bucket, bucket by bucket (no loader shuffle, one worker)",
     );
@@ -360,8 +360,8 @@ impl Overrides {
             pack_rows: pargs.opt_value_from_str("--pack-rows").unwrap(),
             pack_open: pargs.opt_value_from_str("--pack-open").unwrap(),
             no_pack: pargs.contains("--no-pack"),
-            buckets: pargs.opt_value_from_fn("--buckets", parse_slots).unwrap(),
-            bucket_chars: pargs.opt_value_from_str("--bucket-chars").unwrap(),
+            buckets: pargs.opt_value_from_fn("--buckets", parse_buckets).unwrap(),
+            batch_chars: pargs.opt_value_from_str("--batch-chars").unwrap(),
             no_bucket: pargs.contains("--no-bucket"),
             bucket_probe: pargs.opt_value_from_str("--bucket-probe").unwrap(),
         }
@@ -421,27 +421,27 @@ impl Overrides {
             "--buckets and --no-bucket contradict each other"
         );
         if self.no_bucket {
-            config.bucket = None;
+            config.bucketing = None;
         }
-        if let Some(slots) = &self.buckets {
-            let chars = self
-                .bucket_chars
-                .or(config.bucket.as_ref().map(|bucket| bucket.chars))
-                .expect("--buckets needs --bucket-chars (scored characters per batch)");
-            config.bucket = Some(Bucket::new(slots.clone(), chars));
+        if let Some(buckets) = &self.buckets {
+            let batch_chars = self
+                .batch_chars
+                .or(config.bucketing.as_ref().map(|bucketing| bucketing.batch_chars))
+                .expect("--buckets needs --batch-chars (scored characters per batch)");
+            config.bucketing = Some(Bucketing::new(buckets.clone(), batch_chars));
         }
-        match config.bucket.as_mut() {
-            Some(bucket) => {
-                if let Some(chars) = self.bucket_chars {
-                    bucket.chars = chars;
+        match config.bucketing.as_mut() {
+            Some(bucketing) => {
+                if let Some(batch_chars) = self.batch_chars {
+                    bucketing.batch_chars = batch_chars;
                 }
                 if let Some(probe) = self.bucket_probe {
-                    bucket.probe = probe;
+                    bucketing.probe = probe;
                 }
             }
             None => assert!(
-                self.bucket_chars.is_none() && self.bucket_probe.is_none(),
-                "--bucket-chars and --bucket-probe need bucketed training (--buckets)"
+                self.batch_chars.is_none() && self.bucket_probe.is_none(),
+                "--batch-chars and --bucket-probe need bucketed training (--buckets)"
             ),
         }
     }
@@ -504,7 +504,7 @@ pub trait LmModel: Sized {
 
     /// Apply the optimizer update of one training step. Returns the updated
     /// model.
-    fn optim_step(self, optim: &mut ModuleOptimizer, lr: f64, grads: GradientsParams) -> Self;
+    fn optimizer_update(self, optim: &mut ModuleOptimizer, lr: f64, grads: GradientsParams) -> Self;
 
     /// Checkpoint the wrapped network into the artifacts directory.
     fn save(&self, app_args: &AppArgs);
@@ -542,7 +542,7 @@ pub fn dataloaders(
 ///
 /// With [`TinyStoriesConfig::pack`], the train split is packed into rows with
 /// the `layout` of the model, in the order of that same shuffle. With
-/// [`TinyStoriesConfig::bucket`], the train split is grouped into batches of
+/// [`TinyStoriesConfig::bucketing`], the train split is grouped into batches of
 /// similar length, and so is the validation split (each story whole). The
 /// validation split is never packed.
 pub fn dataloaders_for(
@@ -562,32 +562,32 @@ pub fn dataloaders_for(
     // device. A worker that uploads to the GPU from its own thread can
     // invalidate the recording of a captured step (see `loader_device`).
     assert!(
-        config.pack.is_none() || config.bucket.is_none(),
+        config.pack.is_none() || config.bucketing.is_none(),
         "packed rows and length buckets exclude each other"
     );
-    let dataloader_train: Dataloader = match (&config.pack, &config.bucket) {
-        (None, Some(bucket)) => {
+    let dataloader_train: Dataloader = match (&config.pack, &config.bucketing) {
+        (None, Some(bucketing)) => {
             let train_set = BucketedStoriesDataset::new(
                 Split::Train,
                 config.train_stories,
-                &bucket.slots,
-                bucket.chars,
+                &bucketing.buckets,
+                bucketing.batch_chars,
                 seed,
-                bucket.probe,
+                bucketing.probe,
             );
             println!(
                 "corpus: {} train characters in {} bucketed batches of ~{} scored characters \
                  ({:.3} of the positions, bucket: batches × stories {})",
                 train_set.num_tokens(),
                 train_set.num_batches(),
-                bucket.chars,
+                bucketing.batch_chars,
                 train_set.fill(),
                 train_set.summary(),
             );
             // A probe keeps the order of its batches: the loader shuffles, and
             // its workers split the dataset into parts that they interleave.
             let builder = DataLoaderBuilder::new(BucketedStoriesBatcher).batch_size(1);
-            let (builder, workers) = match bucket.probe {
+            let (builder, workers) = match bucketing.probe {
                 0 => (builder.shuffle(seed), config.training.num_workers),
                 _ => (builder, 1),
             };
@@ -639,14 +639,14 @@ pub fn dataloaders_for(
                 .build(train_set)
         }
     };
-    let dataloader_valid: Dataloader = match &config.bucket {
+    let dataloader_valid: Dataloader = match &config.bucketing {
         // The buckets of the training: each story whole, in one window.
-        Some(bucket) => {
+        Some(bucketing) => {
             let valid_set = BucketedStoriesDataset::new(
                 Split::Valid,
                 config.valid_stories,
-                &bucket.slots,
-                bucket.chars,
+                &bucketing.buckets,
+                bucketing.batch_chars,
                 config.training.seed,
                 0,
             );
@@ -746,8 +746,8 @@ pub fn epoch_train<W: LmModel>(
         let mut lr = f64::NAN;
 
         for w in 0..windows {
-            let (_step, step_lr) = session.begin_step(batch_size);
-            lr = step_lr;
+            let (_training_step, window_lr) = session.begin_training_step(batch_size);
+            lr = window_lr;
 
             let (train_output, final_caches) =
                 training_model.train_window(run.window(w), caches.take(), &mut class);
@@ -757,7 +757,7 @@ pub fn epoch_train<W: LmModel>(
             acc_metric.update(&pre_metrics.adapt(), session.meta()).expect("metric update");
             iteration_speed_metric.update(&pre_metrics.adapt(), session.meta()).expect("metric update");
 
-            training_model = training_model.optim_step(optim, lr, train_output.grads);
+            training_model = training_model.optimizer_update(optim, lr, train_output.grads);
             depth = w + 1;
 
             // The gate scores *this* window (`value()` is the last update,
@@ -778,7 +778,7 @@ pub fn epoch_train<W: LmModel>(
         // This epoch will not see the windows that the gate dropped. So the LR
         // schedule (sized in windows, not in runs) skips them too. Otherwise a
         // stalling frontier would leave the cosine unfinished at the last epoch.
-        session.skip_steps(windows - depth);
+        session.skip_training_steps(windows - depth);
 
         println!(
             "Epoch {}/{}, Batch {b:0>4}/{batches}, Windows {depth}/{windows} (mean {:.2}), \

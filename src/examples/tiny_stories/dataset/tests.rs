@@ -58,39 +58,39 @@ fn pack_rows_places_every_story_once_and_fits() {
 
 #[test]
 fn bucket_batches_place_every_story_once_and_fit() {
-    let slots = [16, 32, 64];
+    let buckets = [16, 32, 64];
     let lens: Vec<usize> = lens(500, 64).iter().map(|n| n - 1).collect();
     let order: Vec<usize> = (0..lens.len()).rev().collect();
-    let batches = bucket_batches(&lens, &order, &slots, 120);
+    let batches = bucket_batches(&lens, &order, &buckets, 120);
     let mut seen = vec![0; lens.len()];
-    for (slot, batch) in &batches {
+    for (bucket, batch) in &batches {
         assert!(!batch.is_empty(), "no empty batch");
         for &story in batch {
             seen[story] += 1;
-            assert!(lens[story] <= *slot, "a story is longer than its bucket");
+            assert!(lens[story] <= *bucket, "a story is longer than its bucket");
         }
     }
     assert!(seen.iter().all(|&n| n == 1), "every story in exactly one batch");
     // One batch shape per bucket, except one smaller last batch.
-    for &slot in &slots {
+    for &bucket in &buckets {
         let sizes: Vec<usize> =
-            batches.iter().filter(|(s, _)| *s == slot).map(|(_, b)| b.len()).collect();
-        let tail = usize::from(slot == 64);
+            batches.iter().filter(|(s, _)| *s == bucket).map(|(_, b)| b.len()).collect();
+        let tail = usize::from(bucket == 64);
         assert!(
             sizes[..sizes.len() - tail].iter().all(|&n| n == sizes[0]),
-            "bucket {slot}: sizes {sizes:?}"
+            "bucket {bucket}: sizes {sizes:?}"
         );
     }
 }
 
 #[test]
-fn probe_order_opens_with_each_slot_and_keeps_every_batch() {
-    let slots = [16, 32, 64];
+fn probe_order_opens_with_each_bucket_and_keeps_every_batch() {
+    let buckets = [16, 32, 64];
     let lens: Vec<usize> = lens(500, 64).iter().map(|n| n - 1).collect();
     let order: Vec<usize> = (0..lens.len()).collect();
-    let batches = bucket_batches(&lens, &order, &slots, 120);
-    let probed = probe_order(batches.clone(), &slots, 2, 7);
-    let first: Vec<usize> = probed[..6].iter().map(|(slot, _)| *slot).collect();
+    let batches = bucket_batches(&lens, &order, &buckets, 120);
+    let probed = probe_order(batches.clone(), &buckets, 2, 7);
+    let first: Vec<usize> = probed[..6].iter().map(|(bucket, _)| *bucket).collect();
     assert_eq!(first, [16, 16, 32, 32, 64, 64], "k batches of each bucket, bucket by bucket");
     let key = |b: &[(usize, Vec<usize>)]| {
         let mut b = b.to_vec();
@@ -101,7 +101,7 @@ fn probe_order_opens_with_each_slot_and_keeps_every_batch() {
 }
 
 #[test]
-fn packed_batcher_lays_out_each_story() {
+fn packed_batcher_lays_out_each_segment() {
     let layout = PackLayout { align: 4, lead: 2 };
     let width = 16;
     // Row 0: a segment of 3 tokens at 0 (opening slots 0..2, inputs 2..4,
@@ -114,10 +114,10 @@ fn packed_batcher_lays_out_each_story() {
     );
     let items = vec![
         PackedItem {
-            stories: vec![s0.to_vec(), s1.to_vec()],
+            segments: vec![s0.to_vec(), s1.to_vec()],
         },
         PackedItem {
-            stories: vec![s2.to_vec()],
+            segments: vec![s2.to_vec()],
         },
     ];
     let device = test_device();

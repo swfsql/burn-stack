@@ -21,7 +21,7 @@ use crate::utils::test_helpers::test_device;
 
 const D_MODEL: usize = 8;
 const LEN: usize = 5;
-const STEPS: usize = 8;
+const TRAINING_STEPS: usize = 8;
 
 /// Whether this build and device give a hardware recording (cubecl without
 /// fusion, on a CUDA/HIP device).
@@ -39,7 +39,7 @@ fn loss(layers: &Layers<RefBlock>, (x, y): (Tensor<3>, Tensor<3>)) -> (Tensor<1>
 }
 
 #[test]
-fn captured_sgd_steps_are_the_eager_steps() {
+fn captured_sgd_training_steps_are_the_eager_ones() {
     let device = test_device();
     let autodiff = device.clone().autodiff();
     let sgd = SgdConfig::new()
@@ -48,21 +48,21 @@ fn captured_sgd_steps_are_the_eager_steps() {
     let optimizer = OptimizerConfig::new(sgd.clone().into());
     let normal = |b| Tensor::<3>::random([b, LEN, D_MODEL], Distribution::Normal(0.0, 1.0), &device);
     // Batches of 3, but one of 2: a shape that the capture did not take.
-    let data: Vec<(Tensor<3>, Tensor<3>)> = (0..STEPS)
-        .map(|k| if k == STEPS / 2 { 2 } else { 3 })
+    let data: Vec<(Tensor<3>, Tensor<3>)> = (0..TRAINING_STEPS)
+        .map(|k| if k == TRAINING_STEPS / 2 { 2 } else { 3 })
         .map(|b| (normal(b), normal(b)))
         .collect();
     let lr = |k: usize| 0.3 / (k + 1) as f64;
     let layers: Layers<RefBlock> = LayersBuilder::new(2, RefBlockConfig::new(D_MODEL)).init(&autodiff);
 
-    let run = |graphs: bool| {
+    let run = |capture: bool| {
         let layers = Weights(layers.clone()).into_owned_buffers().0;
-        let mut trainer = Trainer::new(layers, loss, &optimizer, graphs);
+        let mut trainer = Trainer::new(layers, loss, &optimizer, capture);
         let mut optim = sgd.init();
         let outputs: Vec<_> = data
             .iter()
             .enumerate()
-            .map(|(k, batch)| trainer.step(batch.clone(), &mut optim, lr(k)))
+            .map(|(k, batch)| trainer.train_step(batch.clone(), &mut optim, lr(k)))
             .collect();
         (outputs, trainer)
     };

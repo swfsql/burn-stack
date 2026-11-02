@@ -43,6 +43,8 @@ method and the acceptance criteria of ticket 02. Build and test with the
 
 ## Comments
 
+Ticket 09 renames the identifiers of the table below.
+
 ### Scope
 
 The scope is `src/examples/`: 21 files, with their `tests.rs`. Three files

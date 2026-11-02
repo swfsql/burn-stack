@@ -54,7 +54,7 @@ BEHAVIOR OVERVIEW
 - --adamw, --sgd and --muon choose the optimizer. --muon puts the hidden weight matrices of the model on Muon, and the other flag (default --adamw) optimizes every other parameter. --adamw and --sgd are exclusive. Without these flags, a new training config gets the default optimizer of the example.
 - In a loaded config, these flags replace the optimizer and keep the LR schedule (see --max-lr). If the new optimizer would ignore the optimizer state that the old optimizer saved, the program panics. (--remove-artifacts with --training removes that state.)
 - Only plain SGD (--sgd alone) has a training step that the program can capture and replay.
-- An example that supports it captures its fixed-shape calls (training steps under plain SGD, validation, decoding), and then replays them. The replay needs a backend that can record the calls (for example, CUDA). --no-graph runs every call eagerly.
+- An example that supports it captures its fixed-shape calls (training steps under plain SGD, validation, decoding), and then replays them. The replay needs a backend that can record the calls (for example, CUDA). --eager runs every call eagerly.
 - The program saves the optimizer state together with the progress of the run: the training step, the epoch, and the batch within the epoch. A run that loads this state starts again at training step 0 of epoch 1. With --resume, the run continues from the saved progress. The interrupted epoch then trains only its remaining batches, drawn from a new shuffle (the batch order of the dataloader workers cannot be replayed).
 - Training makes a checkpoint at every epoch end and when it stops. --checkpoint-every adds a checkpoint every N training steps. --valid-every adds a validation every N training steps. --valid-batches caps the batches that a validation reads. Each example has its own defaults for these three flags.
 - Every training step and every validation appends one JSON line to metrics.jsonl in the artifacts directory. Each run starts with a \"start\" line.
@@ -83,7 +83,7 @@ OPTIONS:
         --adamw                 Optimize with AdamW (with --muon: every parameter that Muon does not own)
         --sgd                   Optimize with plain SGD (with --muon: every parameter that Muon does not own)
         --muon                  Put the hidden weight matrices on Muon
-        --no-graph              Run every call eagerly, with no captured step
+        --eager                 Run every call eagerly, with no captured step
         --resume                Continue from the progress saved with the optimizer state (training step, epoch,
                                 batch), not from training step 0 (no effect on a new optimizer)
         --checkpoint-every <N>  Also make a checkpoint every N training steps (0: only at epoch ends)
@@ -137,9 +137,9 @@ pub struct AppArgs {
     /// replacement in a loaded config (see
     /// [`AppArgs::override_training_config`]).
     pub optimizer: Option<OptimizerKind>,
-    /// Whether the captured steps are off (`--no-graph`). See
-    /// [`AppArgs::graphs`].
-    pub no_graph: bool,
+    /// Whether the captured steps are off (`--eager`). See
+    /// [`AppArgs::capture`].
+    pub eager: bool,
     /// Whether a loaded optimizer continues from its saved [`TrainingProgress`]
     /// (see [`AppArgs::load_or_save_optim`]) rather than from training step
     /// `0`.
@@ -224,7 +224,7 @@ impl AppArgs {
             remove_artifacts: pargs.contains(["-r", "--remove-artifacts"]),
             resume: pargs.contains("--resume"),
             optimizer: parse_optimizer(&mut pargs),
-            no_graph: pargs.contains("--no-graph"),
+            eager: pargs.contains("--eager"),
             extra_args,
         };
 
@@ -255,9 +255,9 @@ impl AppArgs {
     }
 
     /// Whether to capture the fixed-shape calls and replay them (unless
-    /// `--no-graph`).
-    pub fn graphs(&self) -> bool {
-        !self.no_graph
+    /// `--eager`).
+    pub fn capture(&self) -> bool {
+        !self.eager
     }
 
     /// The `defaults` of the example, under the `--checkpoint-every` /
@@ -480,7 +480,7 @@ impl AppArgs {
             (true, Some(progress)) => {
                 println!(
                     "Resuming at training step {}, epoch {}, batch {}",
-                    progress.step, progress.epoch, progress.batch
+                    progress.training_step, progress.epoch, progress.batch
                 );
                 progress
             }
@@ -488,10 +488,10 @@ impl AppArgs {
                 "--resume: no {PROGRESS_NAME}.json was saved with the optim in {:?}",
                 self.artifacts_path
             ),
-            (false, Some(progress)) if progress.step > 0 => {
+            (false, Some(progress)) if progress.training_step > 0 => {
                 println!(
                     "Starting again at training step 0. The saved progress is at training step {}, and --resume continues it.",
-                    progress.step
+                    progress.training_step
                 );
                 TrainingProgress::new()
             }
@@ -517,7 +517,7 @@ pub fn finish_extra(pargs: pico_args::Arguments) {
 /// memory ([`vram`](crate::examples::vram)) and the gradient checkpointing of
 /// Burn.
 #[derive(Clone, Debug, Default)]
-pub struct StepFlags {
+pub struct TrainingStepFlags {
     /// `--profile <N>` and `--profile-sync`: the arguments of
     /// [`prof::init`](crate::examples::prof::init).
     pub profile: Option<(usize, bool)>,
@@ -534,7 +534,7 @@ pub struct StepFlags {
     pub grad_checkpointing: bool,
 }
 
-impl StepFlags {
+impl TrainingStepFlags {
     /// The help lines of these flags, for the `-- --help` of an example.
     pub const HELP: &str = concat!(
         "    --profile <N>          Print the mean milliseconds of each training-step phase once per N training steps\n",
@@ -736,7 +736,7 @@ pub fn save_progress(artifact_dir: &Path, progress: &TrainingProgress) {
     let path = artifact_dir.join(PROGRESS_NAME).with_added_extension("json");
     println!(
         "Saving progress (training step {}, epoch {}, batch {}) into {path:?}",
-        progress.step, progress.epoch, progress.batch
+        progress.training_step, progress.epoch, progress.batch
     );
     progress.save(path).expect("Failed to save the progress");
 }

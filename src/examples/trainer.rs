@@ -5,7 +5,7 @@
 //! Either way, one [`LossFn`] defines the training step: the loss of the
 //! module on a batch, and the outputs that the metrics read. Eagerly, its
 //! gradients go to the [`ModuleOptimizer`] that each call gets. Under plain
-//! SGD (unless `--no-graph`), the weights move into a [`CapturedStep`] at the
+//! SGD (unless `--eager`), the weights move into a [`CapturedStep`] at the
 //! first call: forward, backward and [`SgdConfig::step`], captured at the
 //! shapes of that batch and replayed for every later batch of the same
 //! shapes. A batch of any other shape (a short last one) gets an eager
@@ -35,8 +35,8 @@ use burn::prelude::*;
 /// back to the inner backend (`.inner()`).
 pub type LossFn<M, I, Y> = fn(&M, I) -> (Tensor<1>, Y);
 
-/// A module under training, one training step ([`step`](Self::step)) per
-/// batch (see the [module docs](self)).
+/// A module under training, one training step
+/// ([`train_step`](Self::train_step)) per batch (see the [module docs](self)).
 ///
 /// `M` is the module (on the autodiff backend), `I` a batch (one tensor or a
 /// tuple, on the inner backend), `Y` the outputs that its [`LossFn`] returns
@@ -47,7 +47,7 @@ where
     I: StepInput + 'static,
     Y: StepInput + 'static,
 {
-    /// `None` only inside [`step`](Self::step).
+    /// `None` only inside [`train_step`](Self::train_step).
     state: Option<State<M, I, Y>>,
     loss: LossFn<M, I, Y>,
     /// The SGD that a captured step replays. `None` ⇒ eager training steps
@@ -79,15 +79,15 @@ where
     Y: StepInput + 'static,
 {
     /// `module`, trained through `loss` under `optimizer`. It replays a
-    /// captured step if `optimizer` is plain SGD and `graphs` is set (the
-    /// [`AppArgs::graphs`](crate::examples::cli::AppArgs::graphs) of the
+    /// captured step if `optimizer` is plain SGD and `capture` is set (the
+    /// [`AppArgs::capture`](crate::examples::cli::AppArgs::capture) of the
     /// examples). Else it runs each training step eagerly.
-    pub fn new(module: M, loss: LossFn<M, I, Y>, optimizer: &OptimizerConfig, graphs: bool) -> Self {
+    pub fn new(module: M, loss: LossFn<M, I, Y>, optimizer: &OptimizerConfig, capture: bool) -> Self {
         let device = module.devices().into_iter().next().expect("a module with parameters");
         Self {
             state: Some(State::Eager(module)),
             loss,
-            capture: graphs.then(|| optimizer.plain_sgd().cloned()).flatten(),
+            capture: capture.then(|| optimizer.plain_sgd().cloned()).flatten(),
             device: device.inner(),
         }
     }
@@ -96,7 +96,7 @@ where
     /// Returns its loss and outputs, on the inner backend, in buffers of their
     /// own. `optim` updates the weights of an eager training step. A captured
     /// step runs its own SGD.
-    pub fn step(&mut self, batch: I, optim: &mut ModuleOptimizer, lr: f64) -> (Tensor<1>, Y) {
+    pub fn train_step(&mut self, batch: I, optim: &mut ModuleOptimizer, lr: f64) -> (Tensor<1>, Y) {
         let state = self.state.take().expect("a training step leaves its state behind");
         let (state, output) = match (state, self.capture.clone()) {
             (State::Eager(module), None) => {
@@ -115,7 +115,7 @@ where
                         // `fn`, so it captures nothing.
                         unsafe {
                             CapturedStep::capture(&self.device, input.clone(), Weights(module), move |x, w| {
-                                sgd_step(&sgd, loss, x, w)
+                                sgd_train_step(&sgd, loss, x, w)
                             })
                         }
                     }
@@ -125,7 +125,7 @@ where
                     // because the next replay overwrites them.
                     captured.step(input).clone().into_owned()
                 } else {
-                    let (output, weights) = sgd_step(&sgd, self.loss, input, captured.caches());
+                    let (output, weights) = sgd_train_step(&sgd, self.loss, input, captured.caches());
                     captured.set_caches(weights);
                     output
                 };
@@ -151,7 +151,7 @@ where
     }
 
     /// Whether the training steps replay a hardware recording: plain SGD,
-    /// `graphs` on, a first training step taken, and a backend that keeps
+    /// `capture` on, a first training step taken, and a backend that keeps
     /// recordings (see [`CapturedStep::is_captured`]).
     pub fn is_captured(&self) -> bool {
         matches!(&self.state, Some(State::Captured(captured)) if captured.is_captured())
@@ -160,7 +160,7 @@ where
 
 /// One SGD training step of `loss` on `batch` at the rate `lr` (inner
 /// backend): the loss and outputs, and the updated weights.
-fn sgd_step<M: Module + Clone, I, Y>(
+fn sgd_train_step<M: Module + Clone, I, Y>(
     sgd: &SgdConfig,
     loss: LossFn<M, I, Y>,
     (batch, lr): (I, Tensor<1>),

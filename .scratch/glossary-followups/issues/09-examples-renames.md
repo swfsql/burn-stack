@@ -1,6 +1,6 @@
 # 09: Rename the examples identifiers that conflict with the glossary
 
-Status: ready-for-agent
+Status: resolved
 
 Blocked by: 05
 
@@ -93,13 +93,13 @@ These names follow the glossary with no choice to make:
 
 ## Acceptance criteria
 
-- [ ] `rg` over `src/`, `CLAUDE.md` and `README.md` finds no old name of the
+- [x] `rg` over `src/`, `CLAUDE.md` and `README.md` finds no old name of the
       maps.
-- [ ] `cargo check --all-targets`, `cargo check --features examples-common`,
+- [x] `cargo check --all-targets`, `cargo check --features examples-common`,
       `cargo test --lib -- --test-threads=1` and
       `cargo test --lib --features examples-common -- --test-threads=1` pass
       (flex).
-- [ ] `cargo doc --no-deps --features examples-common` has no warnings.
+- [x] `cargo doc --no-deps --features examples-common` has no warnings.
 
 ## Comments
 
@@ -123,3 +123,16 @@ These names follow the glossary with no choice to make:
   other breaks to follow too. For example, `examples/mnist-class/training.rs`
   implements an `optim_step` of the older `MnistModel`. The `MnistModel` of
   this crate has `train_step` instead.
+- `cargo test --lib -- --test-threads=1`: 87 tests pass. With
+  `--features examples-common`: 112 tests pass.
+- No test parses `--eager` or `--batch-chars`, and no test reads the key
+  `"training_step"`.
+- These names are not in the maps, and they stay:
+  - The constant `STEPS` of `utils/capture/tests.rs`. The map row limits this
+    rename to `trainer/tests.rs`. So this hit does not fail the `rg` criterion.
+  - The parameter `chars` of `bucket_batches` and
+    `BucketedStoriesDataset::new`. It receives `Bucketing::batch_chars`.
+  - The field `Trainer::capture`, an `Option<SgdConfig>`. The parameter
+    `capture` of `Trainer::new` is a `bool`.
+  - The closure parameter `s` that holds a bucket (`probe_order`, and
+    `bucket_batches_place_every_story_once_and_fit`).

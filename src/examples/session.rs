@@ -35,10 +35,10 @@ use std::path::Path;
 #[derive(Config, Debug)]
 pub struct TrainingProgress {
     /// The count of training steps: the training steps taken, plus the
-    /// training steps that [`Session::skip_steps`] skipped. The LR schedule
-    /// gives the LR of the last training step at this count.
+    /// training steps that [`Session::skip_training_steps`] skipped. The LR
+    /// schedule gives the LR of the last training step at this count.
     #[config(default = 0)]
-    pub step: usize,
+    pub training_step: usize,
     /// The epoch in progress (1-based).
     #[config(default = 1)]
     pub epoch: usize,
@@ -53,7 +53,7 @@ impl TrainingProgress {
     /// rest of a resumed epoch is a new draw, not a replay of the batches that
     /// its start already trained.
     pub fn shuffle_seed(&self, seed: u64) -> u64 {
-        seed.wrapping_add(self.step as u64)
+        seed.wrapping_add(self.training_step as u64)
     }
 }
 
@@ -78,13 +78,13 @@ pub struct Cadence {
 ///
 /// Built by [`AppArgs::session`](crate::examples::cli::AppArgs::session). A loop
 /// calls [`begin_batch`](Self::begin_batch) per dataloader item and
-/// [`begin_step`](Self::begin_step) per training step (the same thing, except
-/// for the character LM, whose item is a run of windows).
+/// [`begin_training_step`](Self::begin_training_step) per training step (the
+/// same thing, except for the character LM, whose item is a run of windows).
 pub struct Session {
     progress: TrainingProgress,
     budget: Budget,
     cadence: Cadence,
-    schedule: Lr,
+    lr_schedule: Lr,
     /// The LR of the last training step taken.
     lr: f64,
     meta: MetricMetadata,
@@ -96,31 +96,31 @@ pub struct Session {
 }
 
 impl Session {
-    /// A session continuing from `progress`, following the LR schedule
-    /// `schedule`, over a training split of `items_total` items.
+    /// A session continuing from `progress`, following `lr_schedule`, over a
+    /// training split of `items_total` items.
     pub fn new(
         progress: TrainingProgress,
         budget: Budget,
         cadence: Cadence,
-        schedule: Lr,
+        lr_schedule: Lr,
         items_total: usize,
         mut log: MetricsLog,
     ) -> Self {
-        schedule.validate();
-        let lr = schedule.get_lr(progress.step);
+        lr_schedule.validate();
+        let lr = lr_schedule.get_lr(progress.training_step);
         let meta = MetricMetadata {
             progress: Progress::new(0, items_total, None),
-            iteration: Some(progress.step),
+            iteration: Some(progress.training_step),
             lr: Some(lr.into()),
         };
         log.start(&progress);
         Self {
-            last_checkpoint: progress.step,
-            last_valid: progress.step,
+            last_checkpoint: progress.training_step,
+            last_valid: progress.training_step,
             progress,
             budget,
             cadence,
-            schedule,
+            lr_schedule,
             lr,
             meta,
             log,
@@ -165,22 +165,22 @@ impl Session {
     /// Start the next training step over `items` items: charge the budget and
     /// advance the LR schedule. Returns the count of training steps and the LR
     /// of this one.
-    pub fn begin_step(&mut self, items: usize) -> (usize, f64) {
+    pub fn begin_training_step(&mut self, items: usize) -> (usize, f64) {
         self.budget.spend();
-        self.progress.step += 1;
-        self.lr = self.schedule.get_lr(self.progress.step);
-        self.meta.iteration = Some(self.progress.step);
+        self.progress.training_step += 1;
+        self.lr = self.lr_schedule.get_lr(self.progress.training_step);
+        self.meta.iteration = Some(self.progress.training_step);
         self.meta.progress.items_processed += items;
         self.meta.lr = Some(self.lr.into());
-        (self.progress.step, self.lr)
+        (self.progress.training_step, self.lr)
     }
 
-    /// Add `steps` to the count of training steps, with no training, so the
-    /// LR schedule advances too (the character LM uses this for the windows
-    /// that its frontier gate dropped).
-    pub fn skip_steps(&mut self, steps: usize) {
-        self.progress.step += steps;
-        self.meta.iteration = Some(self.progress.step);
+    /// Add `training_steps` to the count of training steps, with no training,
+    /// so the LR schedule advances too (the character LM uses this for the
+    /// windows that its frontier gate dropped).
+    pub fn skip_training_steps(&mut self, training_steps: usize) {
+        self.progress.training_step += training_steps;
+        self.meta.iteration = Some(self.progress.training_step);
     }
 
     /// Close the epoch that the loop just left. It is complete unless the
@@ -201,24 +201,24 @@ impl Session {
     /// crossed a multiple of `checkpoint_every` since the last one. `true`
     /// once per crossing.
     pub fn checkpoint_due(&mut self) -> bool {
-        Self::due(self.cadence.checkpoint_every, self.progress.step, &mut self.last_checkpoint)
+        Self::due(self.cadence.checkpoint_every, self.progress.training_step, &mut self.last_checkpoint)
     }
 
     /// Whether a periodic validation is due, as [`checkpoint_due`](Self::checkpoint_due).
     pub fn valid_due(&mut self) -> bool {
-        Self::due(self.cadence.valid_every, self.progress.step, &mut self.last_valid)
+        Self::due(self.cadence.valid_every, self.progress.training_step, &mut self.last_valid)
     }
 
     /// Whether the current training step is already validated: by a periodic
     /// validation, or by the initial one when no training step was taken.
     pub fn validated_now(&self) -> bool {
-        self.last_valid == self.progress.step
+        self.last_valid == self.progress.training_step
     }
 
-    fn due(every: Option<usize>, step: usize, last: &mut usize) -> bool {
-        let due = every.is_some_and(|every| step / every > *last / every);
+    fn due(every: Option<usize>, training_step: usize, last: &mut usize) -> bool {
+        let due = every.is_some_and(|every| training_step / every > *last / every);
         if due {
-            *last = step;
+            *last = training_step;
         }
         due
     }
@@ -242,11 +242,11 @@ pub const METRICS_LOG_NAME: &str = "metrics";
 /// The append-only metrics log: one flat JSON object per line (`jsonl`). So a
 /// curve is one `jq`/pandas call away, not a parse of stdout.
 ///
-/// Every line carries `event` (`start` | `train` | `valid`), the `step`,
-/// `epoch` and `batch` of the run, and `elapsed` seconds since the start of
-/// the session. A `valid` line adds its `split`. Sessions append to the same
-/// file, and each one opens with a `start` line (which also records the
-/// wall-clock `unix_time`). So a resumed run continues the curve, and a run
+/// Every line carries `event` (`start` | `train` | `valid`), the
+/// `training_step`, `epoch` and `batch` of the run, and `elapsed` seconds since
+/// the start of the session. A `valid` line adds its `split`. Sessions append
+/// to the same file, and each one opens with a `start` line (which also records
+/// the wall-clock `unix_time`). So a resumed run continues the curve, and a run
 /// that starts again from training step 0 shows as a new curve. Non-finite
 /// values are written as `null`.
 pub struct MetricsLog {
@@ -291,8 +291,8 @@ impl MetricsLog {
             line += &format!(r#","split":{}"#, json_string(split));
         }
         line += &format!(
-            r#","step":{},"epoch":{},"batch":{},"elapsed":{}"#,
-            progress.step,
+            r#","training_step":{},"epoch":{},"batch":{},"elapsed":{}"#,
+            progress.training_step,
             progress.epoch,
             progress.batch,
             json_number(self.start.elapsed().as_secs_f64()),
