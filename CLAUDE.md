@@ -11,6 +11,9 @@ and burn-deltanet are its consumers.
   test names.
 - `docs/adr/`: the decisions with a trade-off. Read the ADRs of an area before
   you change it.
+- [`docs/burn/autodiff-semantics.md`](docs/burn/autodiff-semantics.md): the
+  semantics of Burn 0.22.1 for devices, autodiff, gradients and checkpointing,
+  with their traps.
 - The module header (`//!`) of each file: its mechanism and its math. The
   header of `src/lib.rs` gives the composition hierarchy, the plug-in surface
   and the three calls.

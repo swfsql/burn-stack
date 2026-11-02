@@ -31,3 +31,6 @@ backend. With no autodiff at all, it was 501 MB (`utils/detach.rs`).
 - `is_require_grad` reports only the `Grad` leaves. So a test asserts that a
   gradient reaches a parameter. It probes whether a tensor is in the graph
   with `is_tracked` (Burn PR #5571).
+
+See also: [Burn: devices, autodiff, gradients and
+checkpointing](../burn/autodiff-semantics.md).
