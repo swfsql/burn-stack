@@ -38,7 +38,13 @@ One implementation of a block, with its config and its caches.
 _Avoid_: variant, version, generation, mixer
 
 **Layer**:
-A Pre-LN residual around one block.
+A Pre-LN norm around one block, with an optional feed-forward part. The layer
+stack combines its output with its input.
+
+**Feed-forward**:
+The optional second part of a layer, after its block: a gated MLP with its own
+Pre-LN and its own residual.
+_Avoid_: MLP block, SwiGLU block
 
 **Real layer**:
 One set of layer weights.
