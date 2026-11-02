@@ -12,6 +12,9 @@ change does not need to update it.
   test names.
 - `docs/adr/`: the decisions with a trade-off. Read the ADRs of an area before
   you change it.
+- `docs/source-terms.md`: the words of the H-Net and Multi-Gate Residuals papers,
+  with our term and the wrong port for each. Read it before you read or port
+  from a source.
 - [`docs/burn/autodiff-semantics.md`](docs/burn/autodiff-semantics.md): the
   semantics of Burn 0.22.1 for devices, autodiff, gradients and checkpointing,
   with their traps.

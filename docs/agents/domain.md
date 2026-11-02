@@ -17,6 +17,13 @@ report that it is missing. Do not suggest that you create it in advance. The
 `/improve-codebase-architecture`) creates these files only when a term or a
 decision is resolved.
 
+## Before you read or port from a source
+
+Read **`docs/source-terms.md`** before you read a source or port from it. It maps
+the words of the H-Net paper and the Multi-Gate Residuals paper to our terms. It
+also gives the wrong port that each word can cause. The papers are in
+`../papers/`.
+
 ## File structure
 
 ```
@@ -25,6 +32,7 @@ decision is resolved.
 ├── docs/adr/
 │   ├── 0001-<decision-slug>.md
 │   └── 0002-<decision-slug>.md
+├── docs/source-terms.md
 └── src/
 ```
 
