@@ -1,6 +1,6 @@
 # 01: The map from H-Net and MGR source terms to our terms
 
-Status: ready-for-agent
+Status: resolved
 
 Blocked by: None (can start immediately)
 
@@ -78,14 +78,35 @@ it cites that source.
 
 ## Acceptance criteria
 
-- [ ] `docs/source-terms.md` has the three sections.
-- [ ] Each word of research part 3 that H-Net or Multi-Gate Residuals uses has a
+- [x] `docs/source-terms.md` has the three sections.
+- [x] Each word of research part 3 that H-Net or Multi-Gate Residuals uses has a
       row.
-- [ ] Each source citation has the form `file:line`, and no citation of our own
+- [x] Each source citation has the form `file:line`, and no citation of our own
       code has a line number.
-- [ ] `rg -i 'pre-ln residual' src/lib.rs src/modules/mod.rs` finds no hit.
-- [ ] `CLAUDE.md` has the `_Avoid_` rule.
-- [ ] `docs/agents/domain.md` and "Where to look" do not name the doc yet.
-- [ ] `cargo check` and `cargo doc --all --no-deps` give no warnings.
-- [ ] `scripts/ste-lint.py` of the `asd-ste100` skill gives no hard violation on
+- [x] `rg -i 'pre-ln residual' src/lib.rs src/modules/mod.rs` finds no hit.
+- [x] `CLAUDE.md` has the `_Avoid_` rule.
+- [x] `docs/agents/domain.md` and "Where to look" do not name the doc yet.
+- [x] `cargo check` and `cargo doc --all --no-deps` give no warnings.
+- [x] `scripts/ste-lint.py` of the `asd-ste100` skill gives no hard violation on
       the doc.
+
+## Comments
+
+- The rows are not checked against the sources. Ticket 02 does that.
+- The doc adds these items to the rows of research. They come from targeted reads
+  for the criterion on part 3, or from research parts 2.4, 2.5 and 4:
+  - Rows: "RoPE" (`MGR:695`) and "Tie Word Embedding" (`MGR:693`). A search with
+    the words of research part 3 finds them, but research has no row for them.
+  - Cells: the H-Net uses of "hidden state", "building block", "MLP blocks" and
+    "blocks" for chunks.
+  - Letters: `s` and `s_i`, `l` as the index of a layer, `D^s`, `p_t`, `N` of the
+    ratio loss, `M` as a Mamba-2 layer.
+- Research says "after the first `n`" and "The first `n` layers". The doc says
+  "from the `n`-th on" and "before the `n`-th", because `MGR:171` says "From the
+  $n$-th layer on". Check this row with care.
+- No row for `trap`, `forward()`, `SISO`, "reset", "accumulator", `segsum` and
+  `pad_vocab_size_multiple`. A search of H-Net and MGR does not find them.
+- The doc is not in the File Map. The file is not a listed file, and its name
+  tells what it holds.
+- `### Source names that a reader cannot decode` stays below section 2, because
+  this ticket puts those rows there and asks for three sections.

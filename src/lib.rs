@@ -1,6 +1,6 @@
 //! # burn-stack: block-generic layer/network composition on Burn
 //!
-//! Everything *around* a sequence-mixing block: the Pre-LN residual
+//! Everything *around* a sequence-mixing block: the Pre-LN
 //! [`Layer`](modules::Layer), the layer stack [`Layers`](modules::Layers),
 //! bidirectional pairs, latent/vocabulary networks, multi-stream gated
 //! residuals, class markers, layer schedules, and the Muon plan over fused

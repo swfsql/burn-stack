@@ -22,7 +22,8 @@ pub mod activation;
 pub mod bidi;
 /// The per-network cache collection trait ([`CacheStack`]).
 pub mod cache;
-/// A single Pre-LN residual layer around one block ([`Layer`]).
+/// A Pre-LN norm around one block, with an optional feed-forward part
+/// ([`Layer`]).
 pub mod layer;
 /// The layer stack: virtual layers over real layers ([`Layers`]).
 pub mod layers;

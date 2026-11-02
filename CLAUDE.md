@@ -87,6 +87,8 @@ Test-device rules:
   what it holds also gets a line.
 - A new term goes to `GLOSSARY.md`, through the `/domain-modeling` skill. A
   new decision with a trade-off goes to an ADR in `docs/adr/`.
+- `_Avoid_` applies to our own words. A doc can use a source word in quotes or
+  backticks when it cites that source.
 - **Commits**: when a skill or the user asks for a commit, commit to the
   current branch.
   When the user asks only for a commit message, write it as text for the user
