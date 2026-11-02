@@ -123,3 +123,14 @@ lead did not read the sources again.
    gated MLP". `MGR:620` gives a `ReLU²` FFN activation, and no line calls the
    "feedforward layer" gated. I recommend no change, because the row maps the role
    and not the activation.
+
+### Answers of the user
+
+1. Yes. The doc has the three rows, so it now has 58 rows and 237 citations. The
+   `R<n>` numbers in this file apply to the doc before these rows.
+   - **Correction to (c).** The text of question (c) is wrong. `HNM:232` uses the
+     word in the sense of our **Residual stream**. Only
+     `HN/sections/A_background.tex:127` has another sense. The row gives both.
+2. Yes. ADR-0009 now says that "Mixer" holds the β gates of one layer. The
+   glossary has no change.
+3. No change.

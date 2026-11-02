@@ -2,10 +2,10 @@
 
 The glossary is the authority for the words of this crate. We do not rename a
 term to match a paper or a reference implementation. The sources disagree with
-each other. "Network" in the H-Net paper is our layer stack. "Mixer" is our β
-gate in Multi-Gate Residuals and our block in the official Mamba code. So no
-source gives one vocabulary to follow. A reader of the papers must learn our
-words, and `docs/source-terms.md` maps the source words to them.
+each other. "Network" in the H-Net paper is our layer stack. "Mixer" holds the β
+gates of one layer in Multi-Gate Residuals, and it is our block in the official
+Mamba code. So no source gives one vocabulary to follow. A reader of the papers
+must learn our words, and `docs/source-terms.md` maps the source words to them.
 
 ## Consequences
 
