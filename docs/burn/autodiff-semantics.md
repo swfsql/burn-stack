@@ -14,10 +14,8 @@ symptom and its fix.
   is next to the number. A measurement on another revision names that revision.
   Paths such as `crates/burn-tensor/...` are relative to the Burn repository at
   tag `v0.22.1`.
-- **Older code.** [§13](#13-prs-that-changed-the-meaning-of-these-methods)
-  lists PRs that changed what these methods mean, for code from an older Burn.
-  The list is not complete. A consumer that pins an older revision must check
-  the source of that revision.
+- **Older code.** This document describes Burn 0.22.1 only. A consumer that
+  pins an older revision must check the source of that revision.
 
 ## Contents
 
@@ -33,7 +31,6 @@ symptom and its fix.
 10. [Recipes](#10-recipes)
 11. [Traps](#11-traps)
 12. [Debugging](#12-debugging)
-13. [PRs that changed the meaning of these methods](#13-prs-that-changed-the-meaning-of-these-methods)
 
 ## 1. Rules to remember
 
@@ -245,7 +242,7 @@ What resets the strategy to `Disabled`:
 
 | Operation | Why |
 |---|---|
-| `Tensor::from_inner` / `autodiff()` on a plain tensor | The new context is always `Enabled(Disabled)`. |
+| `Tensor::from_inner` / `autodiff()` on a plain tensor | The new context is always `Enabled(Disabled)`. A hand-written update loop that lifts this way has the same fault. |
 | `Module::valid()` then `Module::train()` | `valid` removes autodiff (and the strategy). `train` lifts with `from_inner`. The docs say: "Keep the original module when continuing training after validation." |
 | A `train()` of a `Tensor` field that has no autodiff | `Module for Tensor` implements `train` as `from_inner`. |
 
@@ -316,9 +313,10 @@ kind. `Param<Flag>` is a training switch (§9.4). A tensor parameter holds:
   it is idempotent, but it is not always a no-op.
 - `valid()` keeps the reparameterizations and their stored bases, and it puts
   their nested modules in validation mode.
+- `valid()` and `train()` keep the save/load mapper of each parameter.
 - `unfreeze()` sets every flag to *on*. It does not restore earlier values.
 - `set_require_grad(true)` and `unfreeze()` override a selective setup, such
-  as the frozen base weights of `apply_lora`.
+  as the frozen base weights of `apply_lora`. `apply_lora` keeps the flags.
 - `LearningResult::model` comes back in validation mode. Call `train()`
   before more training.
 
@@ -359,7 +357,8 @@ assert!(!y.is_autodiff(), "the forward pass runs on autodiff");
 ```
 
 **Evaluation during training.** Run it on `model.valid()`, not on the
-training model (§7). Burn's `Learner` does this.
+training model (§7). Burn's `Learner` does this. It also takes the outputs,
+the targets and the loss of its metrics to the inner backend.
 
 **An untracked region inside a tracked pass.** Run the region on the inner
 backend. Take its inputs down with `without_autodiff()`, and run it on
@@ -408,8 +407,9 @@ Each trap: the symptom, the cause, and the fix.
    - **Measured** on Burn `8f08fdad`: a 3.5× slower decode (7.1–8.0 against
      2.0–2.2 ms/char), and +150–170 MB/s in a slower run (12.5 ms/char). The
      setup is a Mamba-3 decode on flex (d164, 3 real layers × 6 applications),
-     with untied parameters built this way. An earlier note also gives +200–300
-     MB/s for this decode, but no record of that run exists.
+     with untied parameters built this way.
+   - An earlier run gave +200–300 MB/s. Its log is gone. It may have been an
+     example or a minimal repro, so its setup is not known.
 2. **"Gradient checkpointing strategy mismatch: Disabled vs Balanced".** A
    tensor went through `from_inner`, or through `valid()` then `train()`,
    and lost the `Balanced` strategy. Fix: restore the strategy (§8).
@@ -470,24 +470,3 @@ Each trap: the symptom, the cause, and the fix.
 - **Guard the run.** A leak can fill the RAM in about a minute. Read the
   resident memory (`/proc/self/statm`, or `ps -o rss=`) and stop the process
   above a limit.
-
-## 13. PRs that changed the meaning of these methods
-
-These PRs merged between 2026-08-27 and 2026-09-08. Code for an older Burn
-can compile after them and do something different. Before the Dispatch API
-(Burn 0.22), `inner` and `from_inner` converted between the types
-`Tensor<B>` and `Tensor<B::InnerBackend>`. Code on a plain backend could not
-call `from_inner`. Code ported from that API often keeps
-`Tensor::from_inner(x.inner())` round trips, which now enable autodiff on
-plain tensors.
-
-| PR | Merged | Change | What older code gets wrong |
-|---|---|---|---|
-| [#5498](https://github.com/tracel-ai/burn/pull/5498) | 2026-08-27 | `Param<Flag>` for Dropout, BatchNorm, GaussianNoise and RRelu training behavior. `ParameterValue` (any value in a `Param`) is separate from `Parameter` (tensor capabilities). The lifecycle state of `Param` is `is_active`, not `require_grad`. Records omit flags. | A training switch is now a parameter that traversal, groups, `valid`, `train` and `freeze` reach. The configured trainability is `is_active`, which can differ from the tensor state. |
-| [#5509](https://github.com/tracel-ai/burn/pull/5509) | 2026-08-28 | `Param::valid()` and the way back to training (`from_inner` in that PR, `Param::train` in 0.22.1) keep the save/load mapper (`from_mapped_value`). | Before it, a record saved from a `valid()` model lost the mapper. For example, Burn saved a `LinearLayout::Col` linear transposed, with no error. |
-| [#5520](https://github.com/tracel-ai/burn/pull/5520) | 2026-09-01 | One routing for dispatch. An explicit `DispatchAutodiffContext { Disabled, Enabled(strategy) }` replaces the implicit checkpointing field. | Code that read the old field, or relied on implicit context rules. |
-| [#5551](https://github.com/tracel-ai/burn/pull/5551) | 2026-09-02 | `merge`: `Disabled` promotes to `Enabled`, and two enabled contexts must share a strategy (§6). Restores the promotion that #5520 lost. Metric targets and predictions go to the inner backend. | Mixed plain/autodiff ops. Mixed strategies now panic. |
-| [#5537](https://github.com/tracel-ai/burn/pull/5537) (closes issue [#5524](https://github.com/tracel-ai/burn/issues/5524)) | 2026-09-03 | `Module::no_grad()` controls only gradients. New `freeze()`/`unfreeze()` control gradients and flags. `valid()`/`train()` disable flags and restore them. `set_require_grad_group` ignores flags. LoRA/QLoRA freeze the base tensors and keep the flags. `LearningResult::model` is in validation mode. | Code that used `no_grad()` to also stop dropout. Code that continued to train `LearningResult::model` without `train()`. Code that expected `valid()` to do nothing on a plain device. |
-| [#5557](https://github.com/tracel-ai/burn/pull/5557) | 2026-09-03 | `Tensor::no_grad` renamed to `Tensor::without_autodiff`. New `Tensor::autodiff`. `inner`/`from_inner` are aliases of these two. | `x.no_grad()` still compiles, but it now calls `Module::no_grad`, which does nothing to a tensor (§11, trap 3). `from_inner` lifts any plain tensor. |
-| [#5571](https://github.com/tracel-ai/burn/pull/5571) | 2026-09-04 | New `Tensor::is_autodiff()` and `is_tracked()`. The docs separate autodiff association, graph participation and gradient retention (§3). | Code that used `is_require_grad()` as the only probe: it is `false` for every derived tensor. |
-| [#5618](https://github.com/tracel-ai/burn/pull/5618) | 2026-09-08 | The optimizer (and L-BFGS) lift an updated parameter back with its earlier strategy and `require_grad`. | Before it, training with `Balanced` checkpointing panicked at the second training step. Hand-written update loops that lift with `from_inner` have the same fault (§8). |

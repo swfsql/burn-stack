@@ -65,14 +65,39 @@ This table replaces the "per the PR title" and "not checked" cells of §14.
 **burn-deltanet.** It pins Burn `4a0d726` (2026-09-10). That revision has the
 §13 PRs, but none of the PRs of this table. So the "before" column stays true
 for burn-deltanet until it moves to 0.22.1. For example, its `repeat_dim`
-gradient is wrong. The doc does not list these rows, because the ticket says
-to delete §14, and CLAUDE.md says not to keep PR history. The "Older code"
-line of the doc says that its list is not complete.
+gradient is wrong. The user said that this comment is sufficient, so the doc
+does not list these rows. The "Older code" line of the doc says that the
+doc describes 0.22.1 only.
 
-**§13 stays, with no new row.** CLAUDE.md says to delete PR history from docs.
-This ticket asks to check each row of §13, and it does not ask to delete §13.
-All its PRs and merge dates match `git log v0.22.1`. The maintainer can delete
-§13 in a later change.
+**§13 is here, not in the doc.** The user asked the implementer to decide. The
+reasons:
+
+- CLAUDE.md says to delete PR history from docs.
+- No consumer needs it. burn-stack and burn-mamba are on 0.22.1, and
+  burn-deltanet's `4a0d726` has all eight PRs.
+- §1 to §12 state each meaning as the current state. Four facts were only in
+  §13. They moved to the doc: the mapper and the LoRA flags (§9.2), the
+  hand-written update loop (§8), and the metric tensors (§10).
+
+Each row is checked against the 0.22.1 source. All PRs and merge dates match
+`git log v0.22.1`. These PRs merged between 2026-08-27 and 2026-09-08. Code for
+an older Burn can compile after them and do something different. Before the
+Dispatch API (Burn 0.22), `inner` and `from_inner` converted between the types
+`Tensor<B>` and `Tensor<B::InnerBackend>`. Code on a plain backend could not
+call `from_inner`. Code ported from that API often keeps
+`Tensor::from_inner(x.inner())` round trips, which now enable autodiff on plain
+tensors. Each § in the table is a section of the doc.
+
+| PR | Merged | Change | What older code gets wrong |
+|---|---|---|---|
+| [#5498](https://github.com/tracel-ai/burn/pull/5498) | 2026-08-27 | `Param<Flag>` for Dropout, BatchNorm, GaussianNoise and RRelu training behavior. `ParameterValue` (any value in a `Param`) is separate from `Parameter` (tensor capabilities). The lifecycle state of `Param` is `is_active`, not `require_grad`. Records omit flags. | A training switch is now a parameter that traversal, groups, `valid`, `train` and `freeze` reach. The configured trainability is `is_active`, which can differ from the tensor state. |
+| [#5509](https://github.com/tracel-ai/burn/pull/5509) | 2026-08-28 | `Param::valid()` and the way back to training (`from_inner` in that PR, `Param::train` in 0.22.1) keep the save/load mapper (`from_mapped_value`). | Before it, a record saved from a `valid()` model lost the mapper. For example, Burn saved a `LinearLayout::Col` linear transposed, with no error. |
+| [#5520](https://github.com/tracel-ai/burn/pull/5520) | 2026-09-01 | One routing for dispatch. An explicit `DispatchAutodiffContext { Disabled, Enabled(strategy) }` replaces the implicit checkpointing field. | Code that read the old field, or relied on implicit context rules. |
+| [#5551](https://github.com/tracel-ai/burn/pull/5551) | 2026-09-02 | `merge`: `Disabled` promotes to `Enabled`, and two enabled contexts must share a strategy (§6). Restores the promotion that #5520 lost. Metric targets and predictions go to the inner backend. | Mixed plain/autodiff ops. Mixed strategies now panic. |
+| [#5537](https://github.com/tracel-ai/burn/pull/5537) (closes issue [#5524](https://github.com/tracel-ai/burn/issues/5524)) | 2026-09-03 | `Module::no_grad()` controls only gradients. New `freeze()`/`unfreeze()` control gradients and flags. `valid()`/`train()` disable flags and restore them. `set_require_grad_group` ignores flags. LoRA/QLoRA freeze the base tensors and keep the flags. `LearningResult::model` is in validation mode. | Code that used `no_grad()` to also stop dropout. Code that continued to train `LearningResult::model` without `train()`. Code that expected `valid()` to do nothing on a plain device. |
+| [#5557](https://github.com/tracel-ai/burn/pull/5557) | 2026-09-03 | `Tensor::no_grad` renamed to `Tensor::without_autodiff`. New `Tensor::autodiff`. `inner`/`from_inner` are aliases of these two. | `x.no_grad()` still compiles, but it now calls `Module::no_grad`, which does nothing to a tensor (§11, trap 3). `from_inner` lifts any plain tensor. |
+| [#5571](https://github.com/tracel-ai/burn/pull/5571) | 2026-09-04 | New `Tensor::is_autodiff()` and `is_tracked()`. The docs separate autodiff association, graph participation and gradient retention (§3). | Code that used `is_require_grad()` as the only probe: it is `false` for every derived tensor. |
+| [#5618](https://github.com/tracel-ai/burn/pull/5618) | 2026-09-08 | The optimizer (and L-BFGS) lift an updated parameter back with its earlier strategy and `require_grad`. | Before it, training with `Balanced` checkpointing panicked at the second training step. Hand-written update loops that lift with `from_inner` have the same fault (§8). |
 
 **File Map.** The map has only `src/`. So the "where to look" line of CLAUDE.md
 names `docs/burn/`, as it does for `docs/adr/` and `docs/agents/`.
@@ -115,8 +140,10 @@ revision. A rerun needs a burn-stack with the old `tile`.
 - `handoff/handoff-untied-leak.md` of the burn-bug workspace records
   ~150–170 MB/s at 12.5 ms/char. This number is new in the doc.
 - No log records "+200–300 MB/s", and the copy did not mark it as measured. The
-  ticket says to keep the number, so the doc keeps it as a note, with no
-  **Measured** mark.
+  user does not remember its source. It may have been an example or a minimal
+  repro run, and the directories of these runs are often cleared to save space.
+  The ticket says to keep the number, so the doc keeps it in its own line, with
+  no setup and no **Measured** mark.
 
 Trap 2 of the copy gave no number and no setup. Its new setup is one op on
 0.22.1. Burn-stack commit `6f24f0a` records the gradient horizon case, and the
@@ -125,6 +152,6 @@ test `grad_horizon_keeps_the_checkpointing_strategy` guards that fix.
 **Lint.** `ste-lint.py` has 0 hard hits. These 7 advisory `passive-voice` hits
 remain, because each word is a state or a quote:
 
-- Lines 100, 148, 162, 190: "is untracked". This is the state of a tensor.
-- Line 113: "is enabled". This is the state of a feature.
-- Lines 168, 438: "been consumed". This is the panic message of Burn.
+- Lines 97, 145, 159, 187: "is untracked". This is the state of a tensor.
+- Line 110: "is enabled". This is the state of a feature.
+- Lines 165, 438: "been consumed". This is the panic message of Burn.
