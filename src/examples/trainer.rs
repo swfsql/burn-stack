@@ -52,7 +52,7 @@ where
     loss: LossFn<M, I, Y>,
     /// The SGD that a captured step replays. `None` ⇒ eager training steps
     /// through the module optimizer.
-    capture: Option<SgdConfig>,
+    replay_sgd: Option<SgdConfig>,
     /// The inner device of the weights.
     device: Device,
 }
@@ -87,7 +87,7 @@ where
         Self {
             state: Some(State::Eager(module)),
             loss,
-            capture: capture.then(|| optimizer.plain_sgd().cloned()).flatten(),
+            replay_sgd: capture.then(|| optimizer.plain_sgd().cloned()).flatten(),
             device: device.inner(),
         }
     }
@@ -98,7 +98,7 @@ where
     /// step runs its own SGD.
     pub fn train_step(&mut self, batch: I, optim: &mut ModuleOptimizer, lr: f64) -> (Tensor<1>, Y) {
         let state = self.state.take().expect("a training step leaves its state behind");
-        let (state, output) = match (state, self.capture.clone()) {
+        let (state, output) = match (state, self.replay_sgd.clone()) {
             (State::Eager(module), None) => {
                 let (loss, y) = (self.loss)(&module, batch);
                 let grads = GradientsParams::from_grads(loss.backward(), &module);

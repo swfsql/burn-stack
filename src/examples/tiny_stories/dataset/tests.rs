@@ -74,7 +74,7 @@ fn bucket_batches_place_every_story_once_and_fit() {
     // One batch shape per bucket, except one smaller last batch.
     for &bucket in &buckets {
         let sizes: Vec<usize> =
-            batches.iter().filter(|(s, _)| *s == bucket).map(|(_, b)| b.len()).collect();
+            batches.iter().filter(|(bucket_of, _)| *bucket_of == bucket).map(|(_, b)| b.len()).collect();
         let tail = usize::from(bucket == 64);
         assert!(
             sizes[..sizes.len() - tail].iter().all(|&n| n == sizes[0]),

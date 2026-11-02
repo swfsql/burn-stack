@@ -127,12 +127,14 @@ These names follow the glossary with no choice to make:
   `--features examples-common`: 112 tests pass.
 - No test parses `--eager` or `--batch-chars`, and no test reads the key
   `"training_step"`.
-- These names are not in the maps, and they stay:
-  - The constant `STEPS` of `utils/capture/tests.rs`. The map row limits this
-    rename to `trainer/tests.rs`. So this hit does not fail the `rg` criterion.
+- The constant `STEPS` of `utils/capture/tests.rs` stays. The map row limits
+  this rename to `trainer/tests.rs`. So this hit does not fail the `rg`
+  criterion.
+- The user also approved these names, which are not in the maps:
   - The parameter `chars` of `bucket_batches` and
-    `BucketedStoriesDataset::new`. It receives `Bucketing::batch_chars`.
-  - The field `Trainer::capture`, an `Option<SgdConfig>`. The parameter
-    `capture` of `Trainer::new` is a `bool`.
-  - The closure parameter `s` that holds a bucket (`probe_order`, and
-    `bucket_batches_place_every_story_once_and_fit`).
+    `BucketedStoriesDataset::new` is `batch_chars`, as in
+    `Bucketing::batch_chars`.
+  - The field `Trainer::capture`, an `Option<SgdConfig>`, is `replay_sgd`. The
+    parameter `capture` of `Trainer::new` stays a `bool`.
+  - The closure parameter `s` that holds a bucket is `bucket_of` (`probe_order`,
+    and `bucket_batches_place_every_story_once_and_fit`).

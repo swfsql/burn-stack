@@ -858,11 +858,11 @@ impl Batcher<PackedItem, TinyStoriesBatch> for PackedStoriesBatcher {
 /// `lens` holds the scored count of each story (its tokens less one), and
 /// `order` the order in which to take them (a shuffle). `buckets` holds the
 /// batch lengths, ascending. A story goes to the shortest bucket that holds
-/// it. A bucket takes `round(chars / m)` stories per batch, where `m` is the
-/// mean scored count of its own stories. So each batch scores about `chars`
-/// characters, and a bucket has one batch shape. The stories that do not fill
-/// a last batch move up to the next bucket. The last bucket can end with one
-/// smaller batch.
+/// it. A bucket takes `round(batch_chars / m)` stories per batch, where `m` is
+/// the mean scored count of its own stories. So each batch scores about
+/// `batch_chars` characters, and a bucket has one batch shape. The stories that
+/// do not fill a last batch move up to the next bucket. The last bucket can end
+/// with one smaller batch.
 ///
 /// # Panics
 /// If the buckets do not ascend strictly, or a story is longer than the
@@ -871,7 +871,7 @@ pub fn bucket_batches(
     lens: &[usize],
     order: &[usize],
     buckets: &[usize],
-    chars: usize,
+    batch_chars: usize,
 ) -> Vec<(usize, Vec<usize>)> {
     assert!(
         !buckets.is_empty() && buckets.windows(2).all(|w| w[0] < w[1]),
@@ -892,7 +892,7 @@ pub fn bucket_batches(
             continue;
         }
         let mean = own.iter().map(|&s| lens[s]).sum::<usize>() as f64 / own.len() as f64;
-        let size = ((chars as f64 / mean).round() as usize).max(1);
+        let size = ((batch_chars as f64 / mean).round() as usize).max(1);
         let mut queue: Vec<usize> = carry.drain(..).chain(own.iter().copied()).collect();
         carry = queue.split_off(queue.len() / size * size);
         batches.extend(queue.chunks(size).map(|batch| (bucket, batch.to_vec())));
@@ -921,7 +921,7 @@ pub fn probe_order(
     let mut taken = vec![false; batches.len()];
     let mut first = Vec::new();
     for &bucket in buckets {
-        for (i, _) in batches.iter().enumerate().filter(|(_, (s, _))| *s == bucket).take(k) {
+        for (i, _) in batches.iter().enumerate().filter(|(_, (bucket_of, _))| *bucket_of == bucket).take(k) {
             taken[i] = true;
             first.push(i);
         }
@@ -951,13 +951,13 @@ pub struct BucketedStoriesDataset {
 }
 
 impl BucketedStoriesDataset {
-    /// Group `n_stories` of `split` into batches that score about `chars`
-    /// characters each, over `buckets`, in the order of a shuffle with `seed`.
-    /// A story longer than the longest bucket is truncated to fit. With
-    /// `probe > 0`, the batches take the order of [`probe_order`]
+    /// Group `n_stories` of `split` into batches that score about
+    /// `batch_chars` characters each, over `buckets`, in the order of a shuffle
+    /// with `seed`. A story longer than the longest bucket is truncated to fit.
+    /// With `probe > 0`, the batches take the order of [`probe_order`]
     /// (`k = probe`). Then the loader must keep the order (no shuffle, one
     /// worker).
-    pub fn new(split: Split, n_stories: usize, buckets: &[usize], chars: usize, seed: u64, probe: usize) -> Self {
+    pub fn new(split: Split, n_stories: usize, buckets: &[usize], batch_chars: usize, seed: u64, probe: usize) -> Self {
         use rand::SeedableRng;
         use rand::seq::SliceRandom;
         let longest = *buckets.iter().max().expect("at least one bucket");
@@ -973,7 +973,7 @@ impl BucketedStoriesDataset {
         let lens: Vec<usize> = stories.iter().map(|tokens| tokens.len() - 1).collect();
         let mut order: Vec<usize> = (0..stories.len()).collect();
         order.shuffle(&mut rand_chacha::ChaCha8Rng::seed_from_u64(seed));
-        let mut batches = bucket_batches(&lens, &order, buckets, chars);
+        let mut batches = bucket_batches(&lens, &order, buckets, batch_chars);
         if probe > 0 {
             batches = probe_order(batches, buckets, probe, seed);
         }
