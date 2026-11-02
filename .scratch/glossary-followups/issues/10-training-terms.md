@@ -126,7 +126,7 @@ The LR schedule under other names:
     `docs/adr/0004-muon-sees-split-projections.md:27`,
     `docs/adr/0008-untied-copies-on-an-existing-axis.md:31`,
     `src/optim/mod.rs:171`, `src/reference.rs:99`.
-  - `src/optim/sgd.rs:53`: the doc of `SgdConfig::step` said "One training
+  - `src/optim/sgd.rs:53`: the doc of `SgdConfig::update` said "One training
     step". This call is only the optimizer update, so the doc now says that.
   - `src/examples/trainer.rs:2`: "the update of the optimizer" is "the optimizer
     update".
@@ -142,12 +142,18 @@ The LR schedule under other names:
   - `src/utils/capture/tests.rs`: the closure `step` that holds a whole training
     step is `training_step`.
   - `src/optim/sgd.rs`: the private struct `Step` is `OptimizerUpdate`.
-- These public names still say "step". The rename map does not name them, so
-  they stay until the user decides:
-  - `Lr::scale_steps` and its test
-    `scale_steps_moves_every_training_step_of_a_chain`. burn-mamba and
-    burn-deltanet do not call this method.
-  - `SgdConfig::step`. It has the name of `Optimizer::step` of Burn.
+- The user also approved these public names, which are not in the rename map:
+  - `Lr::scale_steps` is `Lr::scale_training_steps`, and its test is
+    `scale_training_steps_moves_every_training_step_of_a_chain`.
+  - `SgdConfig::step` is `SgdConfig::update`. The user prefers a crate that
+    agrees with its glossary to the name `Optimizer::step` of Burn. The calls to
+    the `step` of a Burn optimizer stay, for example in
+    `src/examples/trainer.rs:105` and `src/optim/segmented.rs:178`.
+
+  burn-mamba and burn-deltanet do not call these two methods. So the ticket of
+  burn-mamba does not change. The `sgd.step` of
+  `../burn-mamba/src/unified/tests/optim.rs:455` is on a `burn::optim::Sgd`.
+- This ticket has two commits. burn-mamba moves its pin to the later commit.
 - burn-deltanet has no issue tracker. These files use a renamed name:
   - `with_warmup_steps`: `examples/mnist-class/main.rs:81`,
     `examples/tiny-stories/main.rs:115`,

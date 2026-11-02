@@ -49,7 +49,7 @@
 //!   `|x, ()| (f(x), ())`.
 //! - A training step takes the parameters of the model as its state,
 //!   [`Weights`]: forward, backward, and an optimizer whose update a replay
-//!   can advance ([`SgdConfig::step`](crate::optim::SgdConfig::step), with
+//!   can advance ([`SgdConfig::update`](crate::optim::SgdConfig::update), with
 //!   the learning rate as an input).
 
 #[cfg(test)]

@@ -113,7 +113,7 @@ impl Lr {
     /// keeps its warmup unless `warmup` is set. A chain scales as a whole: the
     /// start of each of its schedules and every length in them, the warmups
     /// too.
-    pub fn scale_steps(&mut self, num: usize, den: usize, warmup: bool) {
+    pub fn scale_training_steps(&mut self, num: usize, den: usize, warmup: bool) {
         let scale = |training_steps: &mut usize| *training_steps = *training_steps * num / den;
         match self {
             Lr::CosineAnnealing(inner) => {
@@ -127,7 +127,7 @@ impl Lr {
             Lr::Chain(links) => {
                 for link in links {
                     scale(&mut link.from);
-                    link.lr.scale_steps(num, den, true);
+                    link.lr.scale_training_steps(num, den, true);
                 }
             }
         }

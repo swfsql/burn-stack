@@ -262,7 +262,7 @@ fn captured_sgd_training_is_the_eager_training() {
         let layers = w.0;
         let l = loss(&layers, x, y);
         let grads = GradientsParams::from_grads(l.backward(), &layers);
-        (l.inner(), Weights(sgd.step(layers, grads, lr)))
+        (l.inner(), Weights(sgd.update(layers, grads, lr)))
     };
     let (x, y) = data[0].clone();
     // Safety: the training step reads nothing but its arguments and `sgd`,

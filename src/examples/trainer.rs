@@ -6,7 +6,7 @@
 //! module on a batch, and the outputs that the metrics read. Eagerly, its
 //! gradients go to the [`ModuleOptimizer`] that each call gets. Under plain
 //! SGD (unless `--eager`), the weights move into a [`CapturedStep`] at the
-//! first call: forward, backward and [`SgdConfig::step`], captured at the
+//! first call: forward, backward and [`SgdConfig::update`], captured at the
 //! shapes of that batch and replayed for every later batch of the same
 //! shapes. A batch of any other shape (a short last one) gets an eager
 //! training step, on the same weights. The runs of the capture itself are
@@ -169,5 +169,5 @@ fn sgd_train_step<M: Module + Clone, I, Y>(
     let module = weights.0;
     let (loss, y) = loss(&module, batch);
     let grads = GradientsParams::from_grads(loss.backward(), &module);
-    ((loss.inner(), y), Weights(sgd.step(module, grads, lr)))
+    ((loss.inner(), y), Weights(sgd.update(module, grads, lr)))
 }

@@ -15,7 +15,7 @@ use std::collections::VecDeque;
 /// parameters that it holds (in place, so a replay advances them), and undoes
 /// the training steps that `capture` ran. The optimizer inside must be one
 /// that a replay can advance: stateless, with its learning rate as an input
-/// tensor ([`SgdConfig::step`]).
+/// tensor ([`SgdConfig::update`]).
 ///
 /// Every tensor goes through the zip on the inner backend, flattened:
 ///
@@ -27,7 +27,7 @@ use std::collections::VecDeque;
 /// After the zip, each parameter gets back its autodiff association, its
 /// checkpointing strategy and its `require_grad`.
 ///
-/// [`SgdConfig::step`]: crate::optim::SgdConfig::step
+/// [`SgdConfig::update`]: crate::optim::SgdConfig::update
 #[derive(Clone, Debug)]
 pub struct Weights<M>(pub M);
 

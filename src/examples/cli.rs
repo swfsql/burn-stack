@@ -337,8 +337,8 @@ impl AppArgs {
     ///
     /// `--epochs` rescales the training-step counts of the LR schedule by the
     /// same factor
-    /// ([`Lr::scale_steps`](crate::examples::training::Lr::scale_steps)). So
-    /// an LR schedule sized to the run still spans it (a resumed run then
+    /// ([`Lr::scale_training_steps`](crate::examples::training::Lr::scale_training_steps)).
+    /// So an LR schedule sized to the run still spans it (a resumed run then
     /// lands where the longer or shorter LR schedule has it). The warmup of a
     /// cosine does not change. `--batch-size` rescales the training-step
     /// counts and the warmup by the inverse factor, because an epoch then
@@ -361,11 +361,11 @@ impl AppArgs {
             training.seed = seed;
         }
         if let Some(batch_size) = self.batch_size {
-            training.lr.scale_steps(training.batch_size, batch_size, true);
+            training.lr.scale_training_steps(training.batch_size, batch_size, true);
             training.batch_size = batch_size;
         }
         if let Some(epochs) = self.epochs {
-            training.lr.scale_steps(epochs, training.num_epochs.max(1), false);
+            training.lr.scale_training_steps(epochs, training.num_epochs.max(1), false);
             training.num_epochs = epochs;
         }
         if let Some(max_lr) = self.max_lr {

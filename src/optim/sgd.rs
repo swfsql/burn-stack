@@ -5,14 +5,14 @@
 //! rate, the bias correction of Adam). Also, their update lands back in the
 //! buffer of its input only by operand order, so a replay can read state that
 //! stops advancing. Plain SGD has no state, which leaves the learning rate.
-//! [`SgdConfig::step`] takes it as a `[1]` device tensor: an input that the
+//! [`SgdConfig::update`] takes it as a `[1]` device tensor: an input that the
 //! host refreshes before each replay, so an LR schedule keeps moving. The
 //! capture writes back the weights themselves
 //! ([`Weights`](crate::utils::capture::Weights)).
 //!
-//! [`SgdConfig::step`] is the `Sgd` of Burn without momentum, op for op (clip,
-//! decay, scale, subtract). So a captured run trains exactly as the eager
-//! optimizer of [`SgdConfig::init`] does.
+//! [`SgdConfig::update`] is the `Sgd` of Burn without momentum, op for op
+//! (clip, decay, scale, subtract). So a captured run trains exactly as the
+//! eager optimizer of [`SgdConfig::init`] does.
 
 use burn::grad_clipping::{GradientClipping, GradientClippingConfig};
 use burn::module::{ModuleMapper, Param};
@@ -55,7 +55,7 @@ impl SgdConfig {
     /// parameter with a gradient in `grads` becomes `w − lr·g`. Parameters
     /// without one stay as they are. This is the update of
     /// [`init`](Self::init), op for op, with the rate as a tensor.
-    pub fn step<M: Module>(&self, module: M, grads: GradientsParams, lr: Tensor<1>) -> M {
+    pub fn update<M: Module>(&self, module: M, grads: GradientsParams, lr: Tensor<1>) -> M {
         module.map(&mut OptimizerUpdate {
             weight_decay: self.weight_decay,
             clipping: self.grad_clipping.as_ref().map(|config| config.init()),

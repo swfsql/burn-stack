@@ -133,9 +133,9 @@ fn set_peak_keeps_the_min_rate_of_a_cosine() {
 }
 
 #[test]
-fn scale_steps_moves_every_training_step_of_a_chain() {
+fn scale_training_steps_moves_every_training_step_of_a_chain() {
     let mut lr = run_chain();
-    lr.scale_steps(2, 1, false);
+    lr.scale_training_steps(2, 1, false);
     lr.validate();
     assert_eq!(lr.get_lr(4), 2.0, "the ramp is twice as long");
     assert_eq!(lr.get_lr(19), 4.0);
@@ -143,7 +143,7 @@ fn scale_steps_moves_every_training_step_of_a_chain() {
     assert_eq!(lr.get_lr(40), 1.0);
     assert_eq!(lr.get_lr(60), 0.01, "the cooldown is twice as long");
     let mut cosine = Lr::CosineAnnealing(CosineAnnealingLr::new(100).with_warmup_training_steps(10));
-    cosine.scale_steps(1, 2, false);
+    cosine.scale_training_steps(1, 2, false);
     let Lr::CosineAnnealing(inner) = &cosine else { panic!() };
     assert_eq!(
         (inner.total_training_steps, inner.warmup_training_steps),
