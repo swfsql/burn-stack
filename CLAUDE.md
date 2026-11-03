@@ -161,6 +161,7 @@ src/
 
 ## Custom Commands
 
+- You can read `../papers/` and `../py/`.
 - `rg`: available.
 - `cargo fmt`: don't use.
 - **Always** edit files with the Edit/Write tools. This applies also when a

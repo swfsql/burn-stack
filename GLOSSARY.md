@@ -3,6 +3,14 @@
 Block-agnostic containers for sequence models on Burn: layers, layer stacks,
 networks and caches, with the training helpers around them.
 
+A source can use another word for a term here, or use one of our words with another
+meaning. These docs map the words of the sources to our terms:
+
+- The H-Net and Multi-Gate Residuals papers:
+  [`docs/source-terms.md`](docs/source-terms.md).
+- The Mamba papers, the Mamba blog, the official code and mamba3-minimal:
+  [`../burn-mamba/docs/source-terms.md`](../burn-mamba/docs/source-terms.md).
+
 ## Language
 
 ### Sequences
