@@ -170,7 +170,7 @@ src/
     `Edit`s.
   - Bash stays the tool for *reading* and *inspecting* (`cat`, `sed -n`, `rg`,
     `grep`). It also moves and copies whole files (`mv`, `cp`), and makes
-    throwaway files outside the crate (for example, in `/tmp`).
+    throwaway files in `tmp/`.
 - A dangerous-command-guard hook (`dcg`) checks each Bash command. It also
   blocks a `>` redirect to a path that holds a variable. Use a literal path or
   a script file.
@@ -181,6 +181,12 @@ src/
   user. A `Monitor` is the best watch. A background waiter script or
   `run_in_background` is also correct. The watch also reports each failure
   state (for example, a crash).
+- **Agents**: run one agent at a time, even if a skill or a ticket asks for
+  parallel agents. A usage limit makes each active agent pay for a cold cache.
+- **Agent size**: keep each agent under ~150k tokens (200k at most), estimated
+  from its reads. State the batches first.
+- **Temporary work**: use the `tmp/` of the repo, not `/tmp`, which a power loss
+  clears. Save each agent report there. To discard work, move it to `/tmp`.
 - **Memory**: ask the user before you write to the auto-memory. Show the
   change that you propose, and write it only after the user approves it.
 
