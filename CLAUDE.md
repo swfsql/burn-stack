@@ -25,6 +25,13 @@ change does not need to update it.
   [Agent skills](#agent-skills)).
 - `../burn-mamba`: the active consumer. Its tests run the containers with real
   blocks.
+- The sources. Read `docs/source-terms.md` first:
+  - `../papers/hnet/`: the TeX of the H-Net paper.
+  - `../py/goombalab/hnet/`: the official H-Net code.
+  - `../papers/multi-gate-res/tex/`: the TeX of the Multi-Gate Residuals paper.
+    The paper has no official code.
+- `docs/box.tsv`: the directories next to this repo that the docs name.
+  `scripts/setup-box.sh` creates the missing ones on a new box.
 
 ## Build and test
 
@@ -157,6 +164,7 @@ src/
    ├─ prof.rs          the phase timers of a training step
    ├─ mnist/           dataset, classify (the epoch loops), render
    └─ tiny_stories/    dataset (packing, buckets), lm (the LM loops), sample
+scripts/setup-box.sh   creates the box directories of each `docs/box.tsv`
 ```
 
 ## Custom Commands

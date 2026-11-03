@@ -1,0 +1,9 @@
+# The directories next to this repo that its docs name. scripts/setup-box.sh reads this list, and its header gives the format.
+# dir	kind	origin	version	aliases	note
+burn	git	https://github.com/tracel-ai/burn.git	v0.22.1	-	-
+cubecl	git	https://github.com/tracel-ai/cubecl.git	v0.11.3	-	-
+cubek	git	https://github.com/tracel-ai/cubek.git	v0.3.1	-	-
+burn-mamba	git	https://github.com/swfsql/burn-mamba.git	-	-	-
+papers/hnet	arxiv	2507.07955	v2	HN/ HNM	-
+papers/multi-gate-res/tex	arxiv	2605.23259	v1	MGR	-
+py/goombalab/hnet	git	https://github.com/goombalab/hnet.git	3673fe1217ebeb0d1438c7c71d58d32bdd190ec2	-	-

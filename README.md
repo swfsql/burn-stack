@@ -80,3 +80,25 @@ ops.
 
 - [`burn-mamba`](https://github.com/swfsql/burn-mamba) — Mamba-1/2/3 selective state space models.
 - [`burn-deltanet`](https://github.com/swfsql/burn-deltanet) — [Gated]-DeltaNet-1/2 models.
+
+## Sources
+
+- [H-Net](https://arxiv.org/abs/2507.07955): *Dynamic Chunking for End-to-End
+  Hierarchical Sequence Modeling*. The official code is
+  [`goombalab/hnet`](https://github.com/goombalab/hnet).
+- [Multi-Gate Residuals](https://arxiv.org/abs/2605.23259).
+
+## Box setup
+
+The docs name directories next to this repo, for example `../papers/hnet/` and
+`../burn/`. To create them on a new box, run:
+
+```bash
+scripts/setup-box.sh
+```
+
+The script gets each directory at the exact version that
+[`docs/box.tsv`](docs/box.tsv) lists, because the docs cite `file:line`. It also
+reads the list of each repo next to this repo. It does not change a directory
+that exists. When a source is not available, the script gives a warning and
+continues.
