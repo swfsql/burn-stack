@@ -41,6 +41,7 @@ cargo check --all-targets                # + tests
 cargo check --features examples-common   # + the example scaffolding
 cargo test --lib -- --test-threads=1     # run the tests (flex = the CPU default)
 cargo doc --no-deps                      # build the docs
+./scripts/check.sh                       # the lines above + host paths
 ```
 
 Feature flags (`Cargo.toml` has the full list):
@@ -86,6 +87,8 @@ Test-device rules:
 
 - **Always load the `asd-ste100` skill** before you write code comments,
   rustdoc or markdown documents. Write all of them in its style.
+- Write each path in a repo file relative to the repo. `scripts/check.sh` finds a
+  path of the box.
 - Keep the docs small. Every session loads this file, so add a line here only
   when every session needs it. A mechanism goes into the module header of its
   file.
@@ -133,7 +136,7 @@ holds. The tests of a module are in a sibling `tests.rs`.
 
 ```text
 src/
-├─ reference.rs        RefBlock, the test block (ADR-0005) + the contract suite
+├─ reference.rs        RefBlock, the test block (ADR-0005). Its tests.rs: the container tests
 ├─ modules/            the containers + shared NN modules. mod.rs: Block, BlockConfig
 │  ├─ layers.rs        Layers<M>: the layer stack (gradient horizon, packed rows)
 │  ├─ shape.rs         NetworkShape, …: the block-free half of a config (ADR-0007)
@@ -165,11 +168,22 @@ src/
    ├─ mnist/           dataset, classify (the epoch loops), render
    └─ tiny_stories/    dataset (packing, buckets), lm (the LM loops), sample
 scripts/setup-box.sh   creates the box directories of each `docs/box.tsv`
+scripts/check.sh       the check of this repo, also run by CI
 ```
 
 ## Custom Commands
 
-- You can read `../papers/` and `../py/`.
+- **Access is an allowlist. It holds for every agent and every command,
+  read-only commands included.**
+  - Read and write: this repo, `../{burn-mamba,burn,cubecl,cubek}/`.
+  - Read: `../papers/`, `../py/`, the crate sources in the cargo registry.
+  - `/tmp`: read tool output, and move discarded work into it.
+  - Any other path: a local hook refuses it. Ask the user, name the exact path,
+    and give the command that approves it, which only the user runs:
+    `! echo <path> >> .claude/access-approved.txt`. To revoke it, the user
+    deletes that line.
+  - A sibling that a doc names stays outside the list. Reach an allowed sibling
+    by its exact path, not by a listing or search of the parent directory.
 - `rg`: available.
 - `cargo fmt`: don't use.
 - **Always** edit files with the Edit/Write tools. This applies also when a
@@ -192,10 +206,14 @@ scripts/setup-box.sh   creates the box directories of each `docs/box.tsv`
   state (for example, a crash).
 - **Agents**: run one agent at a time, even if a skill or a ticket asks for
   parallel agents. A usage limit makes each active agent pay for a cold cache.
-- **Agent size**: keep each agent under ~150k tokens (200k at most), estimated
-  from its reads. State the batches first.
-- **Temporary work**: use the `tmp/` of the repo, not `/tmp`, which a power loss
-  clears. Save each agent report there. To discard work, move it to `/tmp`.
+- **Agent size**: a rough estimate only: about 2-3k lines of reads per agent.
+  State the batches first.
+- **Temporary work**: create it in the `tmp/` of the repo, because a power loss
+  clears `/tmp`. Save each agent report there. `/tmp` is only for deletion.
+  - A tag file `<name>.discard` beside an item of `tmp/` marks it as
+    discardable, and states when.
+  - When a ticket or session ends, move each tagged item whose condition holds,
+    with its tag, to `/tmp`. This applies only to items in `tmp/`.
 - **Memory**: ask the user before you write to the auto-memory. Show the
   change that you propose, and write it only after the user approves it.
 

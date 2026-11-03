@@ -42,6 +42,9 @@ here and show only when burn-mamba moves its pin.
 So the contract suite in burn-mamba stays, and it must run under a gradient horizon,
 class markers and multi-gate residuals.
 
+**Docs:** `../burn-mamba/docs/agents/testing.md:10` presents these tests as a seam of
+burn-mamba. Update that row in this work, and name the contract suite there.
+
 **Not blocked by this:** The `block-family-choice` tickets do not need it. `layers.rs`
 and `multi_gate.rs` use `LayersBuilder` with family configs, and these do not change.
 

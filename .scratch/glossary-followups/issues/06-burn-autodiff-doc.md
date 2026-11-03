@@ -7,7 +7,7 @@ Blocked by: 01
 **What to build:** An agent in burn-stack or in a consumer finds the semantics
 of Burn for devices, autodiff, gradients and checkpointing in this repo. The
 doc is correct for the Burn version of this crate. Today the doc is in the
-burn-bug workspace (`/shared/claude/burn-bug/info/burn-autodiff-semantics.md`)
+burn-bug workspace (`../burn-bug/info/burn-autodiff-semantics.md`)
 by accident, and it describes an older Burn revision.
 
 ## Decisions from the burn-stack grill
