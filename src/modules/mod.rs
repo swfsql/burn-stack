@@ -129,9 +129,12 @@ pub trait Block: Module + burn::module::ModuleDisplay {
     /// The output of each segment is that of the segment run alone from a zero
     /// cache. The returned cache is that of the last segment of each row.
     ///
-    /// A block can accept a reset only at some positions (for example, at the
-    /// start of a chunk). The caller places the resets there. The default
-    /// panics: a block that does not override it takes no packed rows.
+    /// A block accepts a reset only at the multiples of its
+    /// [`Self::reset_align`] (for example, at the start of a chunk). The
+    /// caller places the resets there, and
+    /// [`Packed::from_starts`](crate::utils::Packed::from_starts) checks them.
+    /// The default panics: a block that does not override it takes no packed
+    /// rows.
     fn block_forward_packed(
         &self,
         x: Tensor<3>,
@@ -141,6 +144,15 @@ pub trait Block: Module + burn::module::ModuleDisplay {
     ) -> (Tensor<3>, Self::Cache) {
         let _ = (x, cache, options, reset);
         panic!("this block takes no packed rows (it does not implement `block_forward_packed`)");
+    }
+
+    /// The reset alignment of this block for `options`: the block accepts a
+    /// reset only at a multiple of this value. `None` means that the block
+    /// takes no packed rows, which matches the default of
+    /// [`Self::block_forward_packed`].
+    fn reset_align(&self, options: &Self::Options) -> Option<usize> {
+        let _ = options;
+        None
     }
 
     /// The step: the recurrent call over one token of each row, for decode.

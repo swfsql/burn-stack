@@ -14,42 +14,63 @@
 //! place of the input at that position. The reset is at the first slot. The
 //! shapes stay fixed.
 //!
-//! A block can accept a reset only at some positions (for example, only at
-//! the start of a chunk). The caller that packs the rows puts the resets
-//! there. The positions after the last segment of a row are free. They reach
-//! only the returned cache.
+//! A block accepts a reset only at the multiples of its **reset alignment**
+//! ([`Block::reset_align`]), for example at the start of a chunk. The caller
+//! that packs the rows puts the resets there, and [`Packed::from_starts`]
+//! checks each start. The positions after the last segment of a row are free.
+//! They reach only the returned cache.
 //!
 //! [`Block::block_forward_packed`]: crate::modules::Block::block_forward_packed
+//! [`Block::reset_align`]: crate::modules::Block::reset_align
 
 use burn::prelude::*;
 
 /// The layout of a packed batch: where each segment starts, and its opening
 /// slots. See the [module docs](self).
+///
+/// Each layout comes from [`Self::from_starts`], which checks it. The checks
+/// read only host integers, so they run in every build.
 #[derive(Clone, Debug)]
 pub struct Packed {
     /// `[batch, sequence]`: `true` at the first position of each segment.
-    pub reset_bs: Tensor<2, Bool>,
+    pub(crate) reset_bs: Tensor<2, Bool>,
     /// `[batch, sequence]`: `k` at the `k`-th opening slot of a segment, `-1`
     /// at every other position.
-    pub latent_bs: Tensor<2, Int>,
+    pub(crate) latent_bs: Tensor<2, Int>,
+    /// The number of opening slots of each segment.
+    pub(crate) lead: usize,
 }
 
 impl Packed {
     /// The layout of a batch whose rows have `sequence` positions each.
     /// `starts[b]` holds the first position of each segment of row `b`, and
-    /// each segment opens with `lead` slots.
+    /// each segment opens with `lead` slots. `align` is the reset alignment
+    /// of the block (see [`Block::reset_align`]).
     ///
     /// # Panics
+    /// - If a start is not a multiple of `align`.
     /// - If a start is past the end of the row.
     /// - If the opening slots of a segment reach the next start or the end
     ///   of the row.
-    pub fn from_starts(starts: &[Vec<usize>], lead: usize, sequence: usize, device: &Device) -> Self {
+    ///
+    /// [`Block::reset_align`]: crate::modules::Block::reset_align
+    pub fn from_starts(
+        starts: &[Vec<usize>],
+        align: usize,
+        lead: usize,
+        sequence: usize,
+        device: &Device,
+    ) -> Self {
         let batch = starts.len();
         let mut reset = vec![false; batch * sequence];
         let mut latent = vec![-1i64; batch * sequence];
         for (b, starts) in starts.iter().enumerate() {
             let mut end = 0;
             for &start in starts {
+                assert!(
+                    start % align == 0,
+                    "the start {start} is not a multiple of the reset alignment {align}"
+                );
                 assert!(
                     start >= end,
                     "the segments of a row must start in order, after the opening slots"
@@ -66,6 +87,7 @@ impl Packed {
             reset_bs: Tensor::<1, Bool>::from_bool(TensorData::new(reset, [batch * sequence]), device)
                 .reshape([batch, sequence]),
             latent_bs: Tensor::<1, Int>::from_ints(latent.as_slice(), device).reshape([batch, sequence]),
+            lead,
         }
     }
 
@@ -79,6 +101,7 @@ impl Packed {
         Self {
             reset_bs: bool_to_device(self.reset_bs, device),
             latent_bs: int_to_device(self.latent_bs, device),
+            lead: self.lead,
         }
     }
 
@@ -87,6 +110,7 @@ impl Packed {
         Self {
             reset_bs: self.reset_bs.clone().inner(),
             latent_bs: self.latent_bs.clone().inner(),
+            lead: self.lead,
         }
     }
 
@@ -94,11 +118,17 @@ impl Packed {
     /// (`[batch, sequence, width]`): row `k` at every slot `k`. The other
     /// positions of `x` pass unchanged. The gradient of a slot goes to its row
     /// of `table`.
+    ///
+    /// # Panics
+    /// - If `x` does not have the shape of this layout.
+    /// - If the row count of `table` is not the `lead` of this layout.
+    /// - If `table` does not have the width of `x`.
     pub fn place(&self, x: Tensor<3>, table: Tensor<2>) -> Tensor<3> {
         let [batch, sequence, width] = x.dims();
         assert_eq!(self.dims(), [batch, sequence], "the layout of a packed batch has its shape");
         let [lead, table_width] = table.dims();
-        assert_eq!(table_width, width, "the table must have one row per latent, with the width of `x`");
+        assert_eq!(lead, self.lead, "the table must have one row per opening slot of a segment");
+        assert_eq!(table_width, width, "the table must have the width of `x`");
         let device = x.device();
         // Row `lead` of the extended table is the zero row of every other
         // position. The mask below discards it.

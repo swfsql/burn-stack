@@ -836,7 +836,7 @@ impl Batcher<PackedItem, TinyStoriesBatch> for PackedStoriesBatcher {
             scored,
             seq_len: width,
             packed: Some(PackedRows {
-                layout: Packed::from_starts(&starts, lead, width, device),
+                layout: Packed::from_starts(&starts, align, lead, width, device),
                 score_bs: Tensor::<1, Bool>::from_bool(
                     burn::tensor::TensorData::new(score, [rows * width]),
                     device,

@@ -22,8 +22,9 @@
 //! It is stateful (so cache threading is observable), non-linear (so the
 //! gradients are not degenerate), and cheap. `block_forward` unrolls the same
 //! recurrence that `block_step` applies. So the forward/step parity that the
-//! containers rely on is exact by construction. A real family gets it from a
-//! chunkwise algorithm instead.
+//! containers rely on is exact by construction. `block_forward_packed` unrolls
+//! it too, from a zero state at each reset. So a segment gives exactly what it
+//! gives alone. A real family gets both from a chunkwise algorithm instead.
 //!
 //! The `test-helpers` feature enables it (the tests of this crate also have
 //! it).
@@ -117,6 +118,9 @@ pub struct RefBlock {
     /// See [`RefBlockConfig::check_padding`].
     #[module(skip)]
     pub check_padding: bool,
+    /// See [`RefBlockConfig::reset_align`].
+    #[module(skip)]
+    pub reset_align: usize,
 }
 
 impl RefBlock {
@@ -183,6 +187,34 @@ impl Block for RefBlock {
         (Tensor::cat(ys, 1), RefCache { state_bd })
     }
 
+    /// The state starts again from zero at each reset. The recurrence runs on
+    /// every position. So each segment gives exactly the outputs that it gives
+    /// alone.
+    fn block_forward_packed(
+        &self,
+        x_bsd: Tensor<3>,
+        cache: Option<RefCache>,
+        _options: (),
+        reset_bs: Tensor<2, Bool>,
+    ) -> (Tensor<3>, RefCache) {
+        let [batch, sequence, _d_model] = x_bsd.dims();
+        let zero_bd = self.zero_state(batch, &x_bsd.device());
+        let mut state_bd = match cache {
+            Some(c) => c.state_bd,
+            None => zero_bd.clone(),
+        };
+        let mut ys = Vec::with_capacity(sequence);
+        for t in 0..sequence {
+            let reset_bd = reset_bs.clone().narrow(1, t, 1).expand(state_bd.dims());
+            let x_bd = x_bsd.clone().narrow(1, t, 1).squeeze_dim(1);
+            let prev_bd = state_bd.mask_where(reset_bd, zero_bd.clone());
+            let (y_bd, next_bd) = self.recurrence(x_bd, prev_bd);
+            state_bd = next_bd;
+            ys.push(y_bd.unsqueeze_dim(1));
+        }
+        (Tensor::cat(ys, 1), RefCache { state_bd })
+    }
+
     fn block_step(&self, x_bd: Tensor<2>, cache: Option<RefCache>) -> (Tensor<2>, RefCache) {
         let [batch, _d_model] = x_bd.dims();
         let prev_bd = match cache {
@@ -201,6 +233,10 @@ impl Block for RefBlock {
     fn zero_caches_2d(&self, x_bd: &Tensor<2>, n_virtual: usize) -> RefCaches {
         let [batch, _d] = x_bd.dims();
         self.zero_caches(batch, n_virtual, &x_bd.device())
+    }
+
+    fn reset_align(&self, _options: &()) -> Option<usize> {
+        Some(self.reset_align)
     }
 
     fn untied_params(&self) -> Vec<UntiedParam> {
@@ -242,6 +278,11 @@ pub struct RefBlockConfig {
     /// reads to the host, which a captured forward cannot do.
     #[config(default = true)]
     pub check_padding: bool,
+    /// The reset alignment that [`Block::reset_align`] gives. The recurrence
+    /// accepts a reset at each position, so this value changes no output. A
+    /// test sets a value above 1 to place its resets as for a real block.
+    #[config(default = 1)]
+    pub reset_align: usize,
 }
 
 impl RefBlockConfig {
@@ -269,6 +310,7 @@ impl RefBlockConfig {
             decay_raw,
             untied: self.untied.clone(),
             check_padding: self.check_padding,
+            reset_align: self.reset_align,
         }
     }
 }

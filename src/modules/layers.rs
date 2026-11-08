@@ -304,7 +304,8 @@ where
     ///
     /// The stack puts its class latents into the opening slots of each
     /// segment, in place of the input tokens. So the output has the shape of
-    /// `x`. Every class latent of the stack must be a `Start`. The returned
+    /// `x`. Every class latent of the stack must be a `Start`, and `packed`
+    /// must give each segment one opening slot per class latent. The returned
     /// caches are those of the last segment of each row.
     pub fn forward_packed(
         &self,
@@ -320,7 +321,10 @@ where
         let packed = packed.inner();
         let x = match &self.class_latents_emb {
             Some(emb) if !self.class_latents.is_empty() => packed.place(x, emb.val()),
-            _ => x,
+            _ => {
+                assert_eq!(packed.lead, 0, "a stack with no class latents takes no opening slots");
+                x
+            }
         };
         self.forward_rows(x, caches, options, None, None, Some(&packed))
     }
@@ -926,8 +930,10 @@ fn stack_applications(
     }
 }
 
-/// Plain (non-serde) factory for [`Layers`]. The serializable surface of a
-/// family is its own `Config` enum, which delegates to this generic builder.
+/// Plain (non-serde) factory for [`Layers`]. The serializable config of a
+/// consumer is a shape plus a block (ADR-0007), and
+/// [`NetworkShape::layers`](crate::modules::NetworkShape::layers) makes this
+/// builder from that pair.
 pub struct LayersBuilder<C> {
     /// Number of real (weight-bearing) layers.
     pub n_real_layers: usize,

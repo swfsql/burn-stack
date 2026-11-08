@@ -1,6 +1,6 @@
 # 03: The reset alignment, a checked `Packed`, and packed rows on `RefBlock`
 
-Status: ready-for-agent
+Status: resolved
 
 Blocked by: `02-remove-per-layer-class-latents.md`
 

@@ -335,9 +335,17 @@ impl BidiShape {
     }
 
     /// The [`MuonPlan`](crate::optim::MuonPlan) for a stack of this shape at
-    /// `block` (no feed-forward on this path).
+    /// `block` (no feed-forward on this path). The plan also holds the
+    /// `CatLinear.weight` spec when an entry of [`Self::outputs_merge`] is
+    /// [`OutputMergeConfig::CatLinear`]. That merge is a plain hidden matrix.
+    /// A [`OutputMergeConfig::Mean`] merge has no parameters.
     #[cfg(feature = "optim")]
     pub fn muon_plan<C: BlockConfig>(&self, block: &C) -> crate::optim::MuonPlan {
-        crate::optim::MuonPlan::new(block.muon_projections())
+        use crate::optim::{MuonPlan, ProjSpec};
+        let mut specs = block.muon_projections();
+        if self.outputs_merge.iter().any(|merge| matches!(merge, OutputMergeConfig::CatLinear)) {
+            specs.push(ProjSpec::path_whole("CatLinear.weight", block.d_model()));
+        }
+        MuonPlan::new(specs)
     }
 }
