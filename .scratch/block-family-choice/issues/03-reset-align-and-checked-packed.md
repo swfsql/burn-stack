@@ -25,6 +25,12 @@ on the two repos.
 - **`src/modules/layers.rs:1166-1167`**: this doc says that the surface of a
   consumer "is its own `Config` enum". Each consumer config now is a shape plus a
   block (ADR-0007), so rewrite it.
+- **`BidiShape::muon_plan`**: it also gives the `CatLinear.weight` spec
+  (`ProjSpec::path_whole`, width `block.d_model()`), when an entry of
+  `outputs_merge` is `OutputMergeConfig::CatLinear`. A `CatLinear` merge is a plain
+  hidden matrix, and a `Mean` merge has no parameters. Update the doc of the method.
+- **`docs/agents/testing.md:10-11`**: these lines name
+  `../burn-mamba/src/unified/tests/`. That directory is `src/family/tests/`.
 - **Version**: go to 0.38.0.
 
 **Tests** in `src/reference/tests.rs`, through the new `RefBlock`:
@@ -33,6 +39,9 @@ on the two repos.
 - `Packed::place` with class latents.
 - A start that is not a multiple of the alignment panics.
 - A `lead` that differs from the table panics.
+- `BidiShape::muon_plan` with `CatLinear` merges holds the `CatLinear.weight` spec,
+  and the spec selects one weight per pair. With only `Mean` merges, the plan does
+  not hold this spec.
 
 **Done when:**
 
