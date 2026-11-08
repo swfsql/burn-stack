@@ -9,14 +9,18 @@ on the two repos.
 
 **What to build:** No config sets a per-layer class latent. `Layer::init` leaves
 them empty, and only tests assign the fields. The user confirmed that nothing
-uses them. Remove them and what exists only for them:
+uses them. Remove the per-layer class latents.
+
+All code that supports them or uses them must adapt: it loses that support, and
+it becomes simpler where the removal allows it. The list below names the code
+that likely needs this review. It is not a delete list. Do not delete an item
+because this list names it.
 
 - the class latent fields of `Layer`, and `Layer::insert_latents`,
 - the ghost latents of the gradient horizon (`src/modules/layers.rs:116`),
 - the `k` tracking of the loops, and `ClassCursors::per_layer`,
 - `BidiLayerPair` and its re-export in `src/lib.rs`,
-- `Layer::step` and `Layer::prime`, if a search of both repos finds no other
-  caller.
+- `Layer::step` and `Layer::prime`. Search both repos for their callers.
 
 The class latents of a stack and the class tokens of a network stay. They ride
 the straight-through carry, so they need no ghost latent. Read
