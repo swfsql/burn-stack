@@ -1,6 +1,6 @@
 # 01: Remove the remote backend
 
-Status: ready-for-agent
+Status: resolved
 
 Blocked by: None (can start immediately)
 

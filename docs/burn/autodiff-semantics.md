@@ -107,7 +107,7 @@ to know whether gradients reach a tensor asks `is_tracked()`.
 
 | Method | Semantics |
 |---|---|
-| `Device::default()` | The first enabled backend, in this order: CUDA, Metal, ROCm, Vulkan, WebGPU, wgpu, CPU, LibTorch, Flex, Remote, NdArray. In a `std` build, the `BURN_DEVICE` env variable (`cuda`, `rocm`, `metal`, `vulkan`, `webgpu`, `wgpu`, `cpu`, `tch`, `remote`, `flex`, `ndarray`) selects one. `metal`, `vulkan` and `webgpu` also pin the graphics API. Panics when no backend feature is enabled, or when `BURN_DEVICE` names an unknown backend or a backend with its feature off. Plain, not autodiff. |
+| `Device::default()` | The first enabled backend, in this order: CUDA, Metal, ROCm, Vulkan, WebGPU, wgpu, CPU, LibTorch, Flex, NdArray. In a `std` build, the `BURN_DEVICE` env variable (`cuda`, `rocm`, `metal`, `vulkan`, `webgpu`, `wgpu`, `cpu`, `tch`, `flex`, `ndarray`) selects one. These two lists hold only the backends that burn-stack supports. `metal`, `vulkan` and `webgpu` also pin the graphics API. Panics when no backend feature is enabled, or when `BURN_DEVICE` names an unknown backend or a backend with its feature off. Plain, not autodiff. |
 | `Device::flex()`, `Device::cuda(i)`, `Device::cpu()`, … | One backend. Plain. |
 | `.autodiff()` | The same device with autodiff. Idempotent: an autodiff device keeps its strategy. First order only. |
 | `.gradient_checkpointing()` | Sets the `Balanced` strategy. Panics on a device without autodiff. |

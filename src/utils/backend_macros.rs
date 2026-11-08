@@ -24,9 +24,6 @@ macro_rules! impl_backend_ext_for_burn_backends {
         #[cfg(any(feature = "backend-tch-cpu", feature = "backend-tch-gpu"))]
         impl $trait_name for burn::backend::libtorch::LibTorch {}
 
-        #[cfg(feature = "backend-remote")]
-        impl $trait_name for burn::backend::Remote {}
-
         // Every cubecl runtime is this one type. The device says which one.
         #[cfg(feature = "cubecl")]
         impl $trait_name for burn_cubecl::CubeBackend {}
