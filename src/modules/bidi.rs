@@ -101,44 +101,15 @@ pub struct BidiLayerPair<M: Module> {
     pub reverse_block: M,
     /// The merge of the two passes.
     pub output_merge: OutputMerge,
-    /// Positions of the class latents of this pair, spliced in before either
-    /// pass runs (both passes, and the residual, see the longer sequence).
-    /// Empty ⇒ none.
-    #[module(skip)]
-    pub class_latents: Vec<ClassLatent>,
-    /// The class-latent embeddings of this pair, `[num_class_latents, d_model]`.
-    pub class_latents_emb: Option<Param<Tensor<2>>>,
 }
 
 impl<M: Block> BidiLayerPair<M>
 where
     M::Options: Clone,
 {
-    /// Splice the class latents of this pair into the window `x` (no-op when
-    /// there are none), and advance `class` past the window. `padding` follows
-    /// the splice. `None` ⇒ this window is the whole sequence.
-    fn insert_latents(
-        &self,
-        x: Tensor<3>,
-        padding: Option<Padding>,
-        class: Option<&mut ClassCursor>,
-    ) -> (Tensor<3>, Option<Padding>) {
-        let mut whole = ClassCursor::whole(x.dims()[1]);
-        let cursor = class.unwrap_or(&mut whole);
-        insert_class_markers_padded(
-            x,
-            padding,
-            &self.class_latents,
-            self.class_latents_emb.as_ref(),
-            cursor,
-            "BidiLayerPair",
-        )
-    }
-
     /// `[batch, sequence, d_model]` → `[batch, sequence, d_model]`, plus the
-    /// updated caches of the two passes. (`sequence` grows by the class-latent
-    /// count.) Returns the merged passes **without** the residual: the caller
-    /// adds it.
+    /// updated caches of the two passes. Returns the merged passes **without**
+    /// the residual: the caller adds it.
     ///
     /// `pad` marks a right-padded batch (`None` ⇒ no padding), as in
     /// [`BidiLayers::forward`].
@@ -148,10 +119,9 @@ where
         straight_cache: Option<M::Cache>,
         reverse_cache: Option<M::Cache>,
         options: M::Options,
-        class: Option<&mut ClassCursor>,
         pad: Option<Tensor<2, Bool>>,
     ) -> (Tensor<3>, M::Cache, M::Cache) {
-        let (x, padding) = self.insert_latents(x, pad.map(Padding::new), class);
+        let padding = pad.map(Padding::new);
         bidi_pair_forward(
             &self.straight_norm,
             &self.reverse_norm,
@@ -249,7 +219,7 @@ pub struct BidiLayers<M: Module> {
     /// Multi-Gate). The MGR unit is the pair: one module per real/virtual pair.
     pub residuals: Residuals,
     /// Positions of the stack-level class latents, spliced into the sequence
-    /// once before the first pair (independent of any per-pair class latents).
+    /// once before the first pair.
     #[module(skip)]
     pub class_latents: Vec<ClassLatent>,
     /// The stack-level class-latent embeddings, `[num_class_latents, d_model]`.
@@ -396,7 +366,7 @@ where
             };
 
             // Run the pair directly on the layers above. The stack-level class
-            // latents are already spliced. The pairs carry none of their own.
+            // latents are already spliced.
             //
             // The pair returns its merged transform `F_l` without the residual.
             // Each real pair has its own merge (`n_real_layers / 2` of them).

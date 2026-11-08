@@ -1,11 +1,6 @@
 use crate::modules::{GatedMlp, RmsNorm};
 use crate::prelude::*;
-use crate::utils::class::{
-    assert_full_len_known, class_emb_width, class_prime_plan, class_row, class_window_plan,
-    insert_class_markers,
-};
-use crate::utils::{ClassCursor, ClassLatent, Packed, Padding, UntiedParam};
-use burn::module::Param;
+use crate::utils::{Packed, Padding, UntiedParam};
 use burn::prelude::*;
 use std::borrow::Cow;
 
@@ -33,17 +28,6 @@ use std::borrow::Cow;
 /// sub-block and always applies. Without an `mlp`, the delta is just `h₁`, and
 /// nothing changes for a family that has no feed-forward.
 ///
-/// A layer can have its own [`ClassLatent`]s, placed from a [`ClassCursor`]:
-///
-/// - `step` splices them around the token that it gets.
-/// - In `forward`, the caller splices them first (with
-///   [`Self::insert_latents`]), so the residual that it adds sees the same
-///   longer sequence.
-/// - [`Self::prime`] steps the latents that wait for the next token, *without*
-///   that token.
-///
-/// They are independent of the class latents of the enclosing [`Layers`].
-///
 /// A layer built for a real layer that is applied several times can **untie**
 /// parameters: its [`LayerUntied`] pre-norms and those of its block
 /// ([`Block::untied_params`]). It then holds one copy per application. A
@@ -62,11 +46,6 @@ pub struct Layer<M: Module> {
     /// Optional SwiGLU feed-forward sub-block run after the block, with its own
     /// residual. `None` ⇒ the layer has only its block.
     pub mlp: Option<GatedMlp>,
-    /// Positions of this layer's class latents (empty ⇒ none).
-    #[module(skip)]
-    pub class_latents: Vec<ClassLatent>,
-    /// The class-latent embeddings, `[num_class_latents, d_model]` (`None` ⇒ none).
-    pub class_latents_emb: Option<Param<Tensor<2>>>,
     /// The pre-norms held once per application ([`LayerUntied`]). Empty ⇒ both
     /// tied.
     #[module(skip)]
@@ -120,8 +99,6 @@ impl<M: Block> Layer<M> {
             // `norm2` exists exactly when `mlp` exists. `Layer` relies on this.
             norm2: mlp.map(|_| norm(LayerUntied::Norm2)),
             mlp: mlp.map(|mlp| mlp.init(device)),
-            class_latents: Vec::new(),
-            class_latents_emb: None,
             untied: untied.to_vec(),
             n_applications,
         }
@@ -180,27 +157,6 @@ impl<M: Block> Layer<M> {
         crate::utils::untied::retie(self, &params, n_applications)
     }
 
-    /// Splice the class latents of this layer into the window `x` (no-op when
-    /// there are none), and advance `class` past the window.
-    ///
-    /// This is public, so a caller that drives a bare [`Layer`] can make the
-    /// sequence longer itself (and add the matching residual) before it calls
-    /// [`Self::forward`]. `None` cursors ⇒ this window is the whole sequence.
-    /// [`Layers`] splices the latents of its layers itself, because under
-    /// [`MultiGate`](crate::modules::MultiGate) residuals the same latents must
-    /// also enter every residual stream.
-    pub fn insert_latents(&self, x: Tensor<3>, class: Option<&mut ClassCursor>) -> Tensor<3> {
-        let mut whole = ClassCursor::whole(x.dims()[1]);
-        let cursor = class.unwrap_or(&mut whole);
-        insert_class_markers(
-            x,
-            &self.class_latents,
-            self.class_latents_emb.as_ref(),
-            cursor,
-            "Layer",
-        )
-    }
-
     /// The layer input, kept only when the feed-forward sub-block needs it for
     /// its inner residual. Otherwise `None`, so a layer with no feed-forward
     /// still moves `x` straight into the pre-norm with no clone.
@@ -233,8 +189,7 @@ impl<M: Block> Layer<M> {
     /// the total delta of the layer: `M(RMSNorm(x))`, plus the contribution of
     /// the feed-forward sub-block when [`Self::mlp`] is set (see the type docs).
     ///
-    /// The caller owns any class-latent insertion ([`Self::insert_latents`]) and
-    /// the outer residual.
+    /// The caller owns the outer residual.
     ///
     /// `pad` marks the padded positions of a right-padded batch (`None` ⇒ no
     /// padding). The block runs on the positions of each row in the order of
@@ -276,110 +231,14 @@ impl<M: Block> Layer<M> {
         (self.add_mlp_delta(residual, h1), cache)
     }
 
-    /// The Pre-LN step of one token, **without** the residual.
+    /// The Pre-LN step of one token, **without** the outer residual. Returns
+    /// the total delta of the layer and the cache that the step produced. The
+    /// caller owns the outer residual.
     ///
-    /// `class` is the class-latent cursor of this layer. With `Some`, every
-    /// latent whose position falls on this token gets a step of its own,
-    /// around the token:
-    ///
-    /// - before it: `Start`/`Middle`/`Custom`, which precede a token,
-    /// - after it: `End`, which closes the sequence.
-    ///
-    /// The call returns the **last** token that the step emitted (see
-    /// [`ClassCursors`](crate::utils::ClassCursors)). This is the user token,
-    /// unless an `End` latent follows it. That latent is then the true last
-    /// token of the sequence. With `None`, no class latents are injected, and
-    /// `Middle`/`End` latents panic (their positions need the full sequence
-    /// length). The caller owns the residual.
-    pub fn step(
-        &self,
-        x: Tensor<2>,
-        cache: Option<M::Cache>,
-        class: Option<&mut ClassCursor>,
-    ) -> (Tensor<2>, M::Cache) {
-        let Some(cursor) = class else {
-            assert_full_len_known(&self.class_latents, None, "Layer");
-            return self.step_one(x, cache);
-        };
-        let plan = class_window_plan(&self.class_latents, 1, cursor, "Layer");
-        if plan.is_empty() {
-            return self.step_one(x, cache);
-        }
-        // `at == 0` ⇒ the latent precedes the user token. `at == 1` ⇒ it is an
-        // `End` that closes the sequence, and follows the token.
-        let [batch, d_model] = x.dims();
-        let row = |i: usize| class_row(self.class_latents_emb.as_ref(), i, batch, d_model);
-        let (before, after): (Vec<_>, Vec<_>) = plan.into_iter().partition(|&(at, _)| at == 0);
-        let mut cache = cache;
-        for (_, i) in before {
-            let (_discard, c) = self.step_one(row(i), cache);
-            cache = Some(c);
-        }
-        let (mut out, mut cache) = self.step_one(x, cache);
-        for (_, i) in after {
-            // A closing `End` *is* the last token of the sequence. This step
-            // produced its output, not that of the user token.
-            let (o, c) = self.step_one(row(i), Some(cache));
-            out = o;
-            cache = c;
-        }
-        (out, cache)
-    }
-
-    /// Step the class latents that this layer has waiting for its next token,
-    /// with **no** token of its own. So the call consumes only class data.
-    ///
-    /// This is the opening half of [`Self::step`] on its own (see
-    /// [`ClassCursors`](crate::utils::ClassCursors)). The latents that would
-    /// precede the next token get their steps now, in the same order. So a
-    /// `prime` followed by a `step` runs exactly the sequence that the `step`
-    /// alone would run. `End` latents are never primed. They close the
-    /// sequence, so they belong to the step that carries its last token.
-    ///
-    /// Returns the **last** latent stepped, as the pair `(delta, latent)`: the
-    /// embedding row of this layer with the delta that it produced. The caller
-    /// has no other way to complete the residual (`delta + latent`, as it does
-    /// with the token that it gives to [`Self::step`]). `None` ⇒ nothing was
-    /// waiting, and the cache comes back exactly as it went in. This includes
-    /// `None`: a layer that stepped nothing has the state that it already had.
-    pub fn prime(
-        &self,
-        batch: usize,
-        cache: Option<M::Cache>,
-        class: Option<&mut ClassCursor>,
-    ) -> (Option<(Tensor<2>, Tensor<2>)>, Option<M::Cache>) {
-        let Some(cursor) = class else {
-            // No cursor ⇒ nothing is injected, exactly as in a `None` step.
-            assert_full_len_known(&self.class_latents, None, "Layer");
-            return (None, cache);
-        };
-        let plan = class_prime_plan(&self.class_latents, 0, cursor, "Layer");
-        if plan.is_empty() {
-            return (None, cache);
-        }
-        let width = class_emb_width(self.class_latents_emb.as_ref());
-        let mut cache = cache;
-        let mut last = None;
-        for (_at, i) in plan {
-            let row = class_row(self.class_latents_emb.as_ref(), i, batch, width);
-            let (out, c) = self.step_one(row.clone(), cache);
-            last = Some((out, row));
-            cache = Some(c);
-        }
-        (last, cache)
-    }
-
-    /// The actual one-token work: no class injection, no outer residual.
-    ///
-    /// The cascade of [`Layers`] uses it to place the class latents of this
-    /// layer from the stack-wide [`ClassCursors`](crate::utils::ClassCursors)
-    /// itself. This bypasses the cursorless guard of [`Self::step`], which
-    /// rejects `Middle`/`End` (the cascade has already resolved them). It is
-    /// public for an external container that owns the residual and threads
-    /// its own state between layers, not a per-layer cache. Such a container
-    /// needs exactly this: the delta of the layer and the cache that it
-    /// produced, with nothing added.
-    pub fn step_one(&self, x: Tensor<2>, cache: Option<M::Cache>) -> (Tensor<2>, M::Cache) {
+    /// [`Layers`] calls it for each token of its stream. An external container
+    /// that owns the residual and threads its own state between layers can
+    /// also call it.
+    pub fn step(&self, x: Tensor<2>, cache: Option<M::Cache>) -> (Tensor<2>, M::Cache) {
         let residual = self.mlp_residual(&x);
         let normed = self.norm.forward(x);
         let (h1, cache) = self.block.block_step(normed, cache);

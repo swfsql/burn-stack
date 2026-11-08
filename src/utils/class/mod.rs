@@ -3,8 +3,8 @@
 //! its class markers at its input:
 //!
 //! - a network inserts [`ClassToken`]s (width = the input feature width),
-//! - a layer stack or a layer inserts [`ClassLatent`]s into its working
-//!   sequence (width = `d_model`).
+//! - a layer stack inserts [`ClassLatent`]s into its working sequence
+//!   (width = `d_model`).
 //!
 //! They make the sequence longer for everything downstream. A container can
 //! carry any number of them. The markers below say *where* each one lands. A
@@ -97,7 +97,7 @@ pub enum ClassToken {
 }
 
 /// Position marker for a learnable class **latent** inserted into the working
-/// sequence of a *layer stack* or a *layer* (embedding width = `d_model`).
+/// sequence of a *layer stack* (embedding width = `d_model`).
 #[derive(Config, Debug)]
 pub enum ClassLatent {
     /// Prepend before the whole sequence (index 0).
@@ -211,7 +211,6 @@ impl ClassCursor {
 /// ```text
 /// network     LatentNetwork's own ClassTokens  (before `in_proj`)
 /// stack       Layers'/BidiLayers' own ClassLatents
-/// per_layer   one cursor per virtual layer, for that Layer's ClassLatents
 /// ```
 ///
 /// [`Self::full_len`] is the length of the user sequence given to the
@@ -235,11 +234,8 @@ pub struct ClassCursors {
     /// Cursor of the [`ClassToken`]s of a network (not used by a bare layer
     /// stack).
     pub network: usize,
-    /// Cursor of the [`ClassLatent`]s of a layer container.
+    /// Cursor of the [`ClassLatent`]s of a layer stack.
     pub stack: usize,
-    /// One cursor per **virtual** layer, for the [`ClassLatent`]s of each
-    /// layer. When it is empty, the first call sizes it (with zeros).
-    pub per_layer: Vec<usize>,
 }
 
 impl ClassCursors {
@@ -257,18 +253,6 @@ impl ClassCursors {
     /// `Start`/`Custom` markers place exactly, `Middle`/`End` panic.
     pub fn stream() -> Self {
         Self::default()
-    }
-
-    /// Size [`Self::per_layer`] for a stack of `n` virtual layers (idempotent).
-    pub(crate) fn fit(&mut self, n: usize) {
-        if self.per_layer.is_empty() {
-            self.per_layer = vec![0; n];
-        }
-        assert_eq!(
-            self.per_layer.len(),
-            n,
-            "one class-latent cursor per virtual layer"
-        );
     }
 
     /// Enter the inner level. Its sequence is longer by the `markers` that
@@ -326,22 +310,19 @@ pub fn class_window_plan<M: ClassMarker>(
     class_plan(markers, window_len, cursor, false, who)
 }
 
-/// [`class_window_plan`] for a **prime**. The call carries no user token of
-/// its own beyond the `window_len` tokens that a lower level handed up (`0` at
-/// the level where the call enters). One more user token is still to come.
+/// [`class_window_plan`] for a **prime**. The call carries no user token. One
+/// more user token is still to come.
 ///
-/// So it differs only on the trailing edge of those tokens. The markers that
-/// wait there for that next token are emitted now (they precede it either
-/// way). `End` trails the last token, not precedes one, so the call that
-/// carries that token emits it. A cursor already at the announced end has no
-/// next token, so the plan is then empty.
+/// So the markers that wait for that next token are emitted now (they precede
+/// it either way). `End` trails the last token, not precedes one, so the call
+/// that carries that token emits it. A cursor already at the announced end has
+/// no next token, so the plan is then empty.
 pub fn class_prime_plan<M: ClassMarker>(
     markers: &[M],
-    window_len: usize,
     cursor: &mut ClassCursor,
     who: &str,
 ) -> Vec<(usize, usize)> {
-    class_plan(markers, window_len, cursor, true, who)
+    class_plan(markers, 0, cursor, true, who)
 }
 
 /// The shared placement loop of [`class_window_plan`] / [`class_prime_plan`].
@@ -369,8 +350,8 @@ fn class_plan<M: ClassMarker>(
     // user token. This is the only place where an `End` can go. A prime
     // carries no token of its own, so it never closes anything.
     let closes = !prime && cursor.full_len == Some(consumed);
-    // Whether a prime can flush the markers that wait after its tokens. They
-    // need a next token to precede: a further announced user token, or an
+    // Whether a prime can flush the markers that wait for the next token. They
+    // need that token to precede: a further announced user token, or an
     // open-ended stream.
     let flush = prime && cursor.full_len != Some(consumed);
 
@@ -410,22 +391,11 @@ fn class_plan<M: ClassMarker>(
 
 /// Splice the learnable class markers `emb` (`[k, width]`, row `i` ↔
 /// `markers[i]`) that fall inside the window `x` (`[batch, window_len, width]`).
-/// Returns the longer window, and advances `cursor` past it.
+/// Returns the longer window, and advances `cursor` past it. `padding`
+/// (`None` ⇒ no padding) follows the spliced positions (see
+/// [`Padding::splice`]).
 ///
 /// `markers` empty (or none of them landing in this window) ⇒ `x` unchanged.
-pub fn insert_class_markers<M: ClassMarker>(
-    x: Tensor<3>,
-    markers: &[M],
-    emb: Option<&Param<Tensor<2>>>,
-    cursor: &mut ClassCursor,
-    who: &str,
-) -> Tensor<3> {
-    insert_class_markers_padded(x, None, markers, emb, cursor, who).0
-}
-
-/// [`insert_class_markers`] over a padded batch: the positions are spliced
-/// exactly as there, and `padding` (`None` ⇒ no padding) follows them (see
-/// [`Padding::splice`]).
 pub fn insert_class_markers_padded<M: ClassMarker>(
     x: Tensor<3>,
     padding: Option<Padding>,
@@ -463,38 +433,28 @@ pub fn class_emb_table<M: ClassMarker>(
     emb
 }
 
-/// The tensor half of [`insert_class_markers`]: splice the embeddings that a
-/// [`class_window_plan`] selected into `x` along its **sequence axis 1**,
-/// broadcasting each embedding over every other axis.
-///
-/// It is rank-generic, so the same placement lands in a plain
-/// `[batch, sequence, width]` window and in the Multi-Gate residual streams
-/// `[batch, sequence, n_stream, width]`. A class marker must enter *every*
-/// stream, because the streams carry the residual.
-pub fn splice_class_embeddings<const D: usize>(
-    x: Tensor<D>,
+/// The tensor half of [`insert_class_markers_padded`]. Splice the embeddings
+/// that a [`class_window_plan`] selected into `x`
+/// (`[batch, window_len, width]`) along its **sequence axis 1**. Each
+/// embedding broadcasts over the batch.
+pub fn splice_class_embeddings(
+    x: Tensor<3>,
     plan: &[(usize, usize)],
     emb: &Tensor<2>,
-) -> Tensor<D> {
+) -> Tensor<3> {
     if plan.is_empty() {
         return x;
     }
-    let dims = x.dims();
-    let window_len = dims[1];
-    // One marker row broadcast to a single sequence position: `[1, ‥, 1, width]`
-    // expanded over the batch (and, for the streams, the stream axis).
-    let mut row_shape = [1usize; D];
-    row_shape[D - 1] = dims[D - 1];
-    let mut row_dims = dims;
-    row_dims[1] = 1;
+    let [batch, window_len, width] = x.dims();
+    // One marker row broadcast to a single sequence position.
     let row = |i: usize| {
         emb.clone()
             .narrow(0, i, 1)
-            .reshape(row_shape)
-            .expand(row_dims)
+            .reshape([1, 1, width])
+            .expand([batch, 1, width])
     };
 
-    let mut parts: Vec<Tensor<D>> = Vec::with_capacity(2 * plan.len() + 1);
+    let mut parts: Vec<Tensor<3>> = Vec::with_capacity(2 * plan.len() + 1);
     let mut taken = 0usize; // tokens of the window emitted so far
     for &(at, i) in plan {
         if at > taken {
@@ -519,7 +479,7 @@ pub fn class_emb_width(emb: Option<&Param<Tensor<2>>>) -> usize {
 }
 
 /// The embedding row of marker `i` as one broadcast token (`[batch, width]`):
-/// the `step` counterpart of a slice of [`insert_class_markers`].
+/// the `step` counterpart of a slice of [`insert_class_markers_padded`].
 pub fn class_row(
     emb: Option<&Param<Tensor<2>>>,
     i: usize,
@@ -534,7 +494,7 @@ pub fn class_row(
 
 /// The output-sequence position of each marker (in `Vec` order) for an input of
 /// length `orig_len`, without materialising any tensor. It mirrors the
-/// placement in [`insert_class_markers`], and is useful to read a class
+/// placement in [`insert_class_markers_padded`], and is useful to read a class
 /// marker back out.
 ///
 /// A marker that never lands (a `Custom` at or past the end, with no token to

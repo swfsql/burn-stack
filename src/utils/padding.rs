@@ -88,7 +88,7 @@ impl Padding {
     /// Splice the positions that a class-marker plan inserts (`(at, marker)`
     /// pairs, as [`class_window_plan`](crate::utils::class::class_window_plan)
     /// returns them): the padding half of
-    /// [`insert_class_markers`](crate::utils::class::insert_class_markers).
+    /// [`insert_class_markers_padded`](crate::utils::class::insert_class_markers_padded).
     ///
     /// `whole` says that the spliced window is the entire sequence (its cursor
     /// at the start, and its full length equal to the window length).

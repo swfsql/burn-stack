@@ -7,7 +7,7 @@
 use crate::modules::bidi::{BidiLayersBuilder, OutputMergeConfig};
 use crate::modules::{LatentNetworkBuilder, Layers, LayersBuilder, ResidualsConfig};
 use crate::reference::{RefBlock, RefBlockConfig, RefCaches};
-use crate::utils::class::{ClassMarker, class_window_plan, init_class_emb};
+use crate::utils::class::{ClassMarker, class_window_plan};
 use crate::utils::test_helpers::{dtype_tol, max_rel_diff};
 use crate::utils::{ClassCursor, ClassCursors, ClassLatent, ClassToken, GradHorizon};
 use burn::module::{ModuleVisitor, Param};
@@ -26,7 +26,7 @@ const HALF_GRAD_TOL: f32 = 5e-2;
 
 /// One position of the output of a container: user token `t`, or marker `i`
 /// of the `level`-th splice. The splices are the class tokens of the network,
-/// the class latents of the stack, then those of each layer.
+/// then the class latents of the stack.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Position {
     User(usize),
@@ -51,20 +51,6 @@ fn place<M: ClassMarker>(positions: Vec<Position>, markers: &[M], level: usize) 
     }
     out.extend_from_slice(&positions[taken..]);
     out
-}
-
-/// The positions that a stack (no virtual layers) outputs from `positions`:
-/// its own class latents, then those of each layer.
-fn stack_positions(
-    layers: &Layers<RefBlock>,
-    positions: Vec<Position>,
-    level: usize,
-) -> Vec<Position> {
-    let mut positions = place(positions, &layers.class_latents, level);
-    for (i, layer) in layers.real_layers.iter().enumerate() {
-        positions = place(positions, &layer.class_latents, level + 1 + i);
-    }
-    positions
 }
 
 /// `[batch, padded]`, `true` past the length of each row.
@@ -184,12 +170,11 @@ fn check_each_row_alone<M: Module>(
     );
 }
 
-/// Three layers with every marker kind at both levels, over rows down to a
-/// single token. So `Middle`/`End` land at the length of each row, a `Custom`
-/// past the end of a short row is absent there, and several markers share a
-/// place.
+/// Three layers with every marker kind, over rows down to a single token.
+/// `Middle`/`End` land at the length of each row. A `Custom` past the end of a
+/// short row is absent there. Several markers share a place.
 fn marked_layers(residuals: ResidualsConfig, device: &Device) -> Layers<RefBlock> {
-    let mut layers = LayersBuilder {
+    LayersBuilder {
         class_latents: vec![
             ClassLatent::End,
             ClassLatent::Custom(2),
@@ -200,17 +185,7 @@ fn marked_layers(residuals: ResidualsConfig, device: &Device) -> Layers<RefBlock
         residuals,
         ..LayersBuilder::new(3, RefBlockConfig::new(D_MODEL))
     }
-    .init(device);
-    let per_layer = [
-        vec![ClassLatent::End, ClassLatent::Start],
-        vec![],
-        vec![ClassLatent::Custom(3), ClassLatent::Middle, ClassLatent::End],
-    ];
-    for (layer, latents) in layers.real_layers.iter_mut().zip(per_layer) {
-        layer.class_latents_emb = init_class_emb(latents.len(), D_MODEL, device);
-        layer.class_latents = latents;
-    }
-    layers
+    .init(device)
 }
 
 const LENS: [usize; 4] = [7, 3, 5, 1];
@@ -223,7 +198,7 @@ fn padded_layers_are_each_row_alone() {
         &layers,
         &LENS,
         D_MODEL,
-        |len| stack_positions(&layers, users(len), 0),
+        |len| place(users(len), &layers.class_latents, 0),
         |x, pad| layers.forward(x, None, (), None, pad),
     );
 }
@@ -242,7 +217,7 @@ fn padded_multi_gate_layers_are_each_row_alone() {
         &layers,
         &LENS,
         D_MODEL,
-        |len| stack_positions(&layers, users(len), 0),
+        |len| place(users(len), &layers.class_latents, 0),
         |x, pad| layers.forward(x, None, (), None, pad),
     );
 }
@@ -258,7 +233,7 @@ fn padded_layers_under_a_grad_horizon_are_each_row_alone() {
         &layers,
         &LENS,
         D_MODEL,
-        |len| stack_positions(&layers, users(len), 0),
+        |len| place(users(len), &layers.class_latents, 0),
         |x, pad| layers.forward(x, None, (), None, pad),
     );
 }
@@ -283,7 +258,7 @@ fn padded_latent_network_is_each_row_alone() {
         &net,
         &LENS,
         3,
-        |len| stack_positions(&net.layers, place(users(len), &net.class_tokens, 0), 1),
+        |len| place(place(users(len), &net.class_tokens, 0), &net.layers.class_latents, 1),
         |x, pad| net.forward(x, None, (), None, pad),
     );
 }
@@ -321,13 +296,11 @@ fn padded_bidi_layers_are_each_row_alone() {
 #[test]
 fn padded_layers_split_into_windows_are_each_row_alone() {
     let device = test_device().autodiff();
-    let mut layers = LayersBuilder {
+    let layers = LayersBuilder {
         class_latents: vec![ClassLatent::Start, ClassLatent::End, ClassLatent::Custom(4)],
         ..LayersBuilder::new(2, RefBlockConfig::new(D_MODEL))
     }
     .init(&device);
-    layers.real_layers[1].class_latents = vec![ClassLatent::End];
-    layers.real_layers[1].class_latents_emb = init_class_emb(1, D_MODEL, &device);
 
     let lens = [9, 3, 6];
     let split = 5;
@@ -335,7 +308,7 @@ fn padded_layers_split_into_windows_are_each_row_alone() {
         &layers,
         &lens,
         D_MODEL,
-        |len| stack_positions(&layers, users(len), 0),
+        |len| place(users(len), &layers.class_latents, 0),
         |x, pad| {
             let len = x.dims()[1];
             let Some(pad) = pad else {

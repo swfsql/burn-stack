@@ -140,12 +140,12 @@ A class marker that a network inserts. It is a point in the raw input space of
 the network.
 
 **Class latent**:
-A class marker that a layer container inserts. It is a point in the `d_model`
+A class marker that a layer stack inserts. It is a point in the `d_model`
 space.
 
 **Marker level**:
-A container that inserts class markers: a network, a layer stack or a layer.
-Each marker level has its own cursor.
+A container that inserts class markers: a network or a layer stack. Each marker
+level has its own cursor.
 
 **Cursor**:
 The count of the output positions of a marker level that the earlier calls
@@ -249,11 +249,6 @@ _Avoid_: boundary
 What enters an untracked span, added back at its cut with value zero and an
 identity gradient.
 _Avoid_: carry (alone)
-
-**Ghost latent**:
-A value-zero copy of a class latent of an untracked span, in the
-straight-through carry.
-_Avoid_: ghost row
 
 ### Optimizer
 

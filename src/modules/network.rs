@@ -116,14 +116,14 @@ where
 
     /// The step of one token (`[batch, input_size]` → `[batch, output_size]`).
     ///
-    /// `class` drives all three marker levels at once: the
-    /// [`Self::class_tokens`] of this network (`class.network`), plus the
-    /// cursors of the inner [`Layers::step`] (`class.stack`, `class.per_layer`).
+    /// `class` drives both marker levels at once: the [`Self::class_tokens`] of
+    /// this network (`class.network`), plus the cursor of the inner
+    /// [`Layers::step`] (`class.stack`).
     ///
     /// As in `forward`, the class tokens of the network are part of the
     /// sequence that enters the layers. So each one runs through a full network
-    /// pass. The pass carries the inner cursors, so the layers splice their own
-    /// latents around it exactly as in `forward`. The call returns the output
+    /// pass. The pass carries the inner cursor, so the stack places its latents
+    /// around it exactly as in `forward`. The call returns the output
     /// of the **last** token that the step emitted. This is the user token,
     /// unless an `End` marker (at either level) follows it. That marker is then
     /// the true last token of the sequence. `None` injects nothing anywhere.
@@ -169,10 +169,10 @@ where
     /// Step the class markers that this network has waiting for its next user
     /// token, with **no** user token. So the call needs no input data.
     ///
-    /// This is the opening half of [`Self::step`] on its own, at all three
-    /// marker levels. Each class token of the network that is due now runs a
-    /// full pass (so the layers splice their latents around it exactly as in
-    /// `step`). After them, the call flushes what the stack still has waiting
+    /// This is the opening half of [`Self::step`] on its own, at both marker
+    /// levels. Each class token of the network that is due now runs a full
+    /// pass. The stack places its latents around that pass exactly as in
+    /// `step`. After them, the call flushes what the stack still has waiting
     /// for its next token ([`Layers::prime`]). So a `prime` followed by a
     /// `step` runs the same sequence that the `step` alone would run. `prime`
     /// → sample → `step` → sample → … is the seedless-generation loop. `End`
@@ -194,7 +194,7 @@ where
             return self.layers.prime(batch, caches, None);
         };
         let mut cursor = ClassCursor::at(class.network, class.full_len);
-        let plan = class_prime_plan(&self.class_tokens, 0, &mut cursor, "LatentNetwork");
+        let plan = class_prime_plan(&self.class_tokens, &mut cursor, "LatentNetwork");
         class.network = cursor.offset;
 
         let mut caches = caches;
@@ -208,8 +208,8 @@ where
                 caches = Some(c);
             }
         }
-        // The marker levels of the stack can still hold latents that wait for
-        // the next token to reach them. The class tokens above just went past.
+        // The stack can still hold latents that wait for the next token. The
+        // class tokens above just went past.
         let saved = class.enter(&self.class_tokens);
         let (y, caches) = self.layers.prime(batch, caches, Some(&mut *class));
         class.leave(saved);
@@ -220,7 +220,8 @@ where
     }
 
     /// One token through `in_proj → layers → out_proj`. [`Self::step`] places
-    /// the class tokens of the network. The inner cursors are forwarded.
+    /// the class tokens of the network. The call gives the inner cursor to
+    /// the stack.
     fn step_one(
         &self,
         x: Tensor<2>,
@@ -377,8 +378,8 @@ where
     /// `[batch, padded_vocab + 1]`.
     ///
     /// The vocab network has no class tokens of its own (they would duplicate
-    /// the class latents of the layers). It forwards `class` (the stack-level
-    /// and per-virtual-layer cursors) to [`Layers::step`].
+    /// the class latents of the stack). It gives `class` (the stack-level
+    /// cursor) to [`Layers::step`].
     pub fn step(
         &self,
         x: Tensor<2, Int>,

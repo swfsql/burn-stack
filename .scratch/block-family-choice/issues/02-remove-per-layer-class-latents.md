@@ -1,6 +1,6 @@
 # 02: Remove the per-layer class latents
 
-Status: ready-for-agent
+Status: resolved
 
 Blocked by: `01-remove-remote-backend.md`
 

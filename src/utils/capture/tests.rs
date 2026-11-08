@@ -289,10 +289,10 @@ fn captured_sgd_training_is_the_eager_training() {
 }
 
 #[test]
-fn only_start_latents_sees_both_levels() {
+fn only_start_latents_rejects_a_latent_that_is_not_a_start() {
     let device = test_device();
     let mut net = vocab_net(&device);
     assert!(net.layers.only_start_latents());
-    net.layers.real_layers[1].class_latents = vec![ClassLatent::Custom(4)];
+    net.layers.class_latents.push(ClassLatent::Custom(4));
     assert!(!net.layers.only_start_latents());
 }

@@ -20,7 +20,6 @@ use crate::modules::bidi::{BidiLayersBuilder, OutputMergeConfig};
 use crate::modules::{
     GatedMlpConfig, LatentNetworkBuilder, LayerUntied, Layers, LayersBuilder, ResidualsConfig,
 };
-use crate::utils::class::init_class_emb;
 use crate::utils::test_helpers::{dtype_tol, max_abs_diff, max_rel_diff};
 use crate::utils::{BidiSchedule, ClassLatent, ClassToken, GradHorizon, Schedule};
 use burn::module::{ModuleMapper, Param};
@@ -369,33 +368,31 @@ fn detach_keeps_the_device_of_each_slot() {
     }
 }
 
-/// A class latent of an **untracked** layer still trains. It is a learnable
-/// *input*, not part of the transform of that layer. So it rides the
-/// straight-through carry as a value-zero ghost latent. The mask here also ends
-/// untracked, so the stack lifts its output at the very top.
+/// A class latent of the stack trains below a cut. It is a learnable *input*,
+/// so it rides the straight-through carry with the stack input. The mask here
+/// also ends untracked, so the stack lifts its output at the very top.
 #[test]
-fn grad_horizon_ghosts_an_untracked_layers_class_latent() {
+fn grad_horizon_keeps_a_class_latent_of_the_stack_training() {
     let device = test_device().autodiff();
-    let mut layers = layers_builder(3).init(&device);
-    layers.real_layers[0].class_latents = vec![ClassLatent::Start];
-    layers.real_layers[0].class_latents_emb = init_class_emb(1, D_MODEL, &device);
-    layers.grad_horizon = Some(GradHorizon::Mask(vec![false, true, false]));
+    let layers = LayersBuilder {
+        class_latents: vec![ClassLatent::Start],
+        grad_horizon: Some(GradHorizon::Mask(vec![false, true, false])),
+        ..layers_builder(3)
+    }
+    .init(&device);
 
     let (y, _) = layers.forward(randn3(2, 4, &device), None, (), None, None);
-    assert_eq!(y.dims()[1], 5, "the layer's latent lengthens the sequence");
+    assert_eq!(y.dims()[1], 5, "the latent makes the sequence longer");
 
     let grads = y.sum().backward();
-    let emb = layers.real_layers[0]
-        .class_latents_emb
-        .as_ref()
-        .expect("latent table");
+    let emb = layers.class_latents_emb.as_ref().expect("latent table");
     assert!(
         emb.val().grad(&grads).is_some(),
-        "an untracked layer's class latent trains through its ghost latent",
+        "the class latent trains through the straight-through carry",
     );
     assert!(
         layers.real_layers[0].block.in_proj.weight.val().grad(&grads).is_none(),
-        "…while that same layer's transform stays undifferentiated",
+        "the transform of an untracked layer stays undifferentiated",
     );
 }
 

@@ -27,6 +27,6 @@ leading term of the gradient of the span.
 - Under `MultiGate`, every stream gets the carry. At the bottom of the stack,
   this is exact. A cut inside the stack adds the carry of the pooled token to
   each stream.
-- Each class marker trains on both sides of a cut. A class latent inside an
-  untracked span gets a ghost latent in the carry: a value-zero copy from the
-  tracked table.
+- Each class marker trains on both sides of a cut. The class tokens of a
+  network and the class latents of a stack enter below the first layer. So
+  they ride the straight-through carry.

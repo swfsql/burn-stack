@@ -38,13 +38,9 @@
 //! equals `step` unrolled token by token, and `step` carries no extra state
 //! (each token rebuilds its own residual streams).
 //!
-//! **Class markers.** A class marker spliced into the sequence enters
-//! the token stream *and* every residual stream at that position (`k` copies
-//! of the one embedding row). Identical streams score alike, so the aggregator
-//! (a convex combination) reproduces the row exactly. The marker reaches the
-//! layer above just as the plain additive skip would pass it. Markers spliced
-//! *below* the stack (the [`ClassToken`]s of a network, the [`ClassLatent`]s of
-//! the stack) seed the streams like any other token.
+//! **Class markers.** The [`ClassToken`]s of a network and the [`ClassLatent`]s
+//! of the stack enter below the first layer. So they seed the streams like any
+//! other token.
 //!
 //! [`ClassToken`]: crate::utils::ClassToken
 //! [`ClassLatent`]: crate::utils::ClassLatent
