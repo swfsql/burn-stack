@@ -13,14 +13,24 @@ uses them. Remove the per-layer class latents.
 
 All code that supports them or uses them must adapt: it loses that support, and
 it becomes simpler where the removal allows it. The list below names the code
-that likely needs this review. It is not a delete list. Do not delete an item
-because this list names it.
+that likely needs this review, with the decision for each item.
 
-- the class latent fields of `Layer`, and `Layer::insert_latents`,
-- the ghost latents of the gradient horizon (`src/modules/layers.rs:116`),
-- the `k` tracking of the loops, and `ClassCursors::per_layer`,
-- `BidiLayerPair` and its re-export in `src/lib.rs`,
-- `Layer::step` and `Layer::prime`. Search both repos for their callers.
+- **Delete**, because each one exists only for the latents: the class latent
+  fields of `Layer`, `Layer::insert_latents`, the ghost latents of the gradient
+  horizon (`src/modules/layers.rs:116`), the `k` tracking of the loops, and
+  `ClassCursors::per_layer`.
+- `Layer::prime`: delete it. It only steps the latents of the layer, so it has
+  no job left. Its only other caller is a burn-mamba test that
+  `../burn-mamba/.scratch/block-family-choice/issues/01-follow-the-removals.md`
+  deletes.
+- `Layer::step`: after the removal, it is identical to `Layer::step_one`. Keep
+  one method, `Layer::step`, with the body of `step_one`.
+- `BidiLayerPair`: keep it, and keep its re-export in `src/lib.rs`. It loses its
+  latent fields, its `insert_latents` and the `class` parameter of its `forward`.
+- `BLOCK_CONTAINERS` (`src/optim/spec.rs`): do not change it.
+- `insert_class_markers`: delete it. `Layer::insert_latents` is its only caller.
+- `splice_class_embeddings`: make it rank 3 only. Its only rank-4 use goes with
+  the per-layer latents.
 
 The class latents of a stack and the class tokens of a network stay. They ride
 the straight-through carry, so they need no ghost latent. Read
@@ -34,6 +44,19 @@ two.
 
 The class-latent docs must still say that each class marker trains on both sides
 of a cut.
+
+**Reference:** `git show 0f9f5bf` in this repo shows a tested removal that the
+user discarded. Only the local repo holds it. Use it for the two loops of
+`src/modules/layers.rs` and for `Layers::prime`. It deletes `BidiLayerPair`,
+changes `BLOCK_CONTAINERS` and keeps `step_one`: do not copy those parts.
+
+A plain search misses three docs:
+
+- the "per-virtual-layer cursors" wording in the doc of `VocabNetwork::step`,
+- the "lengthened input" comment in `src/modules/layers.rs`,
+- the "Class markers" paragraph in `src/modules/multi_gate.rs`.
+
+The baseline is 90 lib tests: 87 pass and 3 are ignored.
 
 **Done when:**
 
