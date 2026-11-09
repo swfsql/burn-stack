@@ -10,7 +10,7 @@ ADR-0001).
 ## Consequences
 
 - A custom *backward* is permitted. It recomputes the forward with the same
-  tensor ops, so it is not a kernel. `utils/combined_grad.rs` and
+  tensor ops, so it is not a kernel. `utils/recompute_node.rs` and
   `utils/fprim.rs` hold the plumbing for it.
 - A slow op gets a new formulation in tensor ops, not a kernel. For example,
   `prefix_sum` gives the values of `cumsum`, but its cost on cubecl does not

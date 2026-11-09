@@ -1,6 +1,6 @@
 # 06: One recompute node
 
-Status: ready-for-agent
+Status: resolved
 
 Blocked by: None
 

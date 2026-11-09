@@ -157,7 +157,7 @@ src/
 │  ├─ scheduler/       LR schedules (Lr)
 │  ├─ capture.rs       CapturedStep. capture/weights.rs: Weights (the training step)
 │  ├─ fprim.rs         F<B,D>: the primitive wrapper of a custom backward
-│  ├─ combined_grad.rs two outputs in one autodiff node (a custom backward)
+│  ├─ recompute_node.rs one autodiff node for a custom backward with two outputs
 │  └─ init.rs          InitPolicy: the reference LM init
 └─ examples/           example scaffolding of the consumers (feature `examples-common`)
    ├─ cli.rs           AppArgs: the shared flags, the artifact I/O

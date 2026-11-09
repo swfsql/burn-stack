@@ -7,7 +7,7 @@
 //! - class markers (`class`), right-padded batches (`padding`) and packed
 //!   rows (`packing`),
 //! - the custom-backward helpers that a block family needs to register its own
-//!   memory-efficient kernels (`backend_macros` / `combined_grad` / `fprim`),
+//!   memory-efficient backwards (`backend_macros` / `recompute_node` / `fprim`),
 //! - no-grad regions (`detach`) and the captured step (`capture`),
 //! - the whole-model init policy (`init`) and the LR schedules (`scheduler`),
 //! - the per-dtype numerical constants below.
@@ -24,10 +24,6 @@ pub mod capture;
 /// Class markers: the learnable class tokens and class latents that the
 /// containers splice into a sequence.
 pub mod class;
-/// Flatten/unflatten `(y, final_state)` into one tracked tensor for the custom
-/// backward.
-#[cfg(feature = "autodiff")]
-pub mod combined_grad;
 /// Detach a module's parameters, so a no-grad prefix builds no autodiff graph.
 pub mod detach;
 /// Rank-tagged `FloatTensor` primitive wrapper mirroring the `Tensor` method
@@ -42,6 +38,10 @@ pub mod packing;
 /// position in the sequence of its own row after the class markers are
 /// spliced.
 pub mod padding;
+/// The recompute node: one autodiff node for a custom backward with two
+/// outputs.
+#[cfg(feature = "autodiff")]
+pub mod recompute_node;
 /// Layer schedules (the real layer of each virtual layer), applications and
 /// the gradient horizon.
 pub mod schedule;

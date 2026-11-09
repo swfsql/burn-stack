@@ -129,6 +129,13 @@ One run of a captured step.
 What the backend records for a captured step. Each replay runs the recording.
 _Avoid_: graph (alone)
 
+### Custom backward
+
+**Recompute node**:
+One autodiff node that covers both outputs of an op with a custom backward. It
+holds the inputs of the op, not the intermediates of its forward.
+_Avoid_: combined grad
+
 ### Class markers
 
 **Class marker**:
