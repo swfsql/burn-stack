@@ -50,10 +50,10 @@ Feature flags (`Cargo.toml` has the full list):
   is on by default. Use it for checks and tests. When the build has several
   backends, `Device::default()` selects one (it reads `BURN_DEVICE`).
 - `autodiff` and `optim` (the Muon plan and the SGD) are on by default.
-- `cubecl` and `fusion` gate the per-backend `BackendExt` impls that the
-  macros emit. `check-nan` and `check-inf` enable the `DENY_NAN` and
-  `DENY_INF` guards. `dev-f16`, `dev-simd` and `dev-autotune` are for the
-  examples and the tests.
+- `cubecl` and `fusion` gate the per-backend `BackendExt` impls that
+  `impl_backend_ext_for_burn_backends!` emits. `check-nan` and `check-inf`
+  enable the `DENY_NAN` and `DENY_INF` guards. `dev-f16`, `dev-simd` and
+  `dev-autotune` are for the examples and the tests.
 - `test-helpers` exposes `utils::test_helpers` and `reference` to the
   dev-dependencies of a consumer. `examples-common` exposes `examples`. A
   consumer enables it in its dev-dependencies only.

@@ -1,6 +1,6 @@
 # 07: Delete the autodiff marker macro
 
-Status: ready-for-agent
+Status: resolved
 
 Blocked by: `../burn-mamba/.scratch/arch-review-backlog/issues/05-unused-backend-traits.md`
 
@@ -43,14 +43,14 @@ calls it.
 
 **Acceptance criteria:**
 
-- [ ] The burn-mamba ticket is `resolved`. In the working tree of `../burn-mamba`,
+- [x] The burn-mamba ticket is `resolved`. In the working tree of `../burn-mamba`,
       `rg 'decl_autodiff_backend_ext'` over `src`, `examples` and `benches` finds
       nothing.
-- [ ] In this repo, `rg -i 'decl_autodiff_backend_ext|autodiff marker|marker trait'`
+- [x] In this repo, `rg -i 'decl_autodiff_backend_ext|autodiff marker|marker trait'`
       outside `.scratch/` finds nothing.
-- [ ] The checks and tests of this repo pass, as `CLAUDE.md` gives them, with no
+- [x] The checks and tests of this repo pass, as `CLAUDE.md` gives them, with no
       warnings.
-- [ ] `Cargo.toml` has the next minor version.
+- [x] `Cargo.toml` has the next minor version.
 
 **Out of scope:**
 

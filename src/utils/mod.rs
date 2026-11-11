@@ -15,7 +15,8 @@
 use burn::prelude::ToElement;
 use burn::tensor::{DType, FloatDType, Tensor};
 
-/// Macros emitting per-backend `BackendExt` impls + autodiff marker traits.
+/// `impl_backend_ext_for_burn_backends!`: the per-backend `BackendExt` impls
+/// with the default body.
 #[macro_use]
 pub mod backend_macros;
 /// The captured step: a call of a fixed shape that the backend records once

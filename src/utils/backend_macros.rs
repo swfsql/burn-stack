@@ -1,10 +1,10 @@
-//! Macros to cut down the per-backend boilerplate for `*BackendExt` traits.
+//! A macro that removes the per-backend boilerplate of a `*BackendExt` trait.
 //!
 //! A block family that ships a custom (memory-efficient) backward declares a
-//! backend-extension trait. Its default body already does the right thing for
-//! every burn backend except `Autodiff`, which gets the custom backward. The
-//! macros below emit the per-backend "use the default impl" blocks and the
-//! autodiff marker trait.
+//! backend-extension trait. Its default body is correct for each Burn backend
+//! except `Autodiff`, which gets the custom backward. The macro below emits
+//! one impl with the default body for each other backend that this crate
+//! supports.
 
 /// Emit `impl $trait_name for <backend> {}` blocks for every burn backend that
 /// this crate supports, with the default body of the trait.
@@ -31,37 +31,5 @@ macro_rules! impl_backend_ext_for_burn_backends {
         // Fusion delegates to the default impl of the inner backend.
         #[cfg(feature = "fusion")]
         impl<B: burn_fusion::FusionBackend + $trait_name> $trait_name for burn_fusion::Fusion<B> {}
-    };
-}
-
-/// Declare a marker trait `$autodiff_trait: Backend + $ext_trait + AutodiffBackend`
-/// and a blanket impl for `burn::backend::Autodiff<B>` whenever `B: $ext_trait`.
-///
-/// A family exposes this marker so callers can bound their own generics on
-/// "autodiff-capable backend that also implements the extension trait."
-#[macro_export]
-macro_rules! decl_autodiff_backend_ext {
-    ($autodiff_trait:ident, $ext_trait:path $(, $extra_bound:path)*) => {
-        /// Marker for an autodiff-capable backend that also implements the
-        /// extension trait (so the custom memory-efficient backward is available).
-        #[cfg(feature = "autodiff")]
-        pub trait $autodiff_trait:
-            burn::backend::Backend
-            + burn::backend::AutodiffBackend
-            + $ext_trait
-            $(+ $extra_bound)*
-        {
-        }
-        /// Any autodiff-compatible backend whose inner backend implements the
-        /// ext trait satisfies the marker. The actual custom backward lives in
-        /// `super::backward` (a custom impl of the ext trait for `Autodiff<B>`).
-        #[cfg(feature = "autodiff")]
-        impl<B> $autodiff_trait
-            for burn::backend::Autodiff<B>
-            where
-                B: burn::backend::Backend + $ext_trait $(+ $extra_bound)*,
-                B: burn::backend::BackendTypes<FloatTensorPrimitive = burn::backend::DispatchTensor>,
-        {
-        }
     };
 }
