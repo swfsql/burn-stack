@@ -1,12 +1,18 @@
-//! The per-network cache collection trait, and the pairwise tensor visitor
-//! that a captured step uses to write its cache back.
+//! The per-network cache collection trait, the pairwise tensor traversal of a
+//! cache, and the backend hop that follows from that traversal.
 //!
 //! A family supplies its own `Caches` type. The generic containers need only
-//! indexed access to one cache slot per virtual layer, plus the backend hop of
-//! `grad_horizon`.
-//! [`CapturedStep`](crate::utils::capture::CapturedStep) also needs
-//! [`CacheTensors`]: every tensor of a cache, visited pairwise with the
-//! matching tensor of another cache.
+//! indexed access to one cache slot per virtual layer ([`CacheStack`]). Each
+//! slot implements [`CacheTensors`]: every tensor of the cache, visited
+//! pairwise with the matching tensor of another cache. This traversal is the
+//! one hand-written list of the fields of a cache. These operations follow
+//! from it:
+//!
+//! - the backend hop of `grad_horizon` and `detach`: [`cache_to_inner`],
+//!   [`cache_from_inner`] and [`cache_device`],
+//! - the cache write-back of a
+//!   [`CapturedStep`](crate::utils::capture::CapturedStep),
+//! - the per-row select, gather and merge of [`HNet::step`].
 
 use burn::prelude::*;
 
@@ -34,44 +40,16 @@ pub fn lift<const D: usize>(tensor: Tensor<D>, device: &Device) -> Tensor<D> {
 /// [`Layers`](crate::modules::Layers) loop: `slot_count`, plus move-in and
 /// move-out of the per-layer slots.
 pub trait CacheStack: Sized {
-    /// The per-layer cache element.
-    type Cache;
+    /// The per-layer cache element. Its traversal ([`CacheTensors`]) gives
+    /// the backend hop of [`Self::detach`] and of
+    /// [`Layers::grad_horizon`](crate::modules::Layers::grad_horizon).
+    type Cache: CacheTensors;
     /// Number of slots: one per virtual layer.
     fn slot_count(&self) -> usize;
     /// Move each slot into an `Option`, so the loop can `take` without a clone.
     fn into_slots(self) -> Vec<Option<Self::Cache>>;
     /// Inverse of [`Self::into_slots`].
     fn from_slots(slots: Vec<Option<Self::Cache>>) -> Self;
-    /// Move one cache slot **to** the inner (non-autodiff) backend.
-    ///
-    /// [`Layers::grad_horizon`](crate::modules::Layers::grad_horizon) needs it,
-    /// because its untracked spans run on the inner backend. A tracked cache
-    /// must come down with them, for two reasons: the span must build no
-    /// graph, and the dispatch of Burn cannot mix backends within one op.
-    ///
-    /// Each family writes it by hand, not with a derive, because
-    /// [`Module::map`] is a **no-op on plain `Tensor` fields** (Burn implements
-    /// `Module for Tensor` as a constant). Caches hold bare tensors, not
-    /// `Param`s. So a `Module`-based conversion would silently skip every one
-    /// of them.
-    ///
-    /// `Tensor::inner` (an alias of `Tensor::without_autodiff`) returns a
-    /// tensor that is already off the autodiff backend unchanged. So this does
-    /// nothing there, and is not an error. [`Self::cache_from_inner`] also does
-    /// nothing there.
-    fn cache_to_inner(cache: Self::Cache) -> Self::Cache;
-
-    /// Lift one cache slot back **from** the inner backend onto the autodiff
-    /// backend of `device`, as a new graph root: the inverse of
-    /// [`Self::cache_to_inner`]. Lift each tensor with [`lift`], not with a
-    /// bare `Tensor::from_inner` (see [`lift`]). So the slot gets the
-    /// checkpointing strategy of `device`, and on a device without autodiff,
-    /// the slot stays unchanged.
-    fn cache_from_inner(cache: Self::Cache, device: &Device) -> Self::Cache;
-
-    /// The device of one cache slot: the device of any of its tensors, with
-    /// its autodiff context. [`Self::detach`] lifts the slot back onto it.
-    fn cache_device(cache: &Self::Cache) -> Device;
 
     /// Round-trip **every** slot through the inner backend. The cache keeps
     /// its values and loses the graph that produced it. So a caller can carry
@@ -83,22 +61,89 @@ pub trait CacheStack: Sized {
     /// [`detach_params`](crate::utils::detach_params)). The backend hop drops
     /// the graph.
     ///
-    /// Each slot goes back onto its own device ([`Self::cache_device`]), with
-    /// the checkpointing strategy of that device. On a device without
-    /// autodiff, this does nothing.
+    /// Each slot goes back onto its own device ([`cache_device`]), with the
+    /// checkpointing strategy of that device. On a device without autodiff,
+    /// this does nothing.
     fn detach(self) -> Self {
         let slots = self
             .into_slots()
             .into_iter()
             .map(|slot| {
                 slot.map(|cache| {
-                    let device = Self::cache_device(&cache);
-                    Self::cache_from_inner(Self::cache_to_inner(cache), &device)
+                    let device = cache_device(&cache);
+                    cache_from_inner(cache_to_inner(cache), &device)
                 })
             })
             .collect();
         Self::from_slots(slots)
     }
+}
+
+/// `cache` moved **to** the inner (non-autodiff) backend: each tensor goes
+/// through `Tensor::inner`.
+///
+/// [`Layers::grad_horizon`](crate::modules::Layers::grad_horizon) needs it,
+/// because its untracked spans run on the inner backend. A tracked cache must
+/// go to the inner backend with them, for two reasons. The span must build no
+/// graph, and the dispatch of Burn cannot mix backends within one op.
+///
+/// `Tensor::inner` (an alias of `Tensor::without_autodiff`) returns a tensor
+/// that is already off the autodiff backend unchanged. So this does nothing
+/// there, and is not an error. [`cache_from_inner`] also does nothing there.
+///
+/// The hop follows from [`CacheTensors::zip_tensors`]. So a cache type cannot
+/// override it, and its fields stay in one list. The map is the zip of `cache`
+/// with its clone: one refcount per tensor, and no tensor op.
+pub fn cache_to_inner<C: CacheTensors>(cache: C) -> C {
+    struct ToInner;
+    impl TensorZip for ToInner {
+        fn zip<const D: usize>(&mut self, a: Tensor<D>, b: Tensor<D>) -> Tensor<D> {
+            drop(b);
+            a.inner()
+        }
+    }
+    cache.clone().zip_tensors(cache, &mut ToInner)
+}
+
+/// `cache` lifted back **from** the inner backend onto the autodiff backend of
+/// `device`, as a new graph root: the inverse of [`cache_to_inner`]. Each
+/// tensor goes through [`lift`], not through a bare `Tensor::from_inner` (see
+/// [`lift`]). So the cache gets the checkpointing strategy of `device`. On a
+/// device without autodiff, the cache stays unchanged.
+pub fn cache_from_inner<C: CacheTensors>(cache: C, device: &Device) -> C {
+    struct Lift<'a>(&'a Device);
+    impl TensorZip for Lift<'_> {
+        fn zip<const D: usize>(&mut self, a: Tensor<D>, b: Tensor<D>) -> Tensor<D> {
+            drop(b);
+            lift(a, self.0)
+        }
+    }
+    cache.clone().zip_tensors(cache, &mut Lift(device))
+}
+
+/// The device of `cache`: the device of its first tensor, with its autodiff
+/// context. [`CacheStack::detach`] lifts each slot back onto it.
+///
+/// The rule: a per-layer cache ([`CacheStack::Cache`]) holds at least one
+/// tensor.
+///
+/// # Panics
+///
+/// If `cache` holds no tensor (for example, `()`).
+pub fn cache_device<C: CacheTensors>(cache: &C) -> Device {
+    struct First(Option<Device>);
+    impl TensorZip for First {
+        fn zip<const D: usize>(&mut self, a: Tensor<D>, b: Tensor<D>) -> Tensor<D> {
+            drop(b);
+            self.0.get_or_insert_with(|| a.device());
+            a
+        }
+    }
+    let mut first = First(None);
+    let _ = cache.clone().zip_tensors(cache.clone(), &mut first);
+    first
+        .0
+        .expect("the cache holds no tensor, so it has no device. A per-layer cache holds at least one tensor.")
 }
 
 /// A rank-generic binary map over the matching tensors of two caches: the
@@ -111,9 +156,16 @@ pub trait TensorZip {
 }
 
 /// A cache whose tensors can be visited pairwise: one hand-written traversal
-/// per cache type (for the same reason that [`CacheStack::cache_to_inner`] is
-/// hand-written). The two operations that a captured step needs follow from
-/// it.
+/// per cache type. This traversal is the one list of the fields of a cache.
+/// The backend hop ([`cache_to_inner`], [`cache_from_inner`],
+/// [`cache_device`]) and the two operations that a captured step needs follow
+/// from it.
+///
+/// The traversal is hand-written, not derived from `Module`, because
+/// [`Module::map`] is a **no-op on plain `Tensor` fields** (Burn implements
+/// `Module for Tensor` as a constant). Caches hold bare tensors, not
+/// `Param`s. So a `Module`-based traversal would silently skip every one of
+/// them.
 ///
 /// A captured step replays against the exact device buffers that its closure
 /// touched. But `step` is functional: it returns new cache tensors, so a
@@ -203,3 +255,6 @@ impl<A: CacheTensors, B: CacheTensors> CacheTensors for (A, B) {
         (self.0.zip_tensors(other.0, z), self.1.zip_tensors(other.1, z))
     }
 }
+
+#[cfg(all(test, feature = "_dev-test"))]
+mod tests;

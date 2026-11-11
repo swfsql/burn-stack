@@ -10,15 +10,17 @@
 //! two traits:
 //!
 //! - [`Block`](modules::Block): `block_forward` (parallel, for training and
-//!   prefill), `block_step` (recurrent, for decoding), and the zero-cache
-//!   constructors, plus the associated `Cache` / `Caches` / `Options` types.
+//!   prefill), `block_step` (recurrent, for decoding), and `zero_cache`, plus
+//!   the associated `Cache` / `Caches` / `Options` types.
 //! - [`BlockConfig`](modules::BlockConfig): `d_model`, `init_block`, and the
 //!   Muon-eligible projections of the block.
 //!
 //! Its cache collection also implements [`CacheStack`](modules::CacheStack),
-//! which is all that the generic loops need: one cache per virtual layer,
-//! plus the backend hop of
-//! [`Layers::grad_horizon`](modules::Layers::grad_horizon).
+//! which is all that the generic loops need: one cache per virtual layer. Its
+//! cache implements [`CacheTensors`](modules::CacheTensors): the one list of
+//! the fields of a cache. The backend hop of
+//! [`Layers::grad_horizon`](modules::Layers::grad_horizon) follows from that
+//! list.
 //!
 //! ## Composition hierarchy
 //!

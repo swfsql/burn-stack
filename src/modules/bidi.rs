@@ -9,6 +9,7 @@
 //! written once for all families. The merge is family-agnostic
 //! (`RmsNorm`/`Linear` over `Tensor<3>`).
 
+use crate::modules::layers::zero_caches_for;
 use crate::modules::{LayerUntied, Residuals, ResidualsConfig, RmsNorm};
 use crate::prelude::*;
 use crate::utils::{Applications, BidiSchedule};
@@ -318,10 +319,8 @@ where
                 self.n_real_layers
             });
 
-        // Sized from a view, because the tensors of an untied block hold the
-        // copy of every application.
         let caches = caches
-            .unwrap_or_else(|| self.real_layers[0].application(0).block.zero_caches_3d(&x, n));
+            .unwrap_or_else(|| zero_caches_for(&self.real_layers[0], n, x.dims()[0], &x.device()));
         assert_eq!(
             caches.slot_count(),
             n,

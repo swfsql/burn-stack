@@ -141,7 +141,7 @@ src/
 ├─ modules/            the containers + shared NN modules. mod.rs: Block, BlockConfig
 │  ├─ layers.rs        Layers<M>: the layer stack (gradient horizon, packed rows)
 │  ├─ shape.rs         NetworkShape, …: the block-free half of a config (ADR-0007)
-│  ├─ cache.rs         CacheStack, CacheTensors, lift (back from the inner backend)
+│  ├─ cache.rs         CacheStack, CacheTensors, the hop derived from it, lift
 │  ├─ hnet/            H-Net. mod.rs header = the math. One file for each part
 │  ├─ activation/      silu, softplus, log_sigmoid
 │  ├─ norm/            rms_norm, rms_norm_gated, rms_score

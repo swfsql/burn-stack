@@ -27,7 +27,8 @@ It also has the parts that those need:
 
 ## Plugging a block in
 
-Implement two traits and one cache trait:
+Implement two block traits and two cache traits. `CacheTensors` is the one
+list of the fields of a cache. The backend hop of a cache follows from it.
 
 ```rust
 impl Block for MyBlock {
@@ -40,8 +41,7 @@ impl Block for MyBlock {
         -> (Tensor<3>, MyCache) { … }  // parallel: training + prefill
     fn block_step(&self, x: Tensor<2>, cache: Option<MyCache>)
         -> (Tensor<2>, MyCache) { … }  // recurrent: decode
-    fn zero_caches_3d(&self, x: &Tensor<3>, n_virtual: usize) -> MyCaches { … }
-    fn zero_caches_2d(&self, x: &Tensor<2>, n_virtual: usize) -> MyCaches { … }
+    fn zero_cache(&self, batch: usize, device: &Device) -> MyCache { … }
     fn untied_params(&self) -> Vec<UntiedParam> { … } // empty ⇒ all tied
 }
 
@@ -50,6 +50,17 @@ impl BlockConfig for MyBlockConfig {
     fn d_model(&self) -> usize { … }
     fn init_block(&self, n_applications: usize, device: &Device) -> MyBlock { … }
     fn muon_projections(&self) -> Vec<ProjSpec> { … }   // feature `optim`
+}
+
+impl CacheTensors for MyCache {        // every tensor, paired with `other`
+    fn zip_tensors(self, other: Self, z: &mut impl TensorZip) -> Self { … }
+}
+
+impl CacheStack for MyCaches {
+    type Cache = MyCache;
+    fn slot_count(&self) -> usize { … }
+    fn into_slots(self) -> Vec<Option<MyCache>> { … }
+    fn from_slots(slots: Vec<Option<MyCache>>) -> Self { … }
 }
 ```
 

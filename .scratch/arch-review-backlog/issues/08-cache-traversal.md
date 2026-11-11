@@ -1,6 +1,6 @@
 # 08: The cache traversal is the one field list, and a block gives one zero cache
 
-Status: ready-for-agent
+Status: resolved
 
 Blocked by: None
 

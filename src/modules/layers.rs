@@ -1,4 +1,6 @@
-use crate::modules::{GatedMlpConfig, LayerUntied, Residuals, ResidualsConfig, lift};
+use crate::modules::{
+    GatedMlpConfig, LayerUntied, Residuals, ResidualsConfig, cache_from_inner, cache_to_inner, lift,
+};
 use crate::prelude::*;
 use crate::utils::{Applications, GradHorizon, Schedule};
 use crate::utils::class::{
@@ -176,16 +178,11 @@ where
             .unwrap_or(self.n_real_layers)
     }
 
-    /// The zero caches that [`Self::step`] starts from when it gets `None`:
-    /// one cache per virtual layer, sized for a `[batch, d_model]` input.
-    pub fn zero_caches_2d(&self, x: &Tensor<2>) -> M::Caches {
-        self.real_layers[0].application(0).block.zero_caches_2d(x, self.n_virtual_count())
-    }
-
-    /// The zero caches for a `[batch, sequence, d_model]` input: those of
-    /// [`Block::zero_caches_3d`] for every virtual layer.
-    pub fn zero_caches_3d(&self, x: &Tensor<3>) -> M::Caches {
-        self.real_layers[0].application(0).block.zero_caches_3d(x, self.n_virtual_count())
+    /// The zero caches that [`Self::forward`] and [`Self::step`] start from
+    /// when they get `None`: one [`Block::zero_cache`] for each virtual layer,
+    /// for `batch` rows on `device`.
+    pub fn zero_caches(&self, batch: usize, device: &Device) -> M::Caches {
+        zero_caches_for(&self.real_layers[0], self.n_virtual_count(), batch, device)
     }
 
     fn real_idx(&self, virtual_idx: usize) -> usize {
@@ -381,10 +378,7 @@ where
                 (x, None)
             }
         };
-        // Sized from a view, because the tensors of an untied block hold the
-        // copy of every application.
-        let caches = caches
-            .unwrap_or_else(|| self.real_layers[0].application(0).block.zero_caches_3d(&x, n));
+        let caches = caches.unwrap_or_else(|| self.zero_caches(x.dims()[0], &x.device()));
         assert_eq!(caches.slot_count(), n, "one cache per virtual layer");
 
         // An untracked layer must build no graph. In Burn, that means it runs
@@ -491,7 +485,7 @@ where
             let cache = slots[i].take().unwrap();
             let cache = match track {
                 true => cache,
-                false => M::Caches::cache_to_inner(cache),
+                false => cache_to_inner(cache),
             };
             let first = self.ignore_first_residual && i == 0;
             let last = self.ignore_last_residual && i + 1 == n;
@@ -552,7 +546,7 @@ where
                 }
             }
             if !track {
-                slots[i] = slots[i].take().map(|c| M::Caches::cache_from_inner(c, &device));
+                slots[i] = slots[i].take().map(|c| cache_from_inner(c, &device));
             }
         }
         // The stack ended inside an untracked span (its top layers were cut).
@@ -608,8 +602,7 @@ where
     ) -> (Tensor<2>, M::Caches) {
         let [batch, d_model] = x.dims();
         let n = self.n_virtual_count();
-        let caches = caches
-            .unwrap_or_else(|| self.real_layers[0].application(0).block.zero_caches_2d(&x, n));
+        let caches = caches.unwrap_or_else(|| self.zero_caches(batch, &x.device()));
         assert_eq!(caches.slot_count(), n, "one cache per virtual layer");
         let mut slots = caches.into_slots();
 
@@ -771,7 +764,7 @@ where
             // `Layer::step` fills an empty slot on the backend of the tokens.
             let mut cache = slots[pos].take();
             if !track {
-                cache = cache.map(M::Caches::cache_to_inner);
+                cache = cache.map(cache_to_inner);
             }
             let mut next: Vec<Tensor<2>> = Vec::with_capacity(stream.len());
             let mut next_stream_sets: Vec<Tensor<3>> =
@@ -820,7 +813,7 @@ where
             }
             slots[pos] = match track {
                 true => cache,
-                false => cache.map(|c| M::Caches::cache_from_inner(c, &device)),
+                false => cache.map(|c| cache_from_inner(c, &device)),
             };
             stream = next;
             stream_sets = next_stream_sets;
@@ -896,8 +889,8 @@ where
             .into_iter()
             .map(|(_at, i)| class_row(emb, i, batch, width))
             .collect();
-        // No token exists yet to size zero caches. So a stack with no caches
-        // starts from empty slots, and `Layer::step` fills them.
+        // A stack with no caches starts from empty slots. `Layer::step` fills
+        // each one on the backend of the tokens.
         let mut slots: Vec<Option<M::Cache>> = match caches {
             Some(caches) => caches.into_slots(),
             None => (0..n).map(|_| None).collect(),
@@ -916,6 +909,21 @@ impl<M: Block> Layers<M> {
         self.real_layers = self.real_layers.into_iter().map(Layer::retie).collect();
         self
     }
+}
+
+/// The zero caches of a stack of `n` slots: one [`Block::zero_cache`] call for
+/// each slot, so each slot has its own buffers. The block is that of the
+/// first application of `layer`. The tensors of an untied block hold the copy
+/// of every application, and this view holds one copy.
+pub(crate) fn zero_caches_for<M: Block>(
+    layer: &Layer<M>,
+    n: usize,
+    batch: usize,
+    device: &Device,
+) -> M::Caches {
+    let layer = layer.application(0);
+    let slots = (0..n).map(|_| Some(layer.block.zero_cache(batch, device))).collect();
+    M::Caches::from_slots(slots)
 }
 
 /// The [`Applications`] of a stack of `n_real_layers` under this optional

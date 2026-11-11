@@ -295,51 +295,34 @@ where
         M::Caches: CacheTensors,
     {
         let [batch, _d] = x.dims();
-        let caches = caches.unwrap_or_else(|| self.zero_caches_2d(0, batch, &x.device()));
+        let caches = caches.unwrap_or_else(|| self.zero_caches(batch, &x.device()));
         assert_eq!(caches.stages.len(), self.stages.len(), "one cache per stage");
         let mut routing = Vec::with_capacity(self.stages.len());
         let (y, caches) = self.step_from(0, x, caches, mode, &mut routing);
         (y, caches, routing)
     }
 
-    /// The zero caches of the stages from `s` inward (and of the main
-    /// stack), sized for `step`.
-    pub fn zero_caches_2d(&self, s: usize, batch: usize, device: &Device) -> HNetCaches<E, M> {
-        let stages = self.stages[s..]
-            .iter()
-            .map(|stage| {
-                let d = stage.width();
-                let x_bd = Tensor::<2>::zeros([batch, d], device);
-                HNetStageCache {
-                    encoder: stage.encoder.zero_caches_2d(&x_bd),
-                    router: RouterCache::zeros(batch, d, device),
-                    smooth_bd: x_bd.clone(),
-                    decoder: stage.decoder.zero_caches_2d(&x_bd),
-                }
-            })
-            .collect();
-        let x_bd = Tensor::<2>::zeros([batch, self.main.width()], device);
-        HNetCaches { stages, main: self.main.layers.zero_caches_2d(&x_bd) }
+    /// The zero caches of the whole H-Net, for `batch` rows on `device`. The
+    /// same caches serve `forward` and `step`.
+    pub fn zero_caches(&self, batch: usize, device: &Device) -> HNetCaches<E, M> {
+        self.zero_caches_from(0, batch, device)
     }
 
-    /// The zero caches of the stages from `s` inward (and of the main
-    /// stack), sized for a full-sequence pass.
-    pub fn zero_caches_3d(&self, s: usize, batch: usize, device: &Device) -> HNetCaches<E, M> {
+    /// The zero caches of the stages from `s` inward, and of the main stack.
+    fn zero_caches_from(&self, s: usize, batch: usize, device: &Device) -> HNetCaches<E, M> {
         let stages = self.stages[s..]
             .iter()
             .map(|stage| {
                 let d = stage.width();
-                let x_b1d = Tensor::<3>::zeros([batch, 1, d], device);
                 HNetStageCache {
-                    encoder: stage.encoder.zero_caches_3d(&x_b1d),
+                    encoder: stage.encoder.zero_caches(batch, device),
                     router: RouterCache::zeros(batch, d, device),
                     smooth_bd: Tensor::zeros([batch, d], device),
-                    decoder: stage.decoder.zero_caches_3d(&x_b1d),
+                    decoder: stage.decoder.zero_caches(batch, device),
                 }
             })
             .collect();
-        let x_b1d = Tensor::<3>::zeros([batch, 1, self.main.width()], device);
-        HNetCaches { stages, main: self.main.layers.zero_caches_3d(&x_b1d) }
+        HNetCaches { stages, main: self.main.layers.zero_caches(batch, device) }
     }
 
     /// [`Self::forward`] from stage `s` inward. `caches` holds the stages
@@ -393,7 +376,7 @@ where
         let plan = chunk::plan(b_bs.clone(), self.chunk_multiple);
         let (z_all_bkd, rest) = if plan.len == 0 {
             // No position starts a chunk, so the inner H-Net does not run.
-            let rest = rest.unwrap_or_else(|| self.zero_caches_3d(s + 1, batch, &device));
+            let rest = rest.unwrap_or_else(|| self.zero_caches_from(s + 1, batch, &device));
             routing.extend((s + 1..self.stages.len()).map(|_| Routing::absent(batch, &device)));
             (carry_bd.unsqueeze_dim(1), rest)
         } else {

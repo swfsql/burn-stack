@@ -20,7 +20,8 @@ use burn::prelude::*;
 pub mod activation;
 /// Bidirectional layer stacks (straight + reversed passes, merged per pair).
 pub mod bidi;
-/// The per-network cache collection trait ([`CacheStack`]).
+/// The cache traits ([`CacheStack`], [`CacheTensors`]) and the backend hop
+/// that follows from the traversal.
 pub mod cache;
 /// A Pre-LN norm around one block, with an optional feed-forward part
 /// ([`Layer`]).
@@ -66,7 +67,9 @@ pub use norm::rms_norm_gated::{RmsNormGated, RmsNormGatedConfig};
 pub use norm::rms_score::{normed_score, rms_denom, score_scale};
 
 pub use bidi::{BidiLayerPair, BidiLayers, BidiLayersBuilder, OutputMerge, OutputMergeConfig};
-pub use cache::{CacheStack, CacheTensors, TensorZip, lift};
+pub use cache::{
+    CacheStack, CacheTensors, TensorZip, cache_device, cache_from_inner, cache_to_inner, lift,
+};
 pub use hnet::{
     HNet, HNetCaches, HNetShape, HNetStageShape, HNetVocabNetwork, HNetVocabShape, Routing,
     StepMode,
@@ -95,8 +98,10 @@ pub use network::{
 /// stack to the inner backend for its untracked spans. A
 /// `#[derive(Module)]` block satisfies both.
 pub trait Block: Module + burn::module::ModuleDisplay {
-    /// The cache of one block (the state of one layer).
-    type Cache;
+    /// The cache of one block (the state of one layer). It is the
+    /// [`CacheStack::Cache`] of [`Self::Caches`], so it has the same
+    /// [`CacheTensors`] bound.
+    type Cache: CacheTensors;
     /// The per-network cache collection for this family.
     type Caches: CacheStack<Cache = Self::Cache>;
     /// Per-call algorithm/chunking options threaded down to
@@ -158,18 +163,19 @@ pub trait Block: Module + burn::module::ModuleDisplay {
     /// The step: the recurrent call over one token of each row, for decode.
     fn block_step(&self, x: Tensor<2>, cache: Option<Self::Cache>) -> (Tensor<2>, Self::Cache);
 
-    /// Build `n_virtual` zero caches sized for a `[batch, sequence, d_model]` input.
-    fn zero_caches_3d(&self, x: &Tensor<3>, n_virtual: usize) -> Self::Caches;
-    /// Build `n_virtual` zero caches sized for a `[batch, d_model]` input.
-    fn zero_caches_2d(&self, x: &Tensor<2>, n_virtual: usize) -> Self::Caches;
+    /// The zero cache of one layer, for `batch` rows on `device`. The same
+    /// cache serves `forward` and `step`. A container calls it once for each
+    /// slot, so each slot has its own buffers (a captured step writes each
+    /// slot in place).
+    fn zero_cache(&self, batch: usize, device: &Device) -> Self::Cache;
 
     /// The parameters that this block stores **once per application** of its
     /// real layer (not once), each with the axis of its copies. Empty when its
     /// config unties nothing. The [`BlockConfig`] decides which they are and
     /// tiles them. The containers run the block only through
-    /// [`Layer::application`], which narrows each one to the copy of the
-    /// running application (and also sizes the zero caches from that view).
-    /// See [`crate::utils::untied`].
+    /// [`Layer::application`]. It narrows each one to the copy of the running
+    /// application, and the containers also size the zero cache from that
+    /// view. See [`crate::utils::untied`].
     fn untied_params(&self) -> Vec<crate::utils::UntiedParam>;
 }
 

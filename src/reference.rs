@@ -5,8 +5,9 @@
 //! - The test suite of this crate composes it. So the tests exercise the
 //!   containers without a dependency on any real family.
 //! - It is a worked example of the four things that a family must supply: a
-//!   cache, a [`CacheStack`], [`Block`] and [`BlockConfig`] (plus
-//!   [`CacheTensors`], which only a captured step needs).
+//!   cache with its [`CacheTensors`] traversal, a [`CacheStack`], [`Block`]
+//!   and [`BlockConfig`]. The backend hop of the cache follows from the
+//!   traversal ([`cache_to_inner`](crate::modules::cache_to_inner)).
 //!
 //! It unties its decay and its gate map on request ([`RefUntied`]), so the
 //! tests exercise the untied path of the containers in the same way.
@@ -29,7 +30,7 @@
 //! The `test-helpers` feature enables it (the tests of this crate also have
 //! it).
 
-use crate::modules::{Block, BlockConfig, CacheStack, CacheTensors, Silu, TensorZip, lift};
+use crate::modules::{Block, BlockConfig, CacheStack, CacheTensors, Silu, TensorZip};
 use crate::utils::untied::{self, UntiedParam};
 use burn::config::Config;
 use burn::module::Param;
@@ -63,18 +64,6 @@ impl CacheStack for RefCaches {
 
     fn from_slots(slots: Vec<Option<RefCache>>) -> Self {
         Self { caches: slots.into_iter().map(Option::unwrap).collect() }
-    }
-
-    fn cache_to_inner(c: RefCache) -> RefCache {
-        RefCache { state_bd: c.state_bd.inner() }
-    }
-
-    fn cache_from_inner(c: RefCache, device: &Device) -> RefCache {
-        RefCache { state_bd: lift(c.state_bd, device) }
-    }
-
-    fn cache_device(c: &RefCache) -> Device {
-        c.state_bd.device()
     }
 }
 
@@ -136,14 +125,6 @@ impl RefBlock {
     fn zero_state(&self, batch: usize, device: &Device) -> Tensor<2> {
         let [d_model] = self.decay_raw.val().dims();
         Tensor::zeros([batch, d_model], device)
-    }
-
-    fn zero_caches(&self, batch: usize, n_virtual: usize, device: &Device) -> RefCaches {
-        RefCaches {
-            caches: (0..n_virtual)
-                .map(|_| RefCache { state_bd: self.zero_state(batch, device) })
-                .collect(),
-        }
     }
 }
 
@@ -225,14 +206,8 @@ impl Block for RefBlock {
         (y_bd, RefCache { state_bd })
     }
 
-    fn zero_caches_3d(&self, x_bsd: &Tensor<3>, n_virtual: usize) -> RefCaches {
-        let [batch, _s, _d] = x_bsd.dims();
-        self.zero_caches(batch, n_virtual, &x_bsd.device())
-    }
-
-    fn zero_caches_2d(&self, x_bd: &Tensor<2>, n_virtual: usize) -> RefCaches {
-        let [batch, _d] = x_bd.dims();
-        self.zero_caches(batch, n_virtual, &x_bd.device())
+    fn zero_cache(&self, batch: usize, device: &Device) -> RefCache {
+        RefCache { state_bd: self.zero_state(batch, device) }
     }
 
     fn reset_align(&self, _options: &()) -> Option<usize> {
