@@ -38,6 +38,8 @@ calls it.
 - The header of `utils::backend_macros` and the doc of its `mod` line describe only
   `impl_backend_ext_for_burn_backends!`.
 - No doc of burn-stack names the deleted macro or the marker trait.
+- The crate goes to the next minor version in the commit that deletes the macro, because
+  the macro is public. The commit message states the break.
 
 **Acceptance criteria:**
 
@@ -48,6 +50,7 @@ calls it.
       outside `.scratch/` finds nothing.
 - [ ] The checks and tests of this repo pass, as `CLAUDE.md` gives them, with no
       warnings.
+- [ ] `Cargo.toml` has the next minor version.
 
 **Out of scope:**
 
