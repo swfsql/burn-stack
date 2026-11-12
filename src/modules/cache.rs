@@ -8,8 +8,10 @@
 //! one hand-written list of the fields of a cache. These operations follow
 //! from it:
 //!
-//! - the backend hop of `grad_horizon` and `detach`: [`cache_to_inner`],
-//!   [`cache_from_inner`] and [`cache_device`],
+//! - the backend hop of `grad_horizon`: [`cache_to_inner`] and
+//!   [`cache_from_inner`],
+//! - the detach of a cache, the round trip through that hop onto the device
+//!   of the cache: [`cache_detach`] and [`cache_device`],
 //! - the cache write-back of a
 //!   [`CapturedStep`](crate::utils::capture::CapturedStep),
 //! - the per-row select, gather and merge of [`HNet::step`].
@@ -51,32 +53,42 @@ pub trait CacheStack: Sized {
     /// Inverse of [`Self::into_slots`].
     fn from_slots(slots: Vec<Option<Self::Cache>>) -> Self;
 
-    /// Round-trip **every** slot through the inner backend. The cache keeps
-    /// its values and loses the graph that produced it. So a caller can carry
-    /// the state into the next window without the activations of the previous
-    /// window (truncated BPTT).
-    ///
-    /// `detach` alone would cut the gradients but free nothing, because Burn
-    /// still registers an untracked op (see
-    /// [`detach_params`](crate::utils::detach_params)). The backend hop drops
-    /// the graph.
+    /// Detach **every** slot ([`cache_detach`]). The cache keeps its values
+    /// and loses the graph that produced it. So a caller can carry the state
+    /// into the next window without the activations of the previous window.
     ///
     /// Each slot goes back onto its own device ([`cache_device`]), with the
     /// checkpointing strategy of that device. On a device without autodiff,
     /// this does nothing.
     fn detach(self) -> Self {
-        let slots = self
-            .into_slots()
-            .into_iter()
-            .map(|slot| {
-                slot.map(|cache| {
-                    let device = cache_device(&cache);
-                    cache_from_inner(cache_to_inner(cache), &device)
-                })
-            })
-            .collect();
+        let slots = self.into_slots().into_iter().map(|slot| slot.map(cache_detach)).collect();
         Self::from_slots(slots)
     }
+}
+
+/// `cache` cut off the autodiff graph: the round trip [`cache_to_inner`],
+/// then [`cache_from_inner`] onto the device of `cache` ([`cache_device`]).
+/// The cache keeps its values and loses the graph that produced it. Each
+/// tensor gets the checkpointing strategy of that device. On a device without
+/// autodiff, the cache stays unchanged.
+///
+/// `Tensor::detach` alone would cut the gradients but free nothing, because
+/// Burn still registers an untracked op (see
+/// [`detach_params`](crate::utils::detach_params)). The backend hop drops the
+/// graph.
+///
+/// The detach follows from [`CacheTensors::zip_tensors`]. So a cache type
+/// cannot override it, and its fields stay in one list.
+///
+/// The rule: all the tensors of `cache` are on one device. Each tensor goes
+/// onto the device of the first tensor.
+///
+/// # Panics
+///
+/// If `cache` holds no tensor (see [`cache_device`]).
+pub fn cache_detach<C: CacheTensors>(cache: C) -> C {
+    let device = cache_device(&cache);
+    cache_from_inner(cache_to_inner(cache), &device)
 }
 
 /// `cache` moved **to** the inner (non-autodiff) backend: each tensor goes
@@ -122,10 +134,11 @@ pub fn cache_from_inner<C: CacheTensors>(cache: C, device: &Device) -> C {
 }
 
 /// The device of `cache`: the device of its first tensor, with its autodiff
-/// context. [`CacheStack::detach`] lifts each slot back onto it.
+/// context. [`cache_detach`] lifts the cache back onto it.
 ///
 /// The rule: a per-layer cache ([`CacheStack::Cache`]) holds at least one
-/// tensor.
+/// tensor. Each other cache that goes through [`cache_detach`] also holds at
+/// least one tensor.
 ///
 /// # Panics
 ///
@@ -158,8 +171,8 @@ pub trait TensorZip {
 /// A cache whose tensors can be visited pairwise: one hand-written traversal
 /// per cache type. This traversal is the one list of the fields of a cache.
 /// The backend hop ([`cache_to_inner`], [`cache_from_inner`],
-/// [`cache_device`]) and the two operations that a captured step needs follow
-/// from it.
+/// [`cache_device`]), the detach ([`cache_detach`]) and the two operations
+/// that a captured step needs follow from it.
 ///
 /// The traversal is hand-written, not derived from `Module`, because
 /// [`Module::map`] is a **no-op on plain `Tensor` fields** (Burn implements

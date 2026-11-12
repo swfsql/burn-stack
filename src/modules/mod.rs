@@ -68,7 +68,8 @@ pub use norm::rms_score::{normed_score, rms_denom, score_scale};
 
 pub use bidi::{BidiLayerPair, BidiLayers, BidiLayersBuilder, OutputMerge, OutputMergeConfig};
 pub use cache::{
-    CacheStack, CacheTensors, TensorZip, cache_device, cache_from_inner, cache_to_inner, lift,
+    CacheStack, CacheTensors, TensorZip, cache_detach, cache_device, cache_from_inner, cache_to_inner,
+    lift,
 };
 pub use hnet::{
     HNet, HNetCaches, HNetShape, HNetStageShape, HNetVocabNetwork, HNetVocabShape, Routing,

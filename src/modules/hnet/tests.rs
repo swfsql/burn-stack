@@ -311,6 +311,48 @@ fn forward_and_step_have_the_same_gradients() {
     assert!(max_rel_diff(x.grad(&g_fwd).unwrap(), x.grad(&g_step).unwrap()) < dtype_tol(1e-3));
 }
 
+/// `HNetCaches::detach` keeps the values of each tensor of the cache and cuts
+/// its graph. Each tensor goes back onto the device of the cache. A plain
+/// tensor stays plain. An autodiff tensor gets the checkpointing strategy of
+/// the device.
+#[test]
+fn detach_keeps_the_values_and_the_device_of_the_cache() {
+    struct Check<'a> {
+        device: &'a Device,
+        visited: usize,
+        tracked_before: usize,
+    }
+    impl TensorZip for Check<'_> {
+        fn zip<const D: usize>(&mut self, detached: Tensor<D>, original: Tensor<D>) -> Tensor<D> {
+            let i = self.visited;
+            self.tracked_before += usize::from(original.is_tracked());
+            assert_eq!(detached.to_data(), original.to_data(), "tensor {i}: the values changed");
+            assert_eq!(detached.is_autodiff(), self.device.is_autodiff(), "tensor {i}: autodiff flag");
+            assert_eq!(
+                detached.gradient_checkpointing_strategy(),
+                self.device.gradient_checkpointing_strategy(),
+                "tensor {i}: checkpointing strategy",
+            );
+            assert!(!detached.is_tracked(), "tensor {i}: the graph stays");
+            self.visited += 1;
+            detached
+        }
+    }
+    for device in [test_device(), test_device().autodiff().gradient_checkpointing()] {
+        let net = net(&[8], 12, &device);
+        let (_, caches, _) = net.forward(randn([2, 5, 8], &device), None, ((), ()), None);
+        let mut check = Check { device: &device, visited: 0, tracked_before: 0 };
+        let _ = caches.clone().detach().zip_tensors(caches, &mut check);
+        // Two layers in each stack, so two block caches each for the encoder,
+        // the decoder and the main stack. The router holds two tensors, and
+        // the stage holds the smoothed chunk.
+        assert_eq!(check.visited, 9, "the traversal visits each tensor of the cache");
+        // On the autodiff device, the forward builds a graph for the detach
+        // to cut.
+        assert_eq!(check.tracked_before > 0, device.is_autodiff(), "the tracked tensors before the detach");
+    }
+}
+
 /// The vocab network: `forward` equals `step` unrolled on the logits.
 #[test]
 fn vocab_network_forward_equals_step_unrolled() {

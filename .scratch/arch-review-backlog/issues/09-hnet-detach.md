@@ -1,6 +1,6 @@
 # 09: The detach of an H-Net cache follows from its traversal
 
-Status: ready-for-agent
+Status: resolved
 
 Blocked by: None
 

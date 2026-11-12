@@ -1,5 +1,8 @@
-//! The caches of an [`HNet`], and the per-row operations that
+//! The caches of an [`HNet`], their detach, and the per-row operations that
 //! its `step` does on the cache of a whole inner H-Net.
+//!
+//! [`HNetCaches::detach`] is [`cache_detach`](crate::modules::cache_detach)
+//! on the whole cache.
 //!
 //! A `step` runs the inner H-Net only on the rows whose token starts a chunk.
 //! So it needs three things that do not depend on the block family:
@@ -11,7 +14,7 @@
 //! All three go through [`CacheTensors`]. They read axis 0 of every cache
 //! tensor as the batch axis, which is a contract of that trait.
 
-use crate::modules::{Block, CacheStack, CacheTensors, TensorZip, lift};
+use crate::modules::{Block, CacheTensors, TensorZip, cache_detach};
 use crate::modules::hnet::routing::RouterCache;
 use burn::prelude::*;
 
@@ -97,33 +100,27 @@ where
     }
 }
 
-impl<E: Block, M: Block> HNetCaches<E, M> {
-    /// The same values, cut off the autodiff graph: every block cache goes
-    /// through [`CacheStack::detach`], and every other tensor through the
-    /// same backend hop. So a training loop can carry the state into the next
+impl<E: Block, M: Block> HNetCaches<E, M>
+where
+    E::Caches: CacheTensors,
+    M::Caches: CacheTensors,
+{
+    /// The same values, cut off the autodiff graph: [`cache_detach`] on the
+    /// whole cache. So a training loop can carry the state into the next
     /// window without the activations of this one.
+    ///
+    /// All the tensors of one H-Net cache are on one device. Each tensor goes
+    /// back onto that device
+    /// ([`cache_device`](crate::modules::cache_device)), with the
+    /// checkpointing strategy of that device. On a device without autodiff,
+    /// this does nothing.
+    ///
+    /// # Panics
+    ///
+    /// If the cache holds no tensor: an H-Net with no stage, whose main stack
+    /// has no layer.
     pub fn detach(self) -> Self {
-        let hop = |t: Tensor<2>| {
-            let device = t.device();
-            lift(t.inner(), &device)
-        };
-        let hop1 = |t: Tensor<1>| {
-            let device = t.device();
-            lift(t.inner(), &device)
-        };
-        Self {
-            stages: self
-                .stages
-                .into_iter()
-                .map(|s| HNetStageCache {
-                    encoder: s.encoder.detach(),
-                    router: RouterCache { last_bd: hop(s.router.last_bd), seen_b: hop1(s.router.seen_b) },
-                    smooth_bd: hop(s.smooth_bd),
-                    decoder: s.decoder.detach(),
-                })
-                .collect(),
-            main: self.main.detach(),
-        }
+        cache_detach(self)
     }
 }
 
