@@ -45,6 +45,15 @@ _Avoid_: mixer, mixer core, SSM core, core block
 One implementation of a block, with its config and its caches.
 _Avoid_: variant, version, generation, mixer
 
+**Family crate**:
+A crate that gives one or more families to burn-stack. burn-mamba is one.
+_Avoid_: sibling, consumer (for a crate that gives families)
+
+**Block contract**:
+A property that every block must have, so that each container applies to it
+unchanged. For example, the forward gives the same outputs as the step unrolled.
+_Avoid_: what a family owes, trait contract
+
 **Layer**:
 A Pre-LN norm around one block, with an optional feed-forward part. The layer
 stack combines its output with its input.
