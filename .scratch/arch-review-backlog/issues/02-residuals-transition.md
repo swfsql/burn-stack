@@ -2,7 +2,7 @@
 
 Status: needs-triage
 
-Blocked by: `../../block-family-choice/issues/02-remove-per-layer-class-latents.md`, `05-container-tests-home.md`
+Blocked by: `../../block-family-choice/issues/02-remove-per-layer-class-latents.md`, `../../container-tests-home/issues/03-batch-a-class-markers.md`, `../../container-tests-home/issues/04-batch-b-layers.md`, `../../container-tests-home/issues/05-batch-c-multi-gate-and-optimizer.md`, `../../container-tests-home/issues/06-batch-d-block-and-the-rest.md`
 
 From the architecture review of 2026-11-03. Line numbers are those of commit
 `12429e1`. Low priority.
