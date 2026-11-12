@@ -17,8 +17,8 @@
 //!
 //! Its cache collection also implements [`CacheStack`](modules::CacheStack),
 //! which is all that the generic loops need: one cache per virtual layer. Its
-//! cache implements [`CacheTensors`](modules::CacheTensors): the one list of
-//! the fields of a cache. The backend hop of
+//! cache implements [`CacheTensors`](modules::CacheTensors), the cache
+//! traversal: the one list of the tensors of a cache. The backend hop of
 //! [`Layers::grad_horizon`](modules::Layers::grad_horizon) follows from that
 //! list.
 //!

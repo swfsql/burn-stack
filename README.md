@@ -27,8 +27,9 @@ It also has the parts that those need:
 
 ## Plugging a block in
 
-Implement two block traits and two cache traits. `CacheTensors` is the one
-list of the fields of a cache. The backend hop of a cache follows from it.
+Implement two block traits and two cache traits. `CacheTensors` is the cache
+traversal: the one list of the tensors of a cache. The backend hop of a cache
+follows from it.
 
 ```rust
 impl Block for MyBlock {

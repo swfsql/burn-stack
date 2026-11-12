@@ -88,6 +88,12 @@ network maps token ids. A latent network maps vectors.
 Everything that a block keeps for one row from one call to the next.
 _Avoid_: KV cache, memory
 
+**Cache traversal**:
+The pairwise visit of the tensors of two caches of the same structure, for one
+block or for a layer stack. It is the only list of the tensors of its cache
+type.
+_Avoid_: field list, visitor
+
 ### Calls
 
 **Forward**:

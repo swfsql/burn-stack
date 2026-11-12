@@ -1,12 +1,12 @@
-//! The per-network cache collection trait, the pairwise tensor traversal of a
-//! cache, and the backend hop that follows from that traversal.
+//! The per-network cache collection trait, the cache traversal, and the
+//! backend hop that follows from that traversal.
 //!
 //! A family supplies its own `Caches` type. The generic containers need only
 //! indexed access to one cache slot per virtual layer ([`CacheStack`]). Each
-//! slot implements [`CacheTensors`]: every tensor of the cache, visited
-//! pairwise with the matching tensor of another cache. This traversal is the
-//! one hand-written list of the fields of a cache. These operations follow
-//! from it:
+//! slot implements [`CacheTensors`], the cache traversal: every tensor of the
+//! cache, visited pairwise with the matching tensor of another cache. This
+//! traversal is the one hand-written list of the tensors of a cache. These
+//! operations follow from it:
 //!
 //! - the backend hop of `grad_horizon`: [`cache_to_inner`] and
 //!   [`cache_from_inner`],
@@ -160,17 +160,17 @@ pub fn cache_device<C: CacheTensors>(cache: &C) -> Device {
 }
 
 /// A rank-generic binary map over the matching tensors of two caches: the
-/// visitor that [`CacheTensors::zip_tensors`] drives. A map is the zip of a
-/// cache with itself.
+/// per-tensor function that [`CacheTensors::zip_tensors`] drives. A map is the
+/// zip of a cache with itself.
 pub trait TensorZip {
     /// Combine `a` (from the receiving cache) with `b` (the matching tensor of
     /// the other cache). The result takes the place of `a`.
     fn zip<const D: usize>(&mut self, a: Tensor<D>, b: Tensor<D>) -> Tensor<D>;
 }
 
-/// A cache whose tensors can be visited pairwise: one hand-written traversal
-/// per cache type. This traversal is the one list of the fields of a cache.
-/// The backend hop ([`cache_to_inner`], [`cache_from_inner`],
+/// A cache whose tensors can be visited pairwise: one hand-written cache
+/// traversal per cache type. This traversal is the one list of the tensors of
+/// a cache. The backend hop ([`cache_to_inner`], [`cache_from_inner`],
 /// [`cache_device`]), the detach ([`cache_detach`]) and the two operations
 /// that a captured step needs follow from it.
 ///
