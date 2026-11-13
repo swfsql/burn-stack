@@ -54,9 +54,9 @@ Feature flags (`Cargo.toml` has the full list):
   `impl_backend_ext_for_burn_backends!` emits. `check-nan` and `check-inf`
   enable the `DENY_NAN` and `DENY_INF` guards. `dev-f16`, `dev-simd` and
   `dev-autotune` are for the examples and the tests.
-- `test-helpers` exposes `utils::test_helpers` and `reference` to the
-  dev-dependencies of a consumer. `examples-common` exposes `examples`. A
-  consumer enables it in its dev-dependencies only.
+- `test-helpers` exposes `utils::test_helpers`, `reference` and
+  `block_contract` to the dev-dependencies of a family crate. `examples-common`
+  exposes `examples`. A consumer enables it in its dev-dependencies only.
 - A consumer forwards every feature (ADR-0002).
 
 Test-device rules:
@@ -137,7 +137,8 @@ holds. The tests of a module are in a sibling `tests.rs`.
 
 ```text
 src/
-├─ reference.rs        RefBlock, the test block (ADR-0005). Its tests.rs: the container tests
+├─ reference.rs        RefBlock, the test block (ADR-0005). Its tests/: the container tests, one file for each mechanism
+├─ block_contract.rs   the block contracts: a public test function for each (feature `test-helpers`)
 ├─ modules/            the containers + shared NN modules. mod.rs: Block, BlockConfig
 │  ├─ layers.rs        Layers<M>: the layer stack (gradient horizon, packed rows)
 │  ├─ shape.rs         NetworkShape, …: the block-free half of a config (ADR-0007)

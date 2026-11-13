@@ -17,3 +17,5 @@ the container, not at the block.
 - When the interface of the containers grows, `RefBlock` grows with it. For
   example, it unties its decay and its gate map on request.
 - The `test-helpers` feature exposes `RefBlock` to the tests of a consumer.
+- A family crate tests its own blocks with the block contracts, through
+  `test-helpers`. It does not test the containers again.

@@ -6,9 +6,10 @@ change.
 
 | Seam | Tests | Catches | Misses |
 |---|---|---|---|
-| Containers with `RefBlock` (ADR-0005) | `src/reference/tests.rs` | A container that breaks a contract: forward/step parity, windows through the cache, virtual layers, gradient horizon, packed rows | A failure that only a real family shows |
+| Containers with `RefBlock` (ADR-0005) | `src/reference/tests/`, one file for each mechanism | A container that breaks a contract: forward/step parity, windows through the cache, virtual layers, gradient horizon, packed rows | A failure that only a real family shows |
+| Block contracts | `src/block_contract/tests.rs`: each contract on `RefBlock`, and on a private block that breaks it. Each family crate runs each contract on each block setting that it ships. | A block that breaks a contract. A contract function that cannot fail. | A need of a container that no contract states. A coverage compare can show code that only a deleted family test ran. |
 | Containers with real blocks | `../burn-mamba/src/family/tests/` | A change that breaks a real family, for example a change to the interface of a container | The cause: a failure can come from the block or from the container |
-| The Muon plan | `src/reference/tests.rs`, `src/modules/hnet/tests.rs`, and with real blocks `../burn-mamba/src/family/tests/optim.rs`. `src/optim/` has no tests of its own. | An error in the allowlist or in the update of a sub-projection | Whether the plan trains well |
+| The Muon plan | `src/reference/tests/muon.rs`, the Muon contract in `src/block_contract/tests.rs`, `src/modules/hnet/tests.rs`, and with real blocks `../burn-mamba/src/family/tests/optim.rs`. `src/optim/` has no tests of its own. | An error in the allowlist or in the update of a sub-projection | Whether the plan trains well |
 | One module alone | The sibling `tests.rs` of the module, for example in `src/modules/hnet/`, `src/modules/loss/`, `src/modules/norm/` or `src/utils/scheduler/` | An error inside that module | An error in how the containers use it |
 
 A burn-mamba test builds against the pin of burn-stack. To run it against a

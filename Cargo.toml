@@ -31,8 +31,9 @@ examples-common = [
     "dep:rand_chacha",
     "dep:temp-dir",
 ]
-# Expose `utils::test_helpers` (and its `check_grads_match_two_paths!` macro) to
-# downstream dev-dependencies. Test-only surface; off by default.
+# Expose `utils::test_helpers` (and its `check_grads_match_two_paths!` macro),
+# `reference` and `block_contract` to the dev-dependencies of a family crate.
+# Test-only surface. Off by default.
 test-helpers = []
 # Backend selection. With the Dispatch architecture each feature simply enables
 # the corresponding burn backend; multiple may be compiled in simultaneously.

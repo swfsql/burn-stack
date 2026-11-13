@@ -80,6 +80,10 @@ a dependency on a real family.
 - `prime()` is `step()` without a user token. It emits the class markers that
   wait for the next token.
 
+The `block_contract` module (feature `test-helpers`) has one test function for
+each block contract. Call each one on each block setting that your crate
+ships. Then your tests need not test the containers.
+
 ## Backends
 
 The crate uses the Dispatch backend of Burn, so the library types are not

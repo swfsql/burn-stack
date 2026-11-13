@@ -1,6 +1,6 @@
 # 02: The block contract suite
 
-Status: ready-for-agent
+Status: resolved
 
 Blocked by: None (can start immediately).
 
@@ -54,11 +54,50 @@ of `reference.rs` names the new directory.
 
 **Version:** the module adds public items only under `test-helpers`, so no version bump.
 
-- [ ] The `RefBlock` tests are in one file for each mechanism, and they all pass.
-- [ ] Each of the seven contracts is a public function with the inputs above.
-- [ ] Each contract passes on `RefBlock`.
-- [ ] Each contract has a test that expects its panic on the private test block.
-- [ ] A contract that does not apply to a block returns early, and a test shows it.
-- [ ] `cargo check` and `cargo doc --all --no-deps` give no warnings. `scripts/check.sh`
+- [x] The `RefBlock` tests are in one file for each mechanism, and they all pass.
+- [x] Each of the seven contracts is a public function with the inputs above.
+- [x] Each contract passes on `RefBlock`.
+- [x] Each contract has a test that expects its panic on the private test block.
+- [x] A contract that does not apply to a block returns early, and a test shows it.
+- [x] `cargo check` and `cargo doc --all --no-deps` give no warnings. `scripts/check.sh`
       passes.
-- [ ] ADR-0005, the seam row and the File Map name the module.
+- [x] ADR-0005, the seam row and the File Map name the module.
+
+## Comments
+
+### The implementation
+
+- The `RefBlock` tests are in `src/reference/tests/`: `block`, `layers`,
+  `grad_horizon`, `cache`, `multi_gate`, `bidi`, `class`, `untied`, `packed` and
+  `muon`. The test bodies did not change. A compare of their sorted lines shows
+  only the deleted banners, the header list and the `use`/`mod` lines.
+- `src/block_contract.rs` holds the seven contracts. Each one runs its checks
+  through `run_contract`, which adds ``block contract `<name>`:`` to each panic.
+  So a panic inside the block also names the contract.
+- The Muon contract builds a `Layers` of 2 virtual layers over 1 real layer,
+  because a spec matches only under a block container. It reads the parameters
+  through `optim::report::float_params`, the visit of `MuonPlan::describe`.
+- `src/block_contract/tests.rs`: each contract on three `RefBlock` settings with
+  a tolerance of `1e-6`, and the private `BrokenBlock`. A `Breach` selects the
+  contract that it breaks. Each negative test expects the text of the check
+  that its breach breaks. A test shows that the broken block with no breach
+  keeps every contract.
+- `scripts/check.sh`: 122 lib tests pass (103 before). The coverage compare
+  with `ba1fa3f` lists no lost item.
+
+### The review (`tmp/review-cth-02-*.md`)
+
+- Fixed: the panics that did not name the contract, the record check of the
+  step, the row select in the traversal contract, the advice on chunks in the
+  module header, the name `ParamRow` (the glossary **Row** is a sequence), and
+  the doc findings.
+- Kept: the two tests of `src/reference/tests/block.rs` repeat contracts. The
+  batch tickets delete them. The README names the module for a new family
+  crate.
+- Limits that the contracts keep, noted for burn-mamba ticket 02:
+  - A window has 7 tokens. A family gives a chunked block a short chunk.
+  - No contract starts from a cache. So the double-SSD pathway of Mamba-3,
+    which its cache selects, stays out of reach.
+  - The traversal contract reads outputs. A field that one more step does not
+    change stays unseen.
+  - The record contract adds noise only to float parameters.

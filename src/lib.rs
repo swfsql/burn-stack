@@ -45,8 +45,9 @@
 //!
 //! `forward()` from any cache equals `step()` unrolled from that same cache,
 //! on the outputs, on the final cache and on the gradients. The containers
-//! assume it. A block family must keep its half of that contract. For
-//! `RefBlock`, `reference/tests.rs` compares the outputs and the final cache.
+//! assume it. A block family must keep its half of that contract.
+//! `block_contract::forward_equals_step_unrolled` (feature `test-helpers`)
+//! compares the outputs and the final cache of a block.
 //!
 //! ## Where the pieces live
 //!
@@ -64,6 +65,8 @@
 #![allow(clippy::let_and_return)]
 #![allow(clippy::module_inception)]
 
+#[cfg(any(test, feature = "test-helpers"))]
+pub mod block_contract;
 #[cfg(feature = "examples-common")]
 pub mod examples;
 pub mod modules;

@@ -7,17 +7,24 @@ use core::fmt::Write as _;
 
 use super::MuonPlan;
 
-/// One visited parameter.
-struct Row {
-    path: String,
-    dims: Vec<usize>,
-    id: ParamId,
+/// One float parameter of a module: its path, its shape and its id.
+pub(crate) struct FloatParam {
+    pub(crate) path: String,
+    pub(crate) dims: Vec<usize>,
+    pub(crate) id: ParamId,
+}
+
+/// Each float parameter of `module`, in the order of the visit.
+pub(crate) fn float_params(module: &impl Module) -> Vec<FloatParam> {
+    let mut collect = Collect::default();
+    module.visit(&mut collect);
+    collect.params
 }
 
 #[derive(Default)]
 struct Collect {
     path: Vec<String>,
-    rows: Vec<Row>,
+    params: Vec<FloatParam>,
 }
 
 impl ModuleVisitor for Collect {
@@ -28,7 +35,7 @@ impl ModuleVisitor for Collect {
         self.path.pop();
     }
     fn visit_float<const D: usize>(&mut self, param: &Param<Tensor<D>>) {
-        self.rows.push(Row {
+        self.params.push(FloatParam {
             path: self.path.join("."),
             dims: param.val().shape().dims::<D>().to_vec(),
             id: param.id,
@@ -46,13 +53,10 @@ impl MuonPlan {
     /// Purely diagnostic: print it once to confirm that the plan matches the
     /// model that you built.
     pub fn describe(&self, module: &impl Module) -> String {
-        let mut collect = Collect::default();
-        module.visit(&mut collect);
-
         let mut out = String::new();
         let (mut total, mut on_muon) = (0usize, 0usize);
 
-        for row in &collect.rows {
+        for row in &float_params(module) {
             let count: usize = row.dims.iter().product();
             total += count;
 
