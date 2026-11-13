@@ -41,7 +41,7 @@ cargo check --all-targets                # + tests
 cargo check --features examples-common   # + the example scaffolding
 cargo test --lib -- --test-threads=1     # run the tests (flex = the CPU default)
 cargo doc --no-deps                      # build the docs
-./scripts/check.sh                       # the lines above + host paths
+./scripts/check.sh                       # the lines above + host paths + coverage
 ```
 
 Feature flags (`Cargo.toml` has the full list):
@@ -170,6 +170,7 @@ src/
    └─ tiny_stories/    dataset (packing, buckets), lm (the LM loops), sample
 scripts/setup-box.sh   creates the box directories of each `docs/box.tsv`
 scripts/check.sh       the check of this repo, also run by CI
+scripts/coverage.py    the coverage of `src/` by the lib tests, and its compare with a base (a gate)
 ```
 
 ## Custom Commands
@@ -237,4 +238,5 @@ Single-context: one `GLOSSARY.md` + `docs/adr/` at the repo root. See
 
 ### Test seams
 
-The seams to propose for `/to-spec` and `/tdd`. See `docs/agents/testing.md`.
+The seams to propose for `/to-spec` and `/tdd`, and the coverage gate of a
+ticket. See `docs/agents/testing.md`.

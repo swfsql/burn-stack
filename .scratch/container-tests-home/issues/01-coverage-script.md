@@ -1,6 +1,6 @@
 # 01: The coverage script
 
-Status: ready-for-agent
+Status: resolved
 
 Blocked by: the box install of `cargo-llvm-cov` and of the nightly `llvm-tools-preview`
 (the user does it).
@@ -30,12 +30,45 @@ itself, and it can show what coverage a change lost.
 **Docs:** add the coverage compare to `docs/agents/testing.md` as a gate, beside the
 other gates. Update the `scripts/` line of the File Map of `CLAUDE.md`.
 
-- [ ] The script reports the line, branch and condition coverage of the `src/` of
+- [x] The script reports the line, branch and condition coverage of the `src/` of
       burn-stack.
-- [ ] A compare against `HEAD` reports no lost item.
-- [ ] In a throwaway copy of the tree, delete one test. The compare then lists the items
+- [x] A compare against `HEAD` reports no lost item.
+- [x] In a throwaway copy of the tree, delete one test. The compare then lists the items
       that only that test covered.
-- [ ] An edit above a covered line in the same file does not show as a loss.
-- [ ] `scripts/check.sh` runs the script by default, and skips it with a note when the
+- [x] An edit above a covered line in the same file does not show as a loss.
+- [x] `scripts/check.sh` runs the script by default, and skips it with a note when the
       tools are missing.
-- [ ] The test-seam doc and the File Map name the script.
+- [x] The test-seam doc and the File Map name the script.
+
+## Comments
+
+### The implementation
+
+- The script is `scripts/coverage.py`. Its header defines the items and the compare.
+- The user chose one run with two views. The run gives `-Zcoverage-options=condition`.
+  A branch is one outcome of one condition. The tests cover a condition when they cover
+  its two outcomes. The script does not give `cargo llvm-cov --branch`, because its
+  `branch` option replaces `condition`.
+- On burn-stack: lines 3376 of 4106, branches 241 of 414, conditions 85 of 207. These
+  totals differ from the summary of `llvm-cov`, as the header of the script explains.
+- The box did not have the nightly `llvm-tools-preview`. `cargo llvm-cov` installed it
+  with no question, because the run had no TTY. `--check-tools` reads the components of
+  `rustup`, so a run of the script never installs a tool.
+- The acceptance checks:
+  - `--base HEAD`: no lost item and no changed item.
+  - A throwaway worktree of `HEAD`, with the test
+    `scale_training_steps_moves_every_training_step_of_a_chain` deleted, and one new
+    line above covered code in `src/utils/scheduler/mod.rs` and `src/utils/padding.rs`.
+    The compare with a saved report of `HEAD` lists only the covered items of
+    `Lr::scale_training_steps`: 13 lines and 2 branches, at their moved lines.
+  - The same deletion in a tree with an older run gives the same items. With
+    `--no-report`, `cargo llvm-cov` adds the counts of the older runs, so the script
+    deletes them before each run.
+
+### For burn-mamba ticket 01
+
+- The script counts only the files in the `src/` of the crate that it runs. A report of
+  the `src/` of burn-stack from a run of the burn-mamba tests needs a change of
+  `counted_path`.
+- A commit base with the `[patch]` path of burn-mamba does not build in
+  `target/coverage-base/`. Use a saved report as the base there.

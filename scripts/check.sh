@@ -3,6 +3,16 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Report the coverage of `src/` by the lib tests. A box without the coverage
+# tools skips it.
+check_coverage() {
+    if ! python3 scripts/coverage.py --check-tools; then
+        echo "note: this box has no coverage tools, so the coverage did not run." >&2
+        return 0
+    fi
+    python3 scripts/coverage.py .
+}
+
 if [ -z "${CI:-}" ]; then
     # This box gives the two roots, so this file names no path of a box.
     repo_root="/$(pwd | cut -d/ -f2)"
@@ -13,7 +23,10 @@ if [ -z "${CI:-}" ]; then
     fi
 fi
 
+python3 scripts/coverage.py --selftest
+
 cargo check --all-targets
 cargo check --features examples-common
 cargo test --lib -- --test-threads=1
+check_coverage
 cargo doc --no-deps
