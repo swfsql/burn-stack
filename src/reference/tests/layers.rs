@@ -13,16 +13,27 @@ fn layers_forward_equals_step_unrolled() {
 
     let (y_fwd, _) = layers.forward(x.clone(), None, (), None, None);
 
-    let mut caches = None;
-    let mut ys = Vec::new();
-    for t in 0..5 {
-        let x_t = x.clone().narrow(1, t, 1).squeeze_dim::<2>(1);
-        let (y_t, c) = layers.step(x_t, caches, None);
-        caches = Some(c);
-        ys.push(y_t.unsqueeze_dim::<3>(1));
-    }
+    assert!(max_abs_diff(y_fwd, step_unrolled(&layers, x)) < dtype_tol(TOL));
+}
 
-    assert!(max_abs_diff(y_fwd, Tensor::cat(ys, 1)) < dtype_tol(TOL));
+/// With the plain additive skip, the stack can ignore the residual of its
+/// first and of its last virtual layer. The forward still equals the step
+/// unrolled, over virtual layers.
+#[test]
+fn layers_standard_ignore_residuals_parity() {
+    let device = test_device();
+    let layers = LayersBuilder {
+        n_virtual_layers: Some((5, Schedule::Stretched)),
+        ignore_first_residual: true,
+        ignore_last_residual: true,
+        ..layers_builder(2)
+    }
+    .init(&device);
+    let x = randn3(2, 4, &device);
+
+    let (y_fwd, _) = layers.forward(x.clone(), None, (), None, None);
+
+    assert!(max_abs_diff(y_fwd, step_unrolled(&layers, x)) < dtype_tol(TOL));
 }
 
 /// An `mlp` on the layer adds a second, *inner* residual. The layer returns its

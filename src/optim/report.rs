@@ -21,6 +21,13 @@ pub(crate) fn float_params(module: &impl Module) -> Vec<FloatParam> {
     collect.params
 }
 
+/// The parameters in `params` that the parameter group of `spec` selects.
+#[cfg(any(test, feature = "test-helpers"))]
+pub(crate) fn selected<'a>(spec: &super::ProjSpec, params: &'a [FloatParam]) -> Vec<&'a FloatParam> {
+    let group = spec.param_group();
+    params.iter().filter(|param| group.matches(&param.id, Some(param.path.as_str()))).collect()
+}
+
 #[derive(Default)]
 struct Collect {
     path: Vec<String>,

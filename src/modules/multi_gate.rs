@@ -416,3 +416,6 @@ impl ResidualsConfig {
         }
     }
 }
+
+#[cfg(all(test, feature = "_dev-test"))]
+mod tests;

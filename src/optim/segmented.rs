@@ -14,8 +14,7 @@
 //! A slice along columns is exact for every optimizer used here: AdamW and SGD
 //! are elementwise, and the Newton–Schulz of Muon is per-matrix. So a
 //! [`Segmented`] with all its sub-projections on AdamW is bit-comparable to
-//! plain AdamW on the whole tensor (the test suite of a block family asserts
-//! this).
+//! plain AdamW on the whole tensor (the tests of this module assert this).
 
 use burn::optim::{
     AdamW, AdamWState, LearningRate, Muon, MuonState, Optimizer, RecordState, Sgd, StateSink,
@@ -233,3 +232,6 @@ impl<const D: usize> RecordState for SegmentedState<D> {
         (!states.is_empty()).then_some(SegmentedState { states })
     }
 }
+
+#[cfg(all(test, feature = "_dev-test"))]
+mod tests;

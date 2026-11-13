@@ -362,28 +362,16 @@ pub fn muon_projections_name_existing_rank_2_weights<C: BlockConfig + Clone>(
     options: <C::Block as Block>::Options,
     f32_tol: f32,
 ) {
-    use crate::modules::LayersBuilder;
-    use crate::optim::report::float_params;
-    use crate::utils::Schedule;
-    const APPLICATIONS: usize = 2;
+    use crate::optim::report::{float_params, selected};
     let _ = (options, f32_tol);
     run_contract("muon_projections_name_existing_rank_2_weights", || {
-        let layers = LayersBuilder {
-            n_virtual_layers: Some((APPLICATIONS, Schedule::Cyclic)),
-            ..LayersBuilder::new(1, config.clone())
-        }
-        .init(&test_device());
-        let params = float_params(&layers);
+        let params = float_params(&muon_stack(config).init(&test_device()));
 
         for spec in config.muon_projections() {
-            let group = spec.param_group();
-            let selected: Vec<_> = params
-                .iter()
-                .filter(|param| group.matches(&param.id, Some(param.path.as_str())))
-                .collect();
-            assert!(!selected.is_empty(), "the spec `{}` selects no weight of the block.", spec.path);
-            let copies = if spec.tiled { APPLICATIONS } else { 1 };
-            for param in selected {
+            let hits = selected(&spec, &params);
+            assert!(!hits.is_empty(), "the spec `{}` selects no weight of the block.", spec.path);
+            let copies = if spec.tiled { MUON_APPLICATIONS } else { 1 };
+            for param in hits {
                 assert!(
                     param.dims.len() == 2,
                     "the spec `{}` selects `{}`, which has the shape {:?}. Muon takes only rank-2 weights.",
@@ -402,6 +390,95 @@ pub fn muon_projections_name_existing_rank_2_weights<C: BlockConfig + Clone>(
             }
         }
     });
+}
+
+/// The Muon projections of the config select only weights of the block. A
+/// network around the block holds more rank-2 weights: its I/O weights (see
+/// [`crate::optim`]) and the feed-forward of each layer. No spec of
+/// [`BlockConfig::muon_projections`] selects one of them.
+///
+/// The check puts the block in two networks of 2 virtual layers over 1 real
+/// layer:
+///
+/// - a [`LatentNetwork`](crate::modules::LatentNetwork) with a class token,
+///   a class latent, a feed-forward and a final norm. Its `in_proj` and
+///   `out_proj` have the names of usual block weights.
+/// - a [`VocabNetwork`](crate::modules::VocabNetwork) with an embedding and
+///   its own LM head.
+///
+/// A spec with a block scope ([`ProjSpec::block`](crate::optim::ProjSpec::block))
+/// matches only under a block container. A spec with a plain path
+/// ([`ProjSpec::path`](crate::optim::ProjSpec::path)) can also select a
+/// weight of the network. Muon then owns an I/O weight, which the plan must
+/// leave on the fallback optimizer. The options and the tolerance are not
+/// used.
+#[cfg(feature = "optim")]
+pub fn muon_projections_select_only_weights_of_the_block<C: BlockConfig + Clone>(
+    config: &C,
+    options: <C::Block as Block>::Options,
+    f32_tol: f32,
+) {
+    use crate::modules::{GatedMlpConfig, LatentNetworkBuilder, LayersBuilder, VocabNetworkBuilder};
+    use crate::optim::report::{FloatParam, float_params, selected};
+    use crate::utils::{ClassLatent, ClassToken};
+    use std::collections::HashSet;
+    let _ = (options, f32_tol);
+    run_contract("muon_projections_select_only_weights_of_the_block", || {
+        let device = test_device();
+        let d_model = config.d_model();
+        let latent = LatentNetworkBuilder {
+            input_size: d_model,
+            layers: LayersBuilder {
+                class_latents: vec![ClassLatent::Start],
+                mlp: Some(GatedMlpConfig::new(d_model, 2 * d_model)),
+                ..muon_stack(config)
+            },
+            output_size: d_model,
+            final_norm: true,
+            class_tokens: vec![ClassToken::Start],
+        }
+        .init(&device);
+        let vocab = VocabNetworkBuilder {
+            vocab_size: d_model,
+            pad_vocab_size_multiple: 1,
+            layers: muon_stack(config),
+            missing_lm_head: false,
+        }
+        .init(&device);
+        // Each float parameter of a network, and the ids of those of its block.
+        let block_ids = |block: &C::Block| float_params(block).into_iter().map(|param| param.id).collect();
+        let networks: [(&str, Vec<FloatParam>, HashSet<_>); 2] = [
+            ("LatentNetwork", float_params(&latent), block_ids(&latent.layers.real_layers[0].block)),
+            ("VocabNetwork", float_params(&vocab), block_ids(&vocab.layers.real_layers[0].block)),
+        ];
+
+        for spec in config.muon_projections() {
+            for (network, params, of_the_block) in &networks {
+                let outside = selected(&spec, params).into_iter().find(|param| !of_the_block.contains(&param.id));
+                if let Some(param) = outside {
+                    panic!(
+                        "the spec `{}` selects `{}` of a `{network}`, which is not a weight of the block.",
+                        spec.path, param.path,
+                    );
+                }
+            }
+        }
+    });
+}
+
+/// The applications of the block in the stack of a Muon contract. So each
+/// untied weight has 2 copies.
+#[cfg(feature = "optim")]
+const MUON_APPLICATIONS: usize = 2;
+
+/// The stack of a Muon contract: [`MUON_APPLICATIONS`] virtual layers over 1
+/// real layer of the block.
+#[cfg(feature = "optim")]
+fn muon_stack<C: BlockConfig + Clone>(config: &C) -> crate::modules::LayersBuilder<C> {
+    crate::modules::LayersBuilder {
+        n_virtual_layers: Some((MUON_APPLICATIONS, crate::utils::Schedule::Cyclic)),
+        ..crate::modules::LayersBuilder::new(1, config.clone())
+    }
 }
 
 /// Run `checks`, the body of the contract `name`. Each panic in `checks`

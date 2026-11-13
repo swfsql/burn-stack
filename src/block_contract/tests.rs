@@ -47,6 +47,9 @@ enum Breach {
     MuonMissing,
     /// The Muon projections give the input map one column too many.
     MuonWidth,
+    /// The Muon projections name the input map by a plain path, so the spec
+    /// also selects the `in_proj` of a network.
+    MuonOutside,
     /// The forward panics. This breaks each contract that runs the forward.
     Panics,
 }
@@ -207,6 +210,7 @@ impl BlockConfig for BrokenBlockConfig {
             Some(Breach::MuonRank1) => specs.push(ProjSpec::block_whole("decay_raw", D_MODEL)),
             Some(Breach::MuonMissing) => specs.push(ProjSpec::block_whole("missing_proj.weight", D_MODEL)),
             Some(Breach::MuonWidth) => specs.push(ProjSpec::block_whole("in_proj.weight", D_MODEL + 1)),
+            Some(Breach::MuonOutside) => specs.push(ProjSpec::path_whole("in_proj.weight", D_MODEL)),
             _ => {}
         }
         specs
@@ -231,6 +235,8 @@ fn a_broken_block_without_a_breach_keeps_every_contract() {
     cache_traversal_moves_every_field(&config, (), TOL);
     #[cfg(feature = "optim")]
     muon_projections_name_existing_rank_2_weights(&config, (), TOL);
+    #[cfg(feature = "optim")]
+    muon_projections_select_only_weights_of_the_block(&config, (), TOL);
 }
 
 /// A panic inside the block also names the contract.
@@ -400,4 +406,25 @@ fn a_missing_weight_breaks_muon_projections_name_existing_rank_2_weights() {
 )]
 fn a_wrong_width_breaks_muon_projections_name_existing_rank_2_weights() {
     muon_projections_name_existing_rank_2_weights(&broken(Some(Breach::MuonWidth)), (), TOL);
+}
+
+// ---------------------------------------------------------------------------
+// The Muon projections select only weights of the block
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "optim")]
+#[test]
+fn ref_block_keeps_muon_projections_select_only_weights_of_the_block() {
+    for config in ref_configs() {
+        muon_projections_select_only_weights_of_the_block(&config, (), TOL);
+    }
+}
+
+#[cfg(feature = "optim")]
+#[test]
+#[should_panic(
+    expected = "block contract `muon_projections_select_only_weights_of_the_block`: the spec `in_proj.weight` selects `in_proj.weight` of a `LatentNetwork`"
+)]
+fn a_spec_on_a_plain_path_breaks_muon_projections_select_only_weights_of_the_block() {
+    muon_projections_select_only_weights_of_the_block(&broken(Some(Breach::MuonOutside)), (), TOL);
 }
