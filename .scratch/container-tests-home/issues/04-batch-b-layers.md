@@ -1,6 +1,6 @@
 # 04: Batch B, the tests of `Layers`, the gradient horizon, `Layer` and the bidirectional stacks
 
-Status: ready-for-agent
+Status: resolved
 
 Blocked by: `02-block-contract-suite.md`,
 `../burn-mamba/.scratch/container-tests-home/issues/01-coverage-run-and-record.md`
@@ -38,7 +38,7 @@ the matching `RefBlock` tests.
 - [x] The sorted list has one line for each of the 25 tests.
 - [x] Each test of rule 1 or 2 has its new home, or the name of the test that it repeats.
 - [x] The memory probe runs over `RefBlock` with the command of its doc.
-- [ ] The coverage compare of burn-stack against the base commit of this ticket lists no
+- [x] The coverage compare of burn-stack against the base commit of this ticket lists no
       lost item.
 - [x] `cargo check`, `cargo doc --all --no-deps` and `scripts/check.sh` pass with no
       warnings.
@@ -149,6 +149,26 @@ detached parameters (the last 2 layers tracked) have a peak of 545468 kB. So the
 activations set the peak, and the inner backend keeps almost none of them. ADR-0003 and
 `src/utils/detach.rs` now cite these numbers of the probe. They cited a probe on a
 Mamba block that burn-mamba ticket 04 deletes.
+
+### Coverage result
+
+The base is the commit `a236fe3`. `scripts/coverage.py . --base a236fe3` lists no lost
+item, and no covered item on a changed line. The report of this ticket is
+`tmp/coverage-04/after.json`, and the compare is `tmp/coverage-04/compare.md`. The lib
+tests of burn-stack cover the same items as at the base:
+
+| measure | `a236fe3` | this ticket |
+|---|---|---|
+| lines | 3867 of 4415 | 3867 of 4415 |
+| branches | 303 of 432 | 303 of 432 |
+| conditions | 121 of 216 | 121 of 216 |
+
+The ports run lines that the older tests of burn-stack already ran. The gate of
+burn-mamba ticket 04 measures what the deletion of the source tests loses.
+
+The nightly toolchain of the box had no `llvm-tools-preview`. The user chose that a run
+of the script installs it through `cargo llvm-cov` (`CARGO_LLVM_COV_SETUP=yes`). This
+run installed it.
 
 ### The review (`tmp/review-04-standards.md`, `tmp/review-04-spec.md`)
 
