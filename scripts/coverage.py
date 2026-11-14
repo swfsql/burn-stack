@@ -42,8 +42,10 @@ as lost.
 
 The script reports and does not judge. So it exits with 0 when it can compare
 the reports. `--check-tools` exits with 1 when the box does not have
-`cargo-llvm-cov` or the `llvm-tools-preview` of nightly. A run never installs a
-tool.
+`cargo-llvm-cov` or the nightly toolchain. When nightly has no
+`llvm-tools-preview`, `cargo llvm-cov` installs it through rustup, with no
+prompt (`CARGO_LLVM_COV_SETUP=yes`). Set `CARGO_LLVM_COV_SETUP=no` to stop
+that install. The script installs no other tool.
 """
 import argparse
 import json
@@ -343,15 +345,14 @@ def output(command):
 
 
 def missing_tools():
-    """The names of the coverage tools that this box does not have."""
+    """The names of the coverage tools that this box does not have, and that a
+    run cannot install. `cargo llvm-cov` installs the `llvm-tools-preview`
+    (see `measure`)."""
     missing = []
     if output(["cargo", "llvm-cov", "--version"]) is None:
         missing.append("cargo-llvm-cov")
-    components = output(["rustup", "component", "list", "--toolchain", TOOLCHAIN, "--installed"])
-    if components is None:
+    if output(["rustup", "component", "list", "--toolchain", TOOLCHAIN, "--installed"]) is None:
         missing.append(f"the {TOOLCHAIN} toolchain")
-    elif not any(line.startswith("llvm-tools") for line in components.splitlines()):
-        missing.append(f"the llvm-tools-preview of {TOOLCHAIN}")
     return missing
 
 
@@ -369,6 +370,9 @@ def measure(root, target=None):
     """
     env = dict(os.environ)
     env["RUSTFLAGS"] = f"{env.get('RUSTFLAGS', '')} {COVERAGE_OPTION}".strip()
+    # When nightly has no `llvm-tools-preview`, `cargo llvm-cov` installs it
+    # through rustup. `yes` skips its prompt. An explicit `no` stops the install.
+    env.setdefault("CARGO_LLVM_COV_SETUP", "yes")
     # `cargo llvm-cov` has no `--target-dir`. It reads the directory of `cargo metadata`.
     if target is not None:
         env["CARGO_TARGET_DIR"] = str(target)
