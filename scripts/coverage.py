@@ -40,6 +40,10 @@ a line of the working tree. So an edit elsewhere in a file does not show as a
 loss. An item on a line that the change edits or deletes shows as changed, not
 as lost.
 
+Each lost condition also shows as one or two lost branches. A lost branch can
+show with no lost condition, when the base covers only that outcome of its
+condition.
+
 The script reports and does not judge. So it exits with 0 when it can compare
 the reports. `--check-tools` exits with 1 when the box does not have
 `cargo-llvm-cov` or the nightly toolchain. When nightly has no
@@ -66,6 +70,8 @@ TOOLCHAIN = "nightly"
 COVERAGE_OPTION = "-Zcoverage-options=condition"
 # The git worktree of a base revision, relative to the crate.
 BASE_TREE = "target/coverage-base"
+# The kinds of item. A count line names them in this order.
+KINDS = ("lines", "branches", "conditions")
 
 
 def is_test_file(path):
@@ -206,15 +212,16 @@ def compare_items(base, new):
     """The covered items of the base that are lost, and those on changed lines.
 
     The result is `(lost, changed)`. Each maps a file to `{"lines": [...],
-    "branches": [(span, outcome), ...]}`. A lost item has the path and the line
-    of the working tree. A changed item has those of the base. The hunks of a
-    deleted file hold all its lines, so each item of the file is changed.
+    "branches": [(span, outcome), ...], "conditions": [span, ...]}`. A lost
+    item has the path and the line of the working tree. A changed item has
+    those of the base. The hunks of a deleted file hold all its lines, so each
+    item of the file is changed.
     """
     maps = parse_diff(git_diff(base["texts"], new["texts"]))
     lost, changed = {}, {}
 
     def add(kind, side, path, item):
-        side.setdefault(path, {"lines": [], "branches": []})[kind].append(item)
+        side.setdefault(path, {name: [] for name in KINDS})[kind].append(item)
 
     for path, counts in base["lines"].items():
         new_path, hunks = maps.get(path, (path, []))
@@ -238,6 +245,12 @@ def compare_items(base, new):
                     add("branches", changed, path, (span, outcome))
                 elif new_pair[index] == 0:
                     add("branches", lost, new_path, (target, outcome))
+            if min(pair) == 0:
+                continue
+            if target is None:
+                add("conditions", changed, path, span)
+            elif min(new_pair) == 0:
+                add("conditions", lost, new_path, target)
     return lost, changed
 
 
@@ -259,20 +272,23 @@ def listing(files):
     out = []
     for path in sorted(files):
         out.append(path)
-        lines, branches = files[path]["lines"], files[path]["branches"]
+        found = files[path]
+        lines, branches, conditions = found["lines"], found["branches"], found["conditions"]
         if lines:
-            out.append(f"  lines     {ranges(lines)}")
+            out.append(f"  lines       {ranges(lines)}")
         if branches:
             in_order = sorted(branches, key=lambda item: (item[0], item[1] == "false"))
             named = ", ".join(f"{span[0]}:{span[1]} {outcome}" for span, outcome in in_order)
-            out.append(f"  branches  {named}")
+            out.append(f"  branches    {named}")
+        if conditions:
+            named = ", ".join(f"{span[0]}:{span[1]}" for span in sorted(conditions))
+            out.append(f"  conditions  {named}")
     return out
 
 
 def count_line(heading, files):
-    lines = sum(len(found["lines"]) for found in files.values())
-    branches = sum(len(found["branches"]) for found in files.values())
-    return f"## {heading}: {lines} lines, {branches} branches"
+    counts = (f"{sum(len(found[kind]) for found in files.values())} {kind}" for kind in KINDS)
+    return f"## {heading}: {', '.join(counts)}"
 
 
 def fraction(covered, total):
@@ -596,7 +612,10 @@ def the_compare_follows_each_line_through_the_diff():
     lost = section(text, "Lost items")
     # The line 6 of the working tree is the line 5 of the base. The lines above it moved, and
     # the tests still cover them.
-    assert_lines(lost, ["## Lost items: 1 lines, 1 branches", "src/a.rs", "lines 6", "branches 3:8 false"])
+    assert_lines(
+        lost,
+        ["## Lost items: 1 lines, 1 branches, 1 conditions", "src/a.rs", "lines 6", "branches 3:8 false", "conditions 3:8"],
+    )
     # The change edits the line 8 of the base, so its item is changed, not lost.
     assert_lines(section(text, "Covered items on changed lines"), ["src/a.rs", "lines 8"])
 
@@ -616,11 +635,48 @@ def the_compare_follows_a_renamed_file():
     text = compare(base, new)
     assert_lines(
         section(text, "Lost items"),
-        ["## Lost items: 2 lines, 0 branches", "src/s.rs", "src/d.rs", "lines 2"],
+        ["## Lost items: 2 lines, 0 branches, 0 conditions", "src/s.rs", "src/d.rs", "lines 2"],
     )
     assert_lines(
         section(text, "Covered items on changed lines"),
-        ["## Covered items on changed lines: 1 lines, 0 branches", "src/gone.rs", "lines 1"],
+        ["## Covered items on changed lines: 1 lines, 0 branches, 0 conditions", "src/gone.rs", "lines 1"],
+    )
+
+
+def a_covered_condition_that_loses_one_outcome_is_lost():
+    base = make_report({"src/a.rs": BASE_A}, {"src/a.rs": {2: 4}}, {"src/a.rs": {(2, 8, 2, 9): (3, 1)}})
+    new = make_report({"src/a.rs": BASE_A}, {"src/a.rs": {2: 4}}, {"src/a.rs": {(2, 8, 2, 9): (3, 0)}})
+    assert_lines(
+        section(compare(base, new), "Lost items"),
+        ["## Lost items: 0 lines, 1 branches, 1 conditions", "src/a.rs", "branches 2:8 false", "conditions 2:8"],
+    )
+
+
+def a_lost_branch_of_a_condition_that_the_base_does_not_cover_loses_no_condition():
+    # The base covers only the true outcome of the condition.
+    base = make_report({"src/a.rs": BASE_A}, {"src/a.rs": {2: 4}}, {"src/a.rs": {(2, 8, 2, 9): (3, 0)}})
+    new = make_report({"src/a.rs": BASE_A}, {"src/a.rs": {2: 4}}, {"src/a.rs": {(2, 8, 2, 9): (0, 0)}})
+    assert_lines(
+        section(compare(base, new), "Lost items"),
+        ["## Lost items: 0 lines, 1 branches, 0 conditions", "src/a.rs", "branches 2:8 true"],
+    )
+
+
+def a_covered_condition_on_a_changed_line_is_changed():
+    edited = BASE_A.replace("if x {", "if !x {")
+    base = make_report({"src/a.rs": BASE_A}, {"src/a.rs": {2: 4}}, {"src/a.rs": {(2, 8, 2, 9): (3, 1)}})
+    new = make_report({"src/a.rs": edited}, {"src/a.rs": {2: 4}}, {"src/a.rs": {(2, 8, 2, 10): (1, 3)}})
+    text = compare(base, new)
+    assert_lines(section(text, "Lost items"), ["## Lost items: 0 lines, 0 branches, 0 conditions"])
+    assert_lines(
+        section(text, "Covered items on changed lines"),
+        [
+            "## Covered items on changed lines: 1 lines, 2 branches, 1 conditions",
+            "src/a.rs",
+            "lines 2",
+            "branches 2:8 true, 2:8 false",
+            "conditions 2:8",
+        ],
     )
 
 
@@ -642,6 +698,9 @@ SELFTESTS = [
     a_report_counts_the_items_of_src_without_the_tests,
     the_compare_follows_each_line_through_the_diff,
     the_compare_follows_a_renamed_file,
+    a_covered_condition_that_loses_one_outcome_is_lost,
+    a_lost_branch_of_a_condition_that_the_base_does_not_cover_loses_no_condition,
+    a_covered_condition_on_a_changed_line_is_changed,
 ]
 
 
