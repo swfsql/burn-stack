@@ -386,10 +386,9 @@ where
         // gradient flow, but Burn still registers the untracked op in the
         // graph. Burn keeps an `UntrackedOpsStep` per op, so that a
         // memory-bound op can still retrieve an untracked parent. So the output
-        // of the op stays retained. Measured on a 64-virtual-layer stack, a detached
-        // prefix saved ~6% of peak memory and still scaled linearly with depth.
-        // An inner-backend prefix was flat. A peak-memory probe against a real
-        // block reproduces both curves.
+        // of the op stays retained (ADR-0003). `grad_horizon_memory_probe` in
+        // `src/reference/tests/grad_horizon.rs` measures the peak memory of a
+        // detach and of the inner backend.
         //
         // The stack takes a cut only on an autodiff backend (`grad_tracked`
         // returns `None` elsewhere). At inference, `grad_horizon` does nothing.

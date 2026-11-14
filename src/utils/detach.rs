@@ -1,7 +1,7 @@
 //! Detach the parameters of a module from the autodiff graph.
 //!
-//! This cuts the gradient flow through a module. **It does not save memory**
-//! (see the warning below).
+//! This cuts the gradient flow through a module. **It keeps most of the
+//! memory** (see the warning below).
 //! [`Layers::grad_horizon`](crate::modules::Layers::grad_horizon) moves its
 //! untracked spans to the inner backend instead.
 //!
@@ -21,16 +21,16 @@
 //!   gradient of its tracked applications only.
 //! - `.detach()` on every tensor that enters the prefix from outside.
 //!
-//! # Warning: this frees no memory
+//! # Warning: this keeps most of the memory
 //!
 //! An untracked op is still **registered in the graph**. Burn keeps an
 //! `UntrackedOpsStep` per op, so that a memory-bound op with an untracked
-//! parent can still retrieve it. So its output stays retained. Measured on a
-//! 64-virtual-layer `Layers` of a recurrent block (flex, `d_model` 128, batch
-//! 4, seq 512), with a 2-layer gradient horizon: the peak RSS was 2765 MB with
-//! a detached prefix, and 550 MB with an inner-backend prefix. The latter is
-//! the floor (the same forward with no autodiff at all costs 501 MB). A detach
-//! buys the gradient semantics, and almost none of the memory.
+//! parent can still retrieve it. So its output stays retained.
+//! `grad_horizon_memory_probe` (`src/reference/tests/grad_horizon.rs`)
+//! measures it on 64 virtual layers with a 2-layer gradient horizon. The peak
+//! RSS is 545 MB with a detached prefix, 42 MB with an inner-backend prefix
+//! and 762 MB with no horizon. A detach buys the gradient semantics, and less
+//! than a third of the memory saving.
 //!
 //! # What this does *not* reach
 //!
@@ -67,7 +67,7 @@ impl ModuleMapper for DetachParams {
 /// accumulates from the tracked applications alone.
 ///
 /// In effect a no-op when the module is not on an autodiff backend. And, as
-/// the module warning says, **not** a way to save memory.
+/// the module warning says, **not** the way to save memory.
 pub fn detach_params<T: Module>(module: T) -> T {
     module.map(&mut DetachParams)
 }

@@ -425,8 +425,8 @@ Each trap: the symptom, the cause, and the fix.
    `without_autodiff()` explicitly.
 6. **`device_a == device_b` is `true`, but only one has autodiff.** Device
    equality ignores the context (§4).
-7. **`detach` does not save memory in an untracked region.** The tensor stays
-   on autodiff, and the ops after it register graph steps (§7).
+7. **`detach` keeps most of the memory of an untracked region.** The tensor
+   stays on autodiff, and the ops after it register graph steps (§7).
 8. **Dropout is off after `valid()`**, also on a plain device. `valid()`
    disables training flags (§9.2). Use `no_grad()` to stop only the
    gradients.

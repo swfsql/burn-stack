@@ -8,9 +8,11 @@ untracked region on the inner backend. The module goes through
 `Module::valid`, the tensors that enter go through `Tensor::inner`, and the
 tensors that leave go through `modules::lift`.
 
-The difference is memory. The test stack had 64 virtual layers and a horizon
-of 2 layers. Its peak RSS was 2765 MB with `detach` and 550 MB on the inner
-backend. With no autodiff at all, it was 501 MB (`utils/detach.rs`).
+The difference is memory. `grad_horizon_memory_probe`
+(`src/reference/tests/grad_horizon.rs`) runs a stack of 64 virtual layers
+with a horizon of 2 layers. Its peak RSS is 545 MB with `detach` and 42 MB on
+the inner backend. With no horizon, it is 762 MB. With no autodiff at all, it
+is 17 MB.
 
 ## Considered Options
 

@@ -9,8 +9,11 @@
 //! - `block.rs`: the forward/step parity of the block itself, and its windows
 //!   through the cache,
 //! - `layers.rs`: forward/step parity through a `Layer` and a `Layers` stack,
-//!   cache threading, virtual-layer weight sharing, the ignored residuals,
+//!   the feed-forward of a layer, cache threading, virtual-layer weight
+//!   sharing, the ignored residuals,
 //! - `grad_horizon.rs`: gradient reachability across a `grad_horizon` cut,
+//!   the gradients of a cut stack against one window and against the step,
+//!   and a probe of the memory that a cut saves,
 //! - `cache.rs`: the detach of the cache stack,
 //! - `multi_gate.rs`: Multi-Gate Residuals in `Layers` and in a bidirectional
 //!   stack, and with the class markers,
@@ -70,6 +73,11 @@ fn randn3(batch: usize, sequence: usize, device: &Device) -> Tensor<3> {
 /// `Layers::step` unrolled over each token of `x`, from no cache and with no
 /// class cursors: the outputs `[batch, sequence, d_model]`.
 fn step_unrolled(layers: &Layers<RefBlock>, x: Tensor<3>) -> Tensor<3> {
+    step_unrolled_with_caches(layers, x).0
+}
+
+/// [`step_unrolled`], with the final caches of the last step.
+fn step_unrolled_with_caches(layers: &Layers<RefBlock>, x: Tensor<3>) -> (Tensor<3>, RefCaches) {
     let [_batch, sequence, _d_model] = x.dims();
     let mut caches = None;
     let mut ys = Vec::with_capacity(sequence);
@@ -79,5 +87,5 @@ fn step_unrolled(layers: &Layers<RefBlock>, x: Tensor<3>) -> Tensor<3> {
         caches = Some(c);
         ys.push(y_t.unsqueeze_dim::<3>(1));
     }
-    Tensor::cat(ys, 1)
+    (Tensor::cat(ys, 1), caches.expect("the sequence has at least one token"))
 }
