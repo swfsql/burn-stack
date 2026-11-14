@@ -1,4 +1,5 @@
-//! The bidirectional stacks: the pairs and their merges.
+//! The bidirectional stacks: the pairs, their merges and their ignored
+//! residuals.
 
 use super::*;
 
@@ -62,4 +63,41 @@ fn bidi_virtual_forward_is_deterministic() {
     let (y1, _) = layers.forward(x, None, (), None, None);
 
     assert!(max_abs_diff(y0, y1) < dtype_tol(TOL), "two forwards of the same input differ");
+}
+
+/// A bidirectional stack can ignore the residual of its first pair and of its
+/// last pair. A pair with an ignored residual drops the input skip, and gives
+/// its bare merge. With one pair, the stack with the skip gives the stack
+/// with no skip plus the input.
+///
+/// The one pair is the first pair and also the last pair. So a swap of the
+/// two flags does not show.
+///
+/// Each forward below runs the same weights. So the check also fails when a
+/// forward draws new weights.
+#[test]
+fn bidi_ignored_residuals_drop_the_input_skip() {
+    let device = test_device();
+    let mut layers = BidiLayersBuilder {
+        n_real_layers: 2,
+        n_virtual_layers: None,
+        block: block_config(),
+        ignore_first_residual: false,
+        ignore_last_residual: false,
+        outputs_merge: OutputMergeConfig::cat_linear(2),
+        class_latents: Vec::new(),
+        residuals: ResidualsConfig::Standard,
+        untied: Vec::new(),
+    }
+    .init(&device);
+    let x = randn3(2, 5, &device);
+    let (y_skip, _) = layers.forward(x.clone(), None, (), None, None);
+
+    for (first, last) in [(true, false), (false, true), (true, true)] {
+        layers.ignore_first_residual = first;
+        layers.ignore_last_residual = last;
+        let (y_bare, _) = layers.forward(x.clone(), None, (), None, None);
+        let label = format!("ignore first {first}, ignore last {last}: the bare merge plus the input");
+        assert_same_outputs(y_skip.clone(), y_bare + x.clone(), &label);
+    }
 }

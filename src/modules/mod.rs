@@ -168,6 +168,10 @@ pub trait Block: Module + burn::module::ModuleDisplay {
     /// cache serves `forward` and `step`. A container calls it once for each
     /// slot, so each slot has its own buffers (a captured step writes each
     /// slot in place).
+    ///
+    /// The zero cache equals no cache: `block_forward` and `block_step` from
+    /// it give what they give from `None`. A container starts a slot in
+    /// either way.
     fn zero_cache(&self, batch: usize, device: &Device) -> Self::Cache;
 
     /// The parameters that this block stores **once per application** of its

@@ -1,7 +1,32 @@
-//! `Layer` and `Layers`: forward/step parity, the residuals of a layer, and
-//! the virtual layers.
+//! `Layer`, `Layers` and a `LatentNetwork`: forward/step parity, the
+//! residuals of a layer, and the virtual layers.
 
 use super::*;
+
+/// A `LatentNetwork` with no class markers: its forward equals its step
+/// unrolled with no cursors. A step with no cursors places no marker, so the
+/// network maps its input and its output around the stack only.
+#[test]
+fn latent_network_forward_equals_step_unrolled() {
+    let device = test_device();
+    let net = latent_network(Vec::new(), Vec::new(), &device);
+    let sequence = 5;
+    let x = latent_input(2, sequence, &device);
+
+    let (y_fwd, caches_fwd) = net.forward(x.clone(), None, (), None, None);
+    let mut caches = None;
+    let mut ys = Vec::with_capacity(sequence);
+    for t in 0..sequence {
+        let (y_t, c) = net.step(x.clone().narrow(1, t, 1).squeeze_dim::<2>(1), caches, None);
+        caches = Some(c);
+        ys.push(y_t.unsqueeze_dim::<3>(1));
+    }
+
+    assert_eq!(y_fwd.dims(), [2, sequence, 2]);
+    assert_same_outputs(y_fwd, Tensor::cat(ys, 1), "the forward and the step unrolled");
+    let caches = caches.expect("the steps give caches");
+    assert_same_caches(&caches_fwd, &caches, "the forward and the step unrolled");
+}
 
 /// `Layers::forward` equals `Layers::step` unrolled: the container threads
 /// caches per virtual layer, and does not reorder or drop any.

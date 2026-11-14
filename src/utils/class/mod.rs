@@ -534,3 +534,6 @@ pub fn init_class_emb(n: usize, width: usize, device: &Device) -> Option<Param<T
         .init([n, width], device)
     })
 }
+
+#[cfg(test)]
+mod tests;

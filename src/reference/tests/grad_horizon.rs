@@ -74,15 +74,6 @@ fn assert_same_grads(module: &impl Module, want: &Gradients, got: &Gradients, la
     }
 }
 
-/// Panic unless each final cache in `got` matches its cache in `want`.
-fn assert_same_caches(want: &RefCaches, got: &RefCaches, label: &str) {
-    assert_eq!(want.caches.len(), got.caches.len(), "{label}: the counts of the cache slots differ");
-    for (i, (want, got)) in want.caches.iter().zip(&got.caches).enumerate() {
-        let diff = max_rel_diff(got.state_bd.clone(), want.state_bd.clone());
-        assert!(diff < dtype_tol(TOL), "{label}: the final caches of virtual layer {i} differ by {diff}");
-    }
-}
-
 /// A loss that weighs the outputs and each final cache of a stack by fixed
 /// random weights, with the shapes of `y` and `caches`. In a plain sum, a sign
 /// error or an order error can cancel. In a sum with random weights, it

@@ -124,6 +124,46 @@ pub fn forward_splits_into_windows_through_the_cache<C: BlockConfig>(
     });
 }
 
+/// The zero cache equals no cache. The forward and the step unrolled from
+/// [`Block::zero_cache`] give the outputs and the final caches that they give
+/// from `None`.
+///
+/// The containers rely on this, because they start a sequence in two ways.
+/// [`Layers::forward`](crate::modules::Layers::forward) and
+/// [`Layers::step`](crate::modules::Layers::step) start each slot from the
+/// zero cache. [`Layers::prime`](crate::modules::Layers::prime) starts each
+/// slot from no cache. A prime and the steps after it must give what the
+/// forward gives.
+pub fn zero_cache_equals_no_cache<C: BlockConfig>(
+    config: &C,
+    options: <C::Block as Block>::Options,
+    f32_tol: f32,
+) where
+    <C::Block as Block>::Options: Clone,
+{
+    run_contract("zero_cache_equals_no_cache", || {
+        let device = test_device();
+        let tol = dtype_tol(f32_tol);
+        let block = config.init_block(1, &device);
+        let x_bsd = randn(BATCH, SEQUENCE, config.d_model(), &device);
+        let zero = || Some(block.zero_cache(BATCH, &device));
+
+        let (y_none, cache_none) = block.block_forward(x_bsd.clone(), None, options.clone(), None);
+        let (y_zero, cache_zero) = block.block_forward(x_bsd.clone(), zero(), options, None);
+        let what = "the outputs of the forward from the zero cache and from no cache";
+        check(what, max_rel_diff(y_zero, y_none), tol);
+        let what = "the final caches of the forward from the zero cache and from no cache";
+        check(what, cache_diff(cache_zero, cache_none), tol);
+
+        let (y_none, cache_none) = step_unrolled(&block, x_bsd.clone(), None);
+        let (y_zero, cache_zero) = step_unrolled(&block, x_bsd, zero());
+        let what = "the outputs of the step from the zero cache and from no cache";
+        check(what, max_rel_diff(y_zero, y_none), tol);
+        let what = "the final caches of the step from the zero cache and from no cache";
+        check(what, cache_diff(cache_zero, cache_none), tol);
+    });
+}
+
 /// In a right-padded batch, each row gives what it gives alone: the outputs
 /// at its real tokens, and its row of the final cache. An empty row (a row
 /// with no real token) keeps its row of the incoming cache. The batch starts

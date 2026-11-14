@@ -32,6 +32,10 @@ enum Breach {
     Step,
     /// The forward ignores its incoming cache.
     Window,
+    /// The zero cache holds ones.
+    ZeroCache,
+    /// The step from no cache starts from a state of ones.
+    NoCacheStep,
     /// The forward ignores its padding mask.
     Padding,
     /// The packed forward ignores its resets.
@@ -154,13 +158,26 @@ impl Block for BrokenBlock {
     }
 
     fn block_step(&self, x_bd: Tensor<2>, cache: Option<BrokenCache>) -> (Tensor<2>, BrokenCache) {
-        let (y_bd, cache) = self.inner.block_step(x_bd, cache.map(|c| c.inner));
+        let cache = match cache {
+            None if self.breaks(Breach::NoCacheStep) => {
+                let [batch, _d_model] = x_bd.dims();
+                let mut ones = self.inner.zero_cache(batch, &x_bd.device());
+                ones.state_bd = ones.state_bd.ones_like();
+                Some(ones)
+            }
+            cache => cache.map(|c| c.inner),
+        };
+        let (y_bd, cache) = self.inner.block_step(x_bd, cache);
         let step_offset = if self.breaks(Breach::Step) { 1.0 } else { 0.0 };
         (y_bd.add_scalar(self.offset + step_offset), self.wrap(cache))
     }
 
     fn zero_cache(&self, batch: usize, device: &Device) -> BrokenCache {
-        self.wrap(self.inner.zero_cache(batch, device))
+        let mut cache = self.inner.zero_cache(batch, device);
+        if self.breaks(Breach::ZeroCache) {
+            cache.state_bd = cache.state_bd.ones_like();
+        }
+        self.wrap(cache)
     }
 
     fn untied_params(&self) -> Vec<crate::utils::UntiedParam> {
@@ -229,6 +246,7 @@ fn a_broken_block_without_a_breach_keeps_every_contract() {
     let config = broken(None);
     forward_equals_step_unrolled(&config, (), TOL);
     forward_splits_into_windows_through_the_cache(&config, (), TOL);
+    zero_cache_equals_no_cache(&config, (), TOL);
     padded_rows_equal_each_row_alone(&config, (), TOL);
     packed_segments_equal_each_segment_alone(&config, (), TOL);
     record_round_trip_keeps_the_block(&config, (), TOL);
@@ -282,6 +300,35 @@ fn ref_block_keeps_forward_splits_into_windows_through_the_cache() {
 )]
 fn a_forward_that_ignores_its_cache_breaks_forward_splits_into_windows_through_the_cache() {
     forward_splits_into_windows_through_the_cache(&broken(Some(Breach::Window)), (), TOL);
+}
+
+// ---------------------------------------------------------------------------
+// The zero cache equals no cache
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ref_block_keeps_zero_cache_equals_no_cache() {
+    for config in ref_configs() {
+        zero_cache_equals_no_cache(&config, (), TOL);
+    }
+}
+
+#[test]
+#[should_panic(
+    expected = "block contract `zero_cache_equals_no_cache`: the outputs of the forward from the zero cache and from no cache differ"
+)]
+fn a_zero_cache_of_ones_breaks_zero_cache_equals_no_cache() {
+    zero_cache_equals_no_cache(&broken(Some(Breach::ZeroCache)), (), TOL);
+}
+
+/// The forward from no cache stays correct. So only the step half of the
+/// contract can fail.
+#[test]
+#[should_panic(
+    expected = "block contract `zero_cache_equals_no_cache`: the outputs of the step from the zero cache and from no cache differ"
+)]
+fn a_step_from_no_cache_of_ones_breaks_zero_cache_equals_no_cache() {
+    zero_cache_equals_no_cache(&broken(Some(Breach::NoCacheStep)), (), TOL);
 }
 
 // ---------------------------------------------------------------------------
