@@ -99,22 +99,6 @@ fn layer_forward_packed_equals_each_segment_alone() {
     }
 }
 
-/// The positions before the first reset of a row continue from the incoming
-/// cache. So a stream of packed calls can continue a segment.
-#[test]
-fn positions_before_the_first_reset_continue_from_the_cache() {
-    let device = test_device();
-    let block = block_config().init(&device);
-    let (_, cache) = block.block_forward(randn3(1, 2, &device), None, (), None);
-    let packed = Packed::from_starts(&[vec![3]], 1, 0, 6, &device);
-    let x = randn3(1, 6, &device);
-
-    let (y, _) = block.block_forward_packed(x.clone(), Some(cache.clone()), (), packed.reset_bs);
-    let (prefix, _) = block.block_forward(x.narrow(1, 0, 3), Some(cache), (), None);
-
-    assert!(max_abs_diff(y.narrow(1, 0, 3), prefix) < dtype_tol(TOL));
-}
-
 /// A stack over packed rows gives each segment the outputs that the segment
 /// gives alone, with the class latents in its opening slots. Alone, `forward`
 /// splices the same latents in front of the segment. The layout also crosses
@@ -180,6 +164,105 @@ fn vocab_network_forward_packed_equals_each_segment_alone() {
         let tokens = x.clone().narrow(0, b, 1).narrow(1, start + lead, end - start - lead);
         let (alone, _) = net.forward(tokens, None, (), None, None);
         assert!(max_rel_diff(segment_of(logits.clone(), b, start, end), alone) < dtype_tol(TOL));
+    }
+}
+
+/// The real tokens of each segment of each row of
+/// [`a_packed_vocab_network_has_the_logits_and_gradients_of_each_segment_alone`].
+const SEGMENT_LENS: [&[usize]; 2] = [&[5, 9, 1], &[12, 3]];
+
+/// A packed vocab network gives each segment the logits and the gradients
+/// that the segment gives alone. Each segment starts at a multiple of the
+/// reset alignment (4), with 2 class latents in its opening slots. A segment
+/// can be shorter or longer than the alignment, and a gap follows each one.
+/// The check compares:
+///
+/// - the logits of each opening slot and of each real token of each segment,
+/// - the gradients of each parameter, of one loss over those logits.
+///
+/// It runs over the Standard residuals and over Multi-Gate Residuals.
+#[test]
+fn a_packed_vocab_network_has_the_logits_and_gradients_of_each_segment_alone() {
+    const VOCAB: usize = 11;
+    let (align, lead, batch) = (4, 2, SEGMENT_LENS.len());
+    let device = test_device().autodiff();
+    let multi_gate = ResidualsConfig::MultiGate {
+        n_stream: 2,
+        init_bias: 0.0,
+        init_bias_offset: 0.0,
+        per_virtual_layer: false,
+    };
+
+    // The first position of each segment, and the width of the rows. A free
+    // tail of `align` positions follows the last segment of the longest row.
+    let mut width = 0;
+    let starts: Vec<Vec<usize>> = SEGMENT_LENS
+        .iter()
+        .map(|lens| {
+            let mut at = 0;
+            let starts = lens
+                .iter()
+                .map(|&len| {
+                    let start = at;
+                    at = (start + lead + len).next_multiple_of(align);
+                    start
+                })
+                .collect();
+            width = width.max(at + align);
+            starts
+        })
+        .collect();
+    // Token `j` of segment `s` of row `b` is the pair (id, `j mod 2`).
+    let pairs = |b: usize, s: usize, len: usize| -> Vec<i64> {
+        (0..len).flat_map(|j| [((7 * (31 * b + 13 * s + j) + 3) % VOCAB) as i64, (j % 2) as i64]).collect()
+    };
+    // Token 0 fills the opening slots and the gaps.
+    let mut ids = vec![0i64; batch * width * 2];
+    for (b, lens) in SEGMENT_LENS.iter().enumerate() {
+        for (s, (&len, &start)) in lens.iter().zip(&starts[b]).enumerate() {
+            let at = (b * width + start + lead) * 2;
+            ids[at..at + 2 * len].copy_from_slice(&pairs(b, s, len));
+        }
+    }
+    let ids = Tensor::<1, Int>::from_ints(ids.as_slice(), &device).reshape([batch, width, 2]);
+    let packed = Packed::from_starts(&starts, align, lead, width, &device);
+    // A fixed weight for each logit, so that the loss reaches each one.
+    let weight = Tensor::<3>::random([batch, width, VOCAB + 1], Distribution::Normal(0.0, 1.0), &device);
+
+    for residuals in [ResidualsConfig::Standard, multi_gate] {
+        let label = match residuals {
+            ResidualsConfig::Standard => "Standard",
+            _ => "Multi-Gate",
+        };
+        let net = VocabNetworkBuilder {
+            vocab_size: VOCAB,
+            pad_vocab_size_multiple: 1,
+            layers: LayersBuilder {
+                block: block_config().with_reset_align(align),
+                class_latents: vec![ClassLatent::Start; lead],
+                residuals,
+                ..layers_builder(2)
+            },
+            missing_lm_head: false,
+        }
+        .init(&device);
+
+        let (logits, _) = net.forward_packed(ids.clone(), None, (), &packed);
+        let mut loss_packed = Tensor::<1>::zeros([1], &device);
+        let mut loss_alone = Tensor::<1>::zeros([1], &device);
+        for (b, lens) in SEGMENT_LENS.iter().enumerate() {
+            for (s, (&len, &start)) in lens.iter().zip(&starts[b]).enumerate() {
+                let segment = Tensor::<1, Int>::from_ints(pairs(b, s, len).as_slice(), &device).reshape([1, len, 2]);
+                let (alone, _) = net.forward(segment, None, (), None, None);
+                let in_row = segment_of(logits.clone(), b, start, start + lead + len);
+                assert_same_outputs(alone.clone(), in_row.clone(), &format!("{label}, row {b}, the segment at {start}"));
+                let w = segment_of(weight.clone(), b, start, start + lead + len);
+                loss_packed = loss_packed + (in_row * w.clone()).sum();
+                loss_alone = loss_alone + (alone * w).sum();
+            }
+        }
+        // Under Multi-Gate, the β gate of the first layer can get no gradient.
+        assert_matching_grads(&net, &loss_alone.backward(), &loss_packed.backward(), label);
     }
 }
 

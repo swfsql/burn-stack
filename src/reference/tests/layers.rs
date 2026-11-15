@@ -28,6 +28,31 @@ fn latent_network_forward_equals_step_unrolled() {
     assert_same_caches(&caches_fwd, &caches, "the forward and the step unrolled");
 }
 
+/// The record of a `LatentNetwork` keeps the network, in memory and through
+/// bytes. A new network differs until it loads the record. The network has a
+/// class token and a class latent, so the record also holds their tables.
+#[test]
+fn a_latent_network_record_round_trip_keeps_the_network() {
+    use burn::store::ModuleRecord;
+
+    let device = test_device();
+    let network = || latent_network(vec![ClassToken::Start], vec![ClassLatent::Start], &device);
+    let net = network();
+    let x = latent_input(2, 4, &device);
+    let (want, _) = net.forward(x.clone(), None, (), None, None);
+    let (other, _) = network().forward(x.clone(), None, (), None, None);
+    assert!(max_abs_diff(want.clone(), other) > 0.0, "two new networks give the same outputs");
+
+    let loaded = network().load_record(net.clone().into_record());
+    let (got, _) = loaded.forward(x.clone(), None, (), None, None);
+    assert_eq!(max_abs_diff(want.clone(), got), 0.0, "the network loaded in memory gives other outputs");
+
+    let bytes = net.into_record().into_bytes().expect("the record goes to bytes");
+    let record = ModuleRecord::from_bytes(bytes).expect("the bytes give a record");
+    let (got, _) = network().load_record(record).forward(x, None, (), None, None);
+    assert_eq!(max_abs_diff(want, got), 0.0, "the network loaded from bytes gives other outputs");
+}
+
 /// `Layers::forward` equals `Layers::step` unrolled: the container threads
 /// caches per virtual layer, and does not reorder or drop any.
 #[test]

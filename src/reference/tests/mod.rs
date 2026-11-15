@@ -4,13 +4,13 @@
 //! The point is coverage that is *independent of any family*. If these
 //! tests pass, the containers do not secretly depend on something that a real
 //! block happens to provide. They pin the properties that every family relies
-//! on. Each file holds the tests of one mechanism:
+//! on. The block contracts on `RefBlock` (`src/block_contract/tests.rs`)
+//! check the block itself. Each file holds the tests of one mechanism:
 //!
-//! - `block.rs`: the forward/step parity of the block itself, and its windows
-//!   through the cache,
 //! - `layers.rs`: forward/step parity through a `Layer`, a `Layers` stack and
-//!   a `LatentNetwork`, the feed-forward of a layer, cache threading,
-//!   virtual-layer weight sharing, the ignored residuals,
+//!   a `LatentNetwork`, and the feed-forward of a layer. It also holds cache
+//!   threading, virtual-layer weight sharing, the ignored residuals and the
+//!   record of a network,
 //! - `grad_horizon.rs`: gradient reachability across a `grad_horizon` cut,
 //!   the gradients of a cut stack against one window and against the step,
 //!   and a probe of the memory that a cut saves,
@@ -21,8 +21,8 @@
 //! - `class.rs`: class-marker placement in a forward, in a step and in a
 //!   prime,
 //! - `untied.rs`: the untied copies of a parameter,
-//! - `packed.rs`: packed rows against each segment alone, and the checks of
-//!   their layout,
+//! - `packed.rs`: packed rows against each segment alone, in the outputs and
+//!   in the gradients, and the checks of their layout,
 //! - `muon.rs`: the Muon allowlist, the plans of the containers, the module
 //!   optimizer, the report, and the update of an untied projection.
 //!
@@ -36,12 +36,11 @@ use crate::modules::{
 };
 use crate::utils::test_helpers::{dtype_tol, max_abs_diff, max_rel_diff};
 use crate::utils::{BidiSchedule, ClassLatent, ClassToken, GradHorizon, Packed, Schedule};
-use burn::module::{ModuleMapper, Param};
-use burn::tensor::Distribution;
+use burn::module::{ModuleMapper, ModuleVisitor, Param};
+use burn::tensor::{Distribution, Gradients};
 use crate::utils::test_helpers::test_device;
 
 mod bidi;
-mod block;
 mod cache;
 mod class;
 mod grad_horizon;
@@ -104,6 +103,61 @@ fn assert_same_caches(want: &RefCaches, got: &RefCaches, label: &str) {
 fn assert_same_outputs<const D: usize>(want: Tensor<D>, got: Tensor<D>, label: &str) {
     let diff = max_rel_diff(got, want);
     assert!(diff < dtype_tol(TOL), "{label}: the outputs differ by {diff}");
+}
+
+/// The gradient of each float parameter of `module` in `grads`, flattened,
+/// with the path of the parameter. `None`: the parameter has no gradient.
+///
+/// `src/modules/hnet/tests.rs` has a copy, and `src/utils/padding/tests.rs`
+/// has a copy without the paths.
+fn param_grads(module: &impl Module, grads: &Gradients) -> Vec<(String, Option<Tensor<1>>)> {
+    struct Collect<'a> {
+        grads: &'a Gradients,
+        path: Vec<String>,
+        out: Vec<(String, Option<Tensor<1>>)>,
+    }
+    impl ModuleVisitor for Collect<'_> {
+        fn enter_module(&mut self, name: &str, _container_type: &str) {
+            self.path.push(name.to_string());
+        }
+        fn exit_module(&mut self, _name: &str, _container_type: &str) {
+            self.path.pop();
+        }
+        fn visit_float<const D: usize>(&mut self, param: &Param<Tensor<D>>) {
+            let grad = param.val().grad(self.grads).map(|g| g.reshape([-1]));
+            self.out.push((self.path.join("."), grad));
+        }
+    }
+    let mut collect = Collect { grads, path: Vec::new(), out: Vec::new() };
+    module.visit(&mut collect);
+    collect.out
+}
+
+/// Panic unless each float parameter of `module` has a gradient in `want`
+/// and in `got`, and the two gradients match.
+fn assert_same_grads(module: &impl Module, want: &Gradients, got: &Gradients, label: &str) {
+    for (path, grad) in param_grads(module, want) {
+        assert!(grad.is_some(), "{label}: `{path}` gets no gradient in the reference");
+    }
+    assert_matching_grads(module, want, got, label);
+}
+
+/// Panic unless each float parameter of `module` has a gradient in both
+/// `want` and `got`, or in neither, and the two gradients match.
+fn assert_matching_grads(module: &impl Module, want: &Gradients, got: &Gradients, label: &str) {
+    let want = param_grads(module, want);
+    let got = param_grads(module, got);
+    for ((path, want), (_, got)) in want.into_iter().zip(got) {
+        match (want, got) {
+            (Some(want), Some(got)) => {
+                let diff = max_rel_diff(got, want);
+                assert!(diff < dtype_tol(TOL), "{label}: the gradients of `{path}` differ by {diff}");
+            }
+            (None, None) => {}
+            (Some(_), None) => panic!("{label}: `{path}` gets a gradient in the reference only"),
+            (None, Some(_)) => panic!("{label}: `{path}` gets a gradient in the run under test only"),
+        }
+    }
 }
 
 /// A [`LatentNetwork`](crate::modules::LatentNetwork) of 2 real layers, with

@@ -6,10 +6,12 @@
 use super::chunk::plan;
 use super::smooth::{P_MAX, P_MIN, smooth, smooth_step};
 use super::*;
-use crate::modules::{CacheTensors, NetworkShape, TensorZip};
+use crate::block_contract::cache_diff;
+use crate::modules::{NetworkShape, TensorZip};
 use crate::reference::{RefBlock, RefBlockConfig};
 use crate::utils::test_helpers::{dtype_tol, max_rel_diff, test_device};
-use burn::tensor::Distribution;
+use burn::module::{ModuleVisitor, Param};
+use burn::tensor::{Distribution, Gradients};
 
 type Net = HNet<RefBlock, RefBlock>;
 
@@ -42,20 +44,6 @@ fn net(widths: &[usize], main: usize, device: &Device) -> Net {
 
 fn randn<const D: usize>(dims: [usize; D], device: &Device) -> Tensor<D> {
     Tensor::random(dims, Distribution::Normal(0.0, 1.0), device)
-}
-
-/// The largest relative difference over every tensor pair of two caches.
-fn cache_diff<C: CacheTensors>(a: C, b: C) -> f32 {
-    struct MaxDiff(f32);
-    impl TensorZip for MaxDiff {
-        fn zip<const D: usize>(&mut self, a: Tensor<D>, b: Tensor<D>) -> Tensor<D> {
-            self.0 = self.0.max(max_rel_diff(a.clone(), b));
-            a
-        }
-    }
-    let mut z = MaxDiff(0.0);
-    a.zip_tensors(b, &mut z);
-    z.0
 }
 
 fn bools<const D: usize>(t: Tensor<D, Bool>) -> Vec<bool> {
@@ -222,8 +210,9 @@ fn forward_splits_into_windows_through_the_cache() {
 }
 
 /// In a right-padded batch, each row gives what it gives alone: the outputs
-/// at its real tokens, and its caches. A row with no real token keeps its
-/// incoming cache.
+/// at its real tokens, and its caches. The batch runs from a warm cache and
+/// from no cache. A row with no real token keeps its incoming cache. From no
+/// cache, it gives its row of the zero caches.
 #[test]
 fn padded_rows_match_each_row_alone() {
     let device = test_device();
@@ -236,23 +225,31 @@ fn padded_rows_match_each_row_alone() {
         .greater_equal(Tensor::<2, Int>::from_data([[11], [4], [0]], &device).expand([3, 11]));
     // A warm cache, so that the empty row has something to keep.
     let (_, warm, _) = net.forward(randn([3, 5, 8], &device), None, ((), ()), None);
-    let (y, caches, _) = net.forward(x.clone(), Some(warm.clone()), ((), ()), Some(pad));
 
     let row = |c: HNetCaches<RefBlock, RefBlock>, b: usize| {
         let idx = Tensor::<1, Int>::from_data([b as i64], &device);
         cache::gather_rows(c, &idx)
     };
-    for (b, &len) in lens.iter().enumerate() {
-        let warm_b = row(warm.clone(), b);
-        if len == 0 {
-            assert!(cache_diff(row(caches.clone(), b), warm_b) < dtype_tol(TOL), "row {b}: the cache moved");
-            continue;
+    let zero = net.zero_caches(3, &device);
+    for (label, incoming) in [("from a warm cache", Some(warm)), ("from no cache", None)] {
+        let (y, caches, _) = net.forward(x.clone(), incoming.clone(), ((), ()), Some(pad.clone()));
+        for (b, &len) in lens.iter().enumerate() {
+            let incoming_b = incoming.clone().map(|c| row(c, b));
+            if len == 0 {
+                let (want, want_b) = match incoming_b {
+                    Some(incoming_b) => ("its incoming cache", incoming_b),
+                    None => ("its row of the zero caches", row(zero.clone(), b)),
+                };
+                let diff = cache_diff(row(caches.clone(), b), want_b);
+                assert!(diff < dtype_tol(TOL), "{label}, row {b}: the final cache differs from {want} by {diff}");
+                continue;
+            }
+            let x_b = x.clone().narrow(0, b, 1).narrow(1, 0, len);
+            let (y_b, c_b, _) = net.forward(x_b, incoming_b, ((), ()), None);
+            let y_real = y.clone().narrow(0, b, 1).narrow(1, 0, len);
+            assert!(max_rel_diff(y_real, y_b) < dtype_tol(TOL), "{label}, row {b}: outputs");
+            assert!(cache_diff(row(caches.clone(), b), c_b) < dtype_tol(TOL), "{label}, row {b}: caches");
         }
-        let x_b = x.clone().narrow(0, b, 1).narrow(1, 0, len);
-        let (y_b, c_b, _) = net.forward(x_b, Some(warm_b), ((), ()), None);
-        let y_real = y.clone().narrow(0, b, 1).narrow(1, 0, len);
-        assert!(max_rel_diff(y_real, y_b) < dtype_tol(TOL), "row {b}: outputs");
-        assert!(cache_diff(row(caches.clone(), b), c_b) < dtype_tol(TOL), "row {b}: caches");
     }
 }
 
@@ -278,8 +275,10 @@ fn a_call_without_chunk_boundaries_skips_the_inner_hnet() {
     }
 }
 
-/// The gradients of `forward` equal those of `step` unrolled: at the router,
-/// the encoder, the residual, the main stack, the width vector and the input.
+/// The gradients of `forward` equal those of `step` unrolled, for each float
+/// parameter and for the input. The parameters include the routers, the
+/// encoders, the decoders, the residuals, the main stack and the width
+/// vector.
 #[test]
 fn forward_and_step_have_the_same_gradients() {
     let device = test_device().autodiff();
@@ -293,22 +292,46 @@ fn forward_and_step_have_the_same_gradients() {
     let (y_step, _, _) = step_unrolled(&net, x.clone(), None, StepMode::Masked);
     let g_step = grads_of(y_step);
 
-    let s0 = &net.stages[0];
-    let s1 = &net.stages[1];
-    let pairs: Vec<(&str, Tensor<2>, Tensor<2>)> = vec![
-        ("router q", s0.router.q_proj.weight.val().grad(&g_fwd).unwrap(), s0.router.q_proj.weight.val().grad(&g_step).unwrap()),
-        ("router k", s1.router.k_proj.weight.val().grad(&g_fwd).unwrap(), s1.router.k_proj.weight.val().grad(&g_step).unwrap()),
-        ("encoder", s0.encoder.real_layers[0].block.in_proj.weight.val().grad(&g_fwd).unwrap(), s0.encoder.real_layers[0].block.in_proj.weight.val().grad(&g_step).unwrap()),
-        ("residual", s1.residual_proj.weight.val().grad(&g_fwd).unwrap(), s1.residual_proj.weight.val().grad(&g_step).unwrap()),
-        ("main", net.main.layers.real_layers[1].block.out_proj.weight.val().grad(&g_fwd).unwrap(), net.main.layers.real_layers[1].block.out_proj.weight.val().grad(&g_step).unwrap()),
-    ];
-    for (name, a, b) in pairs {
-        let diff = max_rel_diff(a, b);
-        assert!(diff < dtype_tol(1e-3), "grad of {name}: max rel diff {diff}");
+    let fwd = param_grads(&net, &g_fwd);
+    let step = param_grads(&net, &g_step);
+    assert!(
+        fwd.iter().any(|(path, _)| path.contains("pad_dimension")),
+        "the H-Net has no width vector. So the test checks no gradient of a width vector.",
+    );
+    for ((path, a), (_, b)) in fwd.into_iter().zip(step) {
+        let a = a.unwrap_or_else(|| panic!("`{path}` gets no gradient from the forward"));
+        let b = b.unwrap_or_else(|| panic!("`{path}` gets no gradient from the step"));
+        let diff = max_rel_diff(b, a);
+        assert!(diff < dtype_tol(1e-3), "the gradients of `{path}` differ by {diff}");
     }
-    let pad_dim = s1.pad_dimension.as_ref().expect("stage 1 is wider than stage 0").val();
-    assert!(max_rel_diff(pad_dim.grad(&g_fwd).unwrap(), pad_dim.grad(&g_step).unwrap()) < dtype_tol(1e-3));
-    assert!(max_rel_diff(x.grad(&g_fwd).unwrap(), x.grad(&g_step).unwrap()) < dtype_tol(1e-3));
+    assert!(max_rel_diff(x.grad(&g_step).unwrap(), x.grad(&g_fwd).unwrap()) < dtype_tol(1e-3));
+}
+
+/// The gradient of each float parameter of `module` in `grads`, flattened,
+/// with the path of the parameter. `None`: the parameter has no gradient.
+///
+/// `src/reference/tests/mod.rs` has a copy, private to its module.
+fn param_grads(module: &impl Module, grads: &Gradients) -> Vec<(String, Option<Tensor<1>>)> {
+    struct Collect<'a> {
+        grads: &'a Gradients,
+        path: Vec<String>,
+        out: Vec<(String, Option<Tensor<1>>)>,
+    }
+    impl ModuleVisitor for Collect<'_> {
+        fn enter_module(&mut self, name: &str, _container_type: &str) {
+            self.path.push(name.to_string());
+        }
+        fn exit_module(&mut self, _name: &str, _container_type: &str) {
+            self.path.pop();
+        }
+        fn visit_float<const D: usize>(&mut self, param: &Param<Tensor<D>>) {
+            let grad = param.val().grad(self.grads).map(|g| g.reshape([-1]));
+            self.out.push((self.path.join("."), grad));
+        }
+    }
+    let mut collect = Collect { grads, path: Vec::new(), out: Vec::new() };
+    module.visit(&mut collect);
+    collect.out
 }
 
 /// `HNetCaches::detach` keeps the values of each tensor of the cache and cuts

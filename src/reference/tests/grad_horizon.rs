@@ -15,35 +15,7 @@
 use super::*;
 use crate::modules::Residuals;
 use crate::utils::ClassCursors;
-use burn::module::ModuleVisitor;
 use burn::tensor::Gradients;
-
-/// The gradient of each float parameter of `module` in `grads`, flattened,
-/// with the path of the parameter. `None`: the parameter has no gradient.
-///
-/// `src/utils/padding/tests.rs` has a copy without the paths.
-fn param_grads(module: &impl Module, grads: &Gradients) -> Vec<(String, Option<Tensor<1>>)> {
-    struct Collect<'a> {
-        grads: &'a Gradients,
-        path: Vec<String>,
-        out: Vec<(String, Option<Tensor<1>>)>,
-    }
-    impl ModuleVisitor for Collect<'_> {
-        fn enter_module(&mut self, name: &str, _container_type: &str) {
-            self.path.push(name.to_string());
-        }
-        fn exit_module(&mut self, _name: &str, _container_type: &str) {
-            self.path.pop();
-        }
-        fn visit_float<const D: usize>(&mut self, param: &Param<Tensor<D>>) {
-            let grad = param.val().grad(self.grads).map(|g| g.reshape([-1]));
-            self.out.push((self.path.join("."), grad));
-        }
-    }
-    let mut collect = Collect { grads, path: Vec::new(), out: Vec::new() };
-    module.visit(&mut collect);
-    collect.out
-}
 
 /// Panic unless each float parameter of real layer `i` has a gradient in
 /// `grads` exactly when `tracked[i]`. The stack must run each real layer once,
@@ -58,19 +30,6 @@ fn assert_only_tracked_layers_train(layers: &Layers<RefBlock>, grads: &Gradients
                 false => assert!(grad.is_none(), "{label}: `{path}` of the untracked layer {i} gets a gradient"),
             }
         }
-    }
-}
-
-/// Panic unless each float parameter of `module` has a gradient in `want`
-/// and in `got`, and the two gradients match.
-fn assert_same_grads(module: &impl Module, want: &Gradients, got: &Gradients, label: &str) {
-    let want = param_grads(module, want);
-    let got = param_grads(module, got);
-    for ((path, want), (_, got)) in want.into_iter().zip(got) {
-        let want = want.unwrap_or_else(|| panic!("{label}: `{path}` gets no gradient in the reference"));
-        let got = got.unwrap_or_else(|| panic!("{label}: `{path}` gets no gradient"));
-        let diff = max_rel_diff(got, want);
-        assert!(diff < dtype_tol(TOL), "{label}: the gradients of `{path}` differ by {diff}");
     }
 }
 
