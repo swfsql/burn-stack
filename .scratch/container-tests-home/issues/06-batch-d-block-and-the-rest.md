@@ -290,3 +290,28 @@ The compare also lists 19 lines, 2 branches and 1 condition on changed lines. Of
 Its new body covers them again, with both outcomes of `len == 0`. The other 5 lines are
 the signature of `cache_diff`, now `pub(crate)`, and the loop of `step_unrolled`, now in
 `unrolled`. The new lines run in each contract that steps.
+
+### From the gate of burn-mamba ticket 06
+
+- The gate lost the branch `157:9 false` of `src/optim/spec.rs`, and its condition:
+  `is_whole_muon` on a tiled spec. Only `MuonPlan::build` with an untied weight reaches
+  it. The sorted list gives `muon_updates_an_untied_projection_one_copy_at_a_time` as a
+  repeat. It repeats the update of each copy in
+  `mamba3_untied_tail_trains_one_copy_per_application`. But that test called `Segmented`
+  directly, and the deleted test ran the update through `MuonPlan::build`.
+- The user chose rule 1. `muon_updates_an_untied_projection_one_copy_at_a_time`
+  (`src/reference/tests/muon.rs`) also builds the plan of its untied stack, and runs one
+  training step through its module optimizer:
+  - Each copy must move as Muon moves that copy alone. One check does this for the
+    `Segmented` step and for the training step.
+  - The copies start tied, and they must part, as in the deleted test.
+  - The training step has a learning rate of 1. The difference between the two updates
+    grows with the learning rate. At `1e-2` it is 0.0036, which is below the fp16
+    tolerance (about `1.8e-2`).
+- The red check used an `is_whole_muon` that ignores `tiled`. The plan then gives the
+  whole tensor to the stock Muon. The test fails at copy 0, in fp32 (difference 0.45,
+  tolerance `1e-4`) and under `dev-f16` (difference 0.39). The red check reverted the
+  break after the run. The test passes in fp32 and under `dev-f16`.
+- The seam row "Containers with real blocks" of `docs/agents/testing.md` is deleted, as
+  the spec says: "**Block contracts** (new) replaces **Containers with real blocks**".
+  The line of `CLAUDE.md` about the tests of `../burn-mamba` names the block contracts.

@@ -23,8 +23,8 @@ change does not need to update it.
   and the three calls.
 - `docs/agents/`: how the agent skills use this repo (see
   [Agent skills](#agent-skills)).
-- `../burn-mamba`: the active consumer. Its tests run the containers with real
-  blocks.
+- `../burn-mamba`: the active consumer. Its tests run the block contracts on
+  each of its block settings.
 - The sources. Read `docs/source-terms.md` first:
   - `../papers/hnet/`: the TeX of the H-Net paper.
   - `../py/goombalab/hnet/`: the official H-Net code.

@@ -114,8 +114,9 @@ fn bidi_plan_holds_the_cat_linear_spec_only_for_cat_linear_merges() {
 }
 
 /// An untied projection is one matrix per application. Muon orthogonalises
-/// each copy on its own, and the plan gives the untied weight to that
-/// per-copy update.
+/// each copy on its own. The plan gives the untied weight to that per-copy
+/// update. The report of the plan shows a tiled spec. In a training step, the
+/// module optimizer of the plan moves each copy as Muon moves that copy alone.
 #[cfg(feature = "optim")]
 #[test]
 fn muon_updates_an_untied_projection_one_copy_at_a_time() {
@@ -127,14 +128,22 @@ fn muon_updates_an_untied_projection_one_copy_at_a_time() {
     let spec = ProjSpec::block_whole("gate_proj.weight", D_MODEL).tiled();
     let muon = muon_config(0.0).build();
     let segmented = Segmented::new(&spec, muon.clone(), AdamWConfig::new().build(), 1);
+    // Panic unless each copy of `updated` is the Muon update of that copy of
+    // `w` alone, with the gradient `g` and the learning rate `lr`.
+    let assert_each_copy_moves_as_muon = |label: &str, lr: f64, updated: Tensor<2>, w: Tensor<2>, g: Tensor<2>| {
+        for (i, ((got, w), g)) in updated.chunk(n, 1).into_iter().zip(w.chunk(n, 1)).zip(g.chunk(n, 1)).enumerate() {
+            let (want, _) = muon.step(lr, w, g, None);
+            let diff = max_rel_diff(got, want);
+            assert!(diff < dtype_tol(TOL), "{label}: copy {i} differs by {diff} from the Muon update of that copy alone");
+        }
+    };
+
     let w = Tensor::<2>::random([D_MODEL, n * D_MODEL], Distribution::Normal(0.0, 1.0), &device);
     let g = Tensor::<2>::random([D_MODEL, n * D_MODEL], Distribution::Normal(0.0, 1.0), &device);
     let (updated, _) = segmented.step(1e-2, w.clone(), g.clone(), None);
-    for ((got, w), g) in updated.chunk(n, 1).into_iter().zip(w.chunk(n, 1)).zip(g.chunk(n, 1)) {
-        let (want, _) = muon.step(1e-2, w, g, None);
-        assert!(max_abs_diff(got, want) < dtype_tol(TOL));
-    }
+    assert_each_copy_moves_as_muon("Segmented", 1e-2, updated, w, g);
 
+    let device = device.autodiff();
     let config = block_config().with_untied(vec![RefUntied::GateProj]);
     let layers = LayersBuilder {
         n_virtual_layers: Some((n, Schedule::Cyclic)),
@@ -142,13 +151,35 @@ fn muon_updates_an_untied_projection_one_copy_at_a_time() {
         ..layers_builder(1)
     }
     .init(&device);
-    let report = MuonPlan::new(BlockConfig::muon_projections(&config)).describe(&layers);
+    let plan = MuonPlan::new(BlockConfig::muon_projections(&config));
+    let report = plan.describe(&layers);
     assert!(
         report
             .lines()
             .any(|l| l.contains("gate_proj.weight") && l.contains("muon[all:8]×3")),
         "{report}",
     );
+
+    // One training step through the module optimizer of the plan. Muon of
+    // the whole tensor gives an update that differs from Muon of each copy.
+    // The difference grows with the learning rate. At a learning rate of 1,
+    // it is above the fp16 tolerance.
+    let lr = 1.0;
+    let gate_proj = |layers: &Layers<RefBlock>| layers.real_layers[0].block.gate_proj.weight.val();
+    let (y, _) = layers.forward(randn3(1, 4, &device), None, (), None, None);
+    let grads = y.sum().backward();
+    let w = gate_proj(&layers).inner();
+    let g = gate_proj(&layers).grad(&grads).expect("the untied weight gets a gradient");
+    let grads = GradientsParams::from_grads(grads, &layers);
+    let mut optim = plan.build(&AdamWConfig::new().into(), &muon_config(0.0));
+    let stepped = gate_proj(&optim.step(lr, layers, grads)).inner();
+    assert_each_copy_moves_as_muon("the training step", lr, stepped.clone(), w, g);
+
+    // The copies start tied. Each application gives its copy its own
+    // gradient, so the copies part.
+    let copies = stepped.chunk(n, 1);
+    let diff = max_abs_diff(copies[0].clone(), copies[1].clone());
+    assert!(diff > dtype_tol(TOL), "copies 0 and 1 differ by {diff} after the training step: they stay tied");
 }
 
 /// Each pair of a bidirectional stack holds one block for each direction. Real
