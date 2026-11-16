@@ -83,6 +83,16 @@ pub fn max_rel_diff<const D: usize>(a: Tensor<D>, b: Tensor<D>) -> f32 {
     max_abs_diff(a, b) / scale
 }
 
+/// The text of a panic payload that `std::panic::catch_unwind` returns.
+/// `None`: the payload has no text.
+pub fn panic_text(payload: &(dyn std::any::Any + Send)) -> Option<String> {
+    match (payload.downcast_ref::<String>(), payload.downcast_ref::<&str>()) {
+        (Some(text), _) => Some(text.clone()),
+        (None, Some(text)) => Some(text.to_string()),
+        (None, None) => None,
+    }
+}
+
 /// Compare two `PathRun`-style structs field-by-field against a baseline,
 /// asserting every named field is within `tol` of the baseline, relative to
 /// the magnitude of the baseline ([`max_rel_diff`]). `tol` is the fp32

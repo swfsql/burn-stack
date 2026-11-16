@@ -15,6 +15,7 @@
 use super::*;
 use crate::modules::Residuals;
 use crate::utils::ClassCursors;
+use crate::utils::test_helpers::panic_text;
 use burn::tensor::Gradients;
 
 /// Panic unless each float parameter of real layer `i` has a gradient in
@@ -422,20 +423,192 @@ enum UntrackedGates {
     /// `b = −20`: each gate keeps the streams, so each untracked layer is an
     /// identity.
     Closed,
-    /// The init `b = 0`: `β = 0.5`, so the carry path of each stream halves at
-    /// each mixing layer.
+    /// The init `b`. At `b = 0`, `β = 0.5`, so the carry path of each stream
+    /// halves at each mixing layer.
     Open,
+    /// The MGR modules of the untracked layers alternate from the bottom:
+    /// closed, open, closed, …. So the modules of a span differ.
+    Alternating,
 }
 
-/// [`assert_zero_transform_span_is_exact`] with closed gates: the untracked
-/// span is an identity.
+/// How [`assert_zero_transform_span_is_exact`] calls the stack.
+#[derive(Clone, Copy, Debug)]
+enum Call {
+    /// `Layers::forward` over a window. The window is the input.
+    Forward,
+    /// `Layers::step` over each token of the window. The window is the input.
+    Step,
+    /// `Layers::prime` of one `Start` class latent of the stack. The latent is
+    /// the input.
+    Prime,
+}
+
+/// Each call of a stack.
+const CALLS: [Call; 3] = [Call::Forward, Call::Step, Call::Prime];
+
+/// The class latents of a stack for `call`: one `Start` latent for the prime,
+/// and none for the other calls.
+fn class_latents_for(call: Call) -> Vec<ClassLatent> {
+    match call {
+        Call::Prime => vec![ClassLatent::Start],
+        Call::Forward | Call::Step => Vec::new(),
+    }
+}
+
+/// A stack and its cut for [`assert_zero_transform_span_is_exact`].
+#[derive(Clone, Debug)]
+struct ZeroTransformSpan {
+    /// The number of real layers.
+    n_real: usize,
+    /// The layer schedule `(n_virtual_layers, schedule)`. `None`: each real
+    /// layer runs once.
+    n_virtual_layers: Option<(usize, Schedule)>,
+    /// The residual scheme.
+    residuals: ResidualsConfig,
+    /// `ignore_first_residual` and `ignore_last_residual` of the stack.
+    ignore: (bool, bool),
+    /// The tracked flag of each virtual layer in the run with a cut. No real
+    /// layer and no MGR module runs on both sides of a cut.
+    tracked: Vec<bool>,
+    /// The gates of the untracked layers.
+    gates: UntrackedGates,
+}
+
+/// The real layer and the MGR module of virtual layer `i`. The module is
+/// `None` under Standard.
+fn parts_of(layers: &Layers<RefBlock>, i: usize) -> (usize, Option<usize>) {
+    let real = layers.real_idx(i);
+    let module = match &layers.residuals {
+        Residuals::MultiGate(mg) => Some(mg.module_index(i, real)),
+        Residuals::Standard(_) => None,
+    };
+    (real, module)
+}
+
+impl ZeroTransformSpan {
+    /// A stack of 4 layers whose bottom 2 layers are untracked.
+    fn bottom(residuals: ResidualsConfig, gates: UntrackedGates) -> Self {
+        let tracked = vec![false, false, true, true];
+        Self { n_real: 4, n_virtual_layers: None, residuals, ignore: (false, false), tracked, gates }
+    }
+
+    /// The stack for `call`, with no horizon. The untracked layers have a
+    /// zero `out_proj`, so their transforms are zero. Their MGR modules have
+    /// the gates of [`Self::gates`]. Returns the stack, the real layers of the
+    /// tracked layers and their MGR modules.
+    fn stack(&self, call: Call, device: &Device) -> (Layers<RefBlock>, Vec<usize>, Vec<usize>) {
+        let mut layers = LayersBuilder {
+            n_virtual_layers: self.n_virtual_layers.clone(),
+            residuals: self.residuals.clone(),
+            ignore_first_residual: self.ignore.0,
+            ignore_last_residual: self.ignore.1,
+            class_latents: class_latents_for(call),
+            ..layers_builder(self.n_real)
+        }
+        .init(device);
+        assert_eq!(self.tracked.len(), layers.n_virtual_count(), "one flag for each virtual layer");
+        let side = |tracked: bool| -> Vec<(usize, Option<usize>)> {
+            let virtual_layers = (0..self.tracked.len()).filter(|&i| self.tracked[i] == tracked);
+            virtual_layers.map(|i| parts_of(&layers, i)).collect()
+        };
+        let (kept, untracked) = (side(true), side(false));
+        for (real, module) in &untracked {
+            assert!(
+                kept.iter().all(|(r, m)| r != real && (m.is_none() || m != module)),
+                "real layer {real} or MGR module {module:?} runs on both sides of the cut",
+            );
+        }
+
+        for (real, _) in &untracked {
+            let w = &mut layers.real_layers[*real].block.out_proj.weight;
+            *w = w.clone().map(|t| t.zeros_like());
+        }
+        if let Residuals::MultiGate(mg) = &mut layers.residuals {
+            for (j, module) in untracked.iter().filter_map(|(_, m)| *m).enumerate() {
+                let closed = match self.gates {
+                    UntrackedGates::Closed => true,
+                    UntrackedGates::Open => false,
+                    UntrackedGates::Alternating => j % 2 == 0,
+                };
+                if closed {
+                    let b = &mut mg.layers[module].b_beta;
+                    *b = b.clone().map(|t| t.zeros_like() - 20.0);
+                }
+            }
+        }
+        let (mut kept_layers, kept_modules): (Vec<usize>, Vec<Option<usize>>) = kept.into_iter().unzip();
+        let mut kept_modules: Vec<usize> = kept_modules.into_iter().flatten().collect();
+        for parts in [&mut kept_layers, &mut kept_modules] {
+            parts.sort_unstable();
+            parts.dedup();
+        }
+        (layers, kept_layers, kept_modules)
+    }
+}
+
+/// The gradient of `x` in `grads`, flattened. It is zero when the graph does
+/// not reach `x`.
+fn flat_grad<const D: usize>(x: &Tensor<D>, grads: &Gradients) -> Tensor<1> {
+    x.grad(grads).unwrap_or_else(|| x.zeros_like().inner()).reshape([-1])
+}
+
+/// The head of the prime: the first token of `head`. The prime gives one
+/// token.
+fn prime_head(head: &Tensor<3>) -> Tensor<2> {
+    head.clone().narrow(1, 0, 1).squeeze_dim::<2>(1)
+}
+
+/// One run of `layers` in `call`, with the loss `Σ y · head`. In the forward
+/// and in the step, `x` is the input. The prime reads only the shape of `x`.
+/// Returns the gradient of the input ([`flat_grad`]) and the gradients of the
+/// run.
+fn run_call(layers: &Layers<RefBlock>, call: Call, x: &Tensor<3>, head: &Tensor<3>) -> (Tensor<1>, Gradients) {
+    match call {
+        Call::Forward => {
+            let x = x.clone().require_grad();
+            let (y, _) = layers.forward(x.clone(), None, (), None, None);
+            let grads = (y * head.clone()).sum().backward();
+            (flat_grad(&x, &grads), grads)
+        }
+        Call::Step => {
+            let x = x.clone().require_grad();
+            let y = step_unrolled(layers, x.clone());
+            let grads = (y * head.clone()).sum().backward();
+            (flat_grad(&x, &grads), grads)
+        }
+        Call::Prime => {
+            // One latent row for each row of the batch.
+            let [batch, sequence, _] = x.dims();
+            let mut class = ClassCursors::new(sequence);
+            let (y, _) = layers.prime(batch, None, Some(&mut class));
+            let grads = (y.expect("a latent waits at the start") * prime_head(head)).sum().backward();
+            let emb = layers.class_latents_emb.as_ref().expect("the latent table").val();
+            (flat_grad(&emb, &grads), grads)
+        }
+    }
+}
+
+/// The gradient of the input of `call` in a stack that is an identity
+/// everywhere, flattened.
+fn identity_grad(call: Call, head: &Tensor<3>) -> Tensor<1> {
+    match call {
+        Call::Forward | Call::Step => head.clone().reshape([-1]),
+        // Each row of the batch reads the same latent row.
+        Call::Prime => prime_head(head).sum_dim(0).reshape([-1]),
+    }
+}
+
+/// [`assert_zero_transform_span_is_exact`] with closed gates under the cut of
+/// [`ZeroTransformSpan::bottom`]: the untracked span is an identity.
 fn assert_identity_span_is_exact(residuals: ResidualsConfig) {
-    assert_zero_transform_span_is_exact(residuals, UntrackedGates::Closed);
+    assert_zero_transform_span_is_exact(&ZeroTransformSpan::bottom(residuals, UntrackedGates::Closed), Call::Forward);
 }
 
 /// When the untracked layers have zero transforms, the straight-through carry
-/// is exact. So the gradient of the input under the cut equals its gradient
-/// with no cut.
+/// is exact. So under the cut, two gradients equal their values with no cut:
+/// that of the input, and that of each parameter of a tracked layer. The
+/// tracked layers below a cut get their gradient through the straight-through
+/// carry. The parameters of the tracked layers include their MGR modules.
 ///
 /// A zero `out_proj` makes the output of the block of an untracked layer
 /// zero. So only the carry path of the residual scheme crosses the span:
@@ -452,38 +625,25 @@ fn assert_identity_span_is_exact(residuals: ResidualsConfig) {
 /// The cut changes no value, so the gradient at the cut is the same in both
 /// runs. A straight-through carry of the pooled token, or a gain of 1 across
 /// an open gate, gives a different gradient of the input.
-fn assert_zero_transform_span_is_exact(residuals: ResidualsConfig, gates: UntrackedGates) {
+fn assert_zero_transform_span_is_exact(span: &ZeroTransformSpan, call: Call) {
     let device = test_device().autodiff();
-    let (n, k) = (4, 2);
-    let label = format!("{residuals:?} with {gates:?} untracked gates");
-    let mut base = LayersBuilder { residuals, ..layers_builder(n) }.init(&device);
-    for layer in &mut base.real_layers[..n - k] {
-        let w = &mut layer.block.out_proj.weight;
-        *w = w.clone().map(|t| t.zeros_like());
-    }
-    if let (Residuals::MultiGate(mg), UntrackedGates::Closed) = (&mut base.residuals, gates) {
-        for gate in &mut mg.layers[..n - k] {
-            let b = &mut gate.b_beta;
-            *b = b.clone().map(|t| t.zeros_like() - 20.0);
-        }
-    }
+    let label = format!("{span:?} in {call:?}");
+    let (base, kept_layers, kept_modules) = span.stack(call, &device);
 
     let x = randn3(2, 4, &device);
     let head = randn3(2, 4, &device);
     // The same weights in both runs. Only the horizon differs.
-    let input_grad = |horizon: Option<GradHorizon>| {
+    let run = |horizon: Option<GradHorizon>| {
         let mut layers = base.clone();
         layers.grad_horizon = horizon;
-        let x = x.clone().require_grad();
-        let (y, _) = layers.forward(x.clone(), None, (), None, None);
-        x.grad(&(y * head.clone()).sum().backward()).expect("the input gets a gradient")
+        run_call(&layers, call, &x, &head)
     };
-    let want = input_grad(None);
-    let got = input_grad(Some(GradHorizon::last(k, n)));
+    let (want, want_grads) = run(None);
+    let (got, got_grads) = run(Some(GradHorizon::Mask(span.tracked.clone())));
 
-    // A stack that is an identity everywhere gives the gradient `head`. Then
-    // the two runs can agree also with a wrong straight-through carry.
-    let off_identity = max_abs_diff(want.clone(), head);
+    // A stack that is an identity everywhere gives the gradient `identity`.
+    // Then the two runs can agree also with a wrong straight-through carry.
+    let off_identity = max_abs_diff(want.clone(), identity_grad(call, &head));
     assert!(off_identity > 1e-2, "{label}: the tracked layers are identities too, so the check cannot fail");
     let diff = max_rel_diff(got, want);
     assert!(
@@ -491,6 +651,16 @@ fn assert_zero_transform_span_is_exact(residuals: ResidualsConfig, gates: Untrac
         "{label}: the cut changes the gradient of the input by {diff}. The straight-through carry \
          does not follow the carry path of the residual scheme",
     );
+    for real in kept_layers {
+        let label = format!("{label}, real layer {real}");
+        assert_same_grads(&base.real_layers[real], &want_grads, &got_grads, &label);
+    }
+    if let Residuals::MultiGate(mg) = &base.residuals {
+        for module in kept_modules {
+            let label = format!("{label}, MGR module {module}");
+            assert_matching_grads(&mg.layers[module], &want_grads, &got_grads, &label);
+        }
+    }
 }
 
 /// The token holds the whole residual.
@@ -533,7 +703,208 @@ fn an_identity_untracked_span_is_exact_under_four_residual_streams() {
 #[test]
 fn an_untracked_span_with_open_gates_is_exact_under_multi_gate_residuals() {
     for n_stream in [1, 2, 4] {
-        assert_zero_transform_span_is_exact(multi_gate_residuals(n_stream), UntrackedGates::Open);
+        let span = ZeroTransformSpan::bottom(multi_gate_residuals(n_stream), UntrackedGates::Open);
+        assert_zero_transform_span_is_exact(&span, Call::Forward);
+    }
+}
+
+/// Multi-Gate Residuals over `n_stream` streams with open gates. Stream `i`
+/// starts at `b = −i`, so each carry path has a different gain.
+fn ramped_multi_gate_residuals(n_stream: usize) -> ResidualsConfig {
+    ResidualsConfig::MultiGate { n_stream, init_bias: 0.0, init_bias_offset: -1.0, per_virtual_layer: false }
+}
+
+/// [`ramped_multi_gate_residuals`] with one MGR module for each virtual
+/// layer.
+fn ramped_per_virtual_multi_gate_residuals(n_stream: usize) -> ResidualsConfig {
+    ResidualsConfig::MultiGate { n_stream, init_bias: 0.0, init_bias_offset: -1.0, per_virtual_layer: true }
+}
+
+/// [`assert_zero_transform_span_is_exact`] in the forward, in the step and in
+/// the prime.
+fn assert_exact_in_each_call(span: &ZeroTransformSpan) {
+    for call in CALLS {
+        assert_zero_transform_span_is_exact(span, call);
+    }
+}
+
+/// Two untracked spans under MGR: one inside the stack, and one at the top.
+/// Two different residual streams enter each span, and the spans only mix.
+/// The tracked layers below each cut train through the straight-through
+/// carry. This holds in each call.
+///
+/// Real layer 0 runs each tracked layer, and real layer 1 runs each untracked
+/// layer. So the MGR module of real layer 0 also pools below a tracked layer,
+/// and its `w_alpha` trains (see
+/// `grad_horizon_refuses_a_multi_gate_pool_that_feeds_only_untracked_layers`).
+#[test]
+fn an_untracked_span_inside_the_stack_is_exact_under_multi_gate_residuals() {
+    assert_exact_in_each_call(&ZeroTransformSpan {
+        n_real: 2,
+        n_virtual_layers: Some((7, Schedule::Custom(vec![0, 0, 1, 1, 0, 0, 1]))),
+        residuals: ramped_multi_gate_residuals(2),
+        ignore: (false, false),
+        tracked: vec![true, true, false, false, true, true, false],
+        gates: UntrackedGates::Open,
+    });
+}
+
+/// The accumulation phase ends inside an untracked span. Two residual streams
+/// enter the span. Its first layer appends the third stream, and its second
+/// layer mixes all three. The appended stream holds only the output of an
+/// untracked layer, so it gets no straight-through carry. This holds in each
+/// call.
+///
+/// Real layer 0 runs each tracked layer, as in
+/// `an_untracked_span_inside_the_stack_is_exact_under_multi_gate_residuals`.
+#[test]
+fn an_untracked_span_that_ends_the_accumulation_phase_is_exact() {
+    assert_exact_in_each_call(&ZeroTransformSpan {
+        n_real: 2,
+        n_virtual_layers: Some((6, Schedule::Custom(vec![0, 1, 1, 0, 0, 0]))),
+        residuals: ramped_multi_gate_residuals(3),
+        ignore: (false, false),
+        tracked: vec![true, false, false, true, true, true],
+        gates: UntrackedGates::Open,
+    });
+}
+
+/// One MGR module for each virtual layer, across a cut at the bottom. Real
+/// layer 1 runs the three virtual layers of the span, and each of them has
+/// its own module. These modules alternate between closed and open gates. So
+/// the gain of each carry path comes from the module of each virtual layer,
+/// not from that of its real layer. This holds in each call.
+///
+/// With one module for each virtual layer, a span above a tracked layer
+/// panics (see
+/// `grad_horizon_refuses_a_multi_gate_pool_that_feeds_only_untracked_layers`).
+/// So the span is at the bottom.
+#[test]
+fn an_untracked_span_is_exact_with_one_multi_gate_module_for_each_virtual_layer() {
+    assert_exact_in_each_call(&ZeroTransformSpan {
+        n_real: 2,
+        n_virtual_layers: Some((6, Schedule::Custom(vec![1, 1, 1, 0, 0, 0]))),
+        residuals: ramped_per_virtual_multi_gate_residuals(2),
+        ignore: (false, false),
+        tracked: vec![false, false, false, true, true, true],
+        gates: UntrackedGates::Alternating,
+    });
+}
+
+/// Panic unless `run` panics with a message that holds `expected`.
+fn assert_panics_with(expected: &str, label: &str, run: impl FnOnce()) {
+    let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)) else {
+        panic!("{label}: the run does not panic");
+    };
+    let message = panic_text(&*payload).unwrap_or_default();
+    assert!(message.contains(expected), "{label}: the panic `{message}` does not hold `{expected}`");
+}
+
+/// Panic unless the stack that `stack` builds for each call panics in that
+/// call with a message that holds `expected`.
+fn assert_refused_in_each_call(label: &str, expected: &str, stack: impl Fn(Call, &Device) -> Layers<RefBlock>) {
+    let device = test_device().autodiff();
+    for call in CALLS {
+        let layers = stack(call, &device);
+        let (x, head) = (randn3(2, 4, &device), randn3(2, 4, &device));
+        let label = format!("{label} in {call:?}");
+        assert_panics_with(expected, &label, || drop(run_call(&layers, call, &x, &head)));
+    }
+}
+
+/// [`assert_refused_in_each_call`] on the stack of `span` under its mask.
+fn assert_horizon_is_refused(span: &ZeroTransformSpan, expected: &str) {
+    assert_refused_in_each_call(&format!("{span:?}"), expected, |call, device| {
+        let (mut layers, _, _) = span.stack(call, device);
+        layers.grad_horizon = Some(GradHorizon::Mask(span.tracked.clone()));
+        layers
+    });
+}
+
+/// A suppressed skip at an untracked end layer panics, under each scheme and
+/// in each call (`Residuals::assert_horizon_keeps_gradients` gives the
+/// reason). Each case has a span of only the end layer, and a span of two
+/// layers.
+#[test]
+fn grad_horizon_refuses_a_suppressed_skip_at_an_untracked_end_layer() {
+    for (ignore, tracked, expected) in [
+        ((true, false), vec![false, true, true, true], "ignore_first_residual suppresses its skip"),
+        ((true, false), vec![false, false, true, true], "ignore_first_residual suppresses its skip"),
+        ((false, true), vec![true, true, true, false], "ignore_last_residual suppresses its skip"),
+        ((false, true), vec![true, true, false, false], "ignore_last_residual suppresses its skip"),
+    ] {
+        for residuals in [ResidualsConfig::Standard, ramped_multi_gate_residuals(2)] {
+            let span = ZeroTransformSpan {
+                n_real: 4,
+                n_virtual_layers: None,
+                residuals,
+                ignore,
+                tracked: tracked.clone(),
+                gates: UntrackedGates::Open,
+            };
+            assert_horizon_is_refused(&span, expected);
+        }
+    }
+}
+
+/// Under MGR, an MGR module that pools in a tracked layer, but only directly
+/// below untracked layers, panics (`Residuals::assert_horizon_keeps_gradients`
+/// gives the reason). Each stack below has such a module, and each one panics
+/// in each call:
+///
+/// - a span inside a stack with no weight sharing,
+/// - one MGR module for each virtual layer, with a span inside the stack,
+/// - a stretched layer schedule under `Depth(1)`. Each real layer except the
+///   top one has one tracked application, directly below the run of the next
+///   real layer.
+#[test]
+fn grad_horizon_refuses_a_multi_gate_pool_that_feeds_only_untracked_layers() {
+    let expected = "with no tracked pool that feeds a tracked layer";
+    let inside = ZeroTransformSpan {
+        n_real: 4,
+        n_virtual_layers: None,
+        residuals: ramped_multi_gate_residuals(2),
+        ignore: (false, false),
+        tracked: vec![true, false, true, true],
+        gates: UntrackedGates::Open,
+    };
+    assert_horizon_is_refused(&inside, expected);
+    let per_virtual = ZeroTransformSpan {
+        n_real: 2,
+        n_virtual_layers: Some((6, Schedule::Custom(vec![0, 1, 1, 1, 0, 0]))),
+        residuals: ramped_per_virtual_multi_gate_residuals(2),
+        ignore: (false, false),
+        tracked: vec![true, false, false, false, true, true],
+        gates: UntrackedGates::Open,
+    };
+    assert_horizon_is_refused(&per_virtual, expected);
+    assert_refused_in_each_call("Stretched under Depth(1)", expected, |call, device| {
+        LayersBuilder {
+            n_virtual_layers: Some((8, Schedule::Stretched)),
+            residuals: ramped_multi_gate_residuals(2),
+            grad_horizon: Some(GradHorizon::Depth(1)),
+            class_latents: class_latents_for(call),
+            ..layers_builder(3)
+        }
+        .init(device)
+    });
+}
+
+/// A span next to a tracked suppressed skip stays exact. The suppressed first
+/// skip below the span starts the residual streams again from `F_0`. The
+/// suppressed last skip above the span reads the token at the cut. This holds
+/// under each scheme and in each call.
+#[test]
+fn an_untracked_span_next_to_a_tracked_suppressed_skip_is_exact() {
+    for residuals in [ResidualsConfig::Standard, ramped_multi_gate_residuals(2)] {
+        assert_exact_in_each_call(&ZeroTransformSpan {
+            n_real: 4,
+            n_virtual_layers: None,
+            residuals,
+            ignore: (true, true),
+            tracked: vec![true, false, false, true],
+            gates: UntrackedGates::Open,
+        });
     }
 }
 
@@ -587,10 +958,14 @@ fn grad_horizon_stretched_trains_every_real_layer() {
     }
 }
 
-/// The mask can alternate arbitrarily. Only the layers that it tracks collect
-/// a gradient, and `forward` still equals `step` unrolled through every one of
+/// The mask can alternate. Only the real layers that it tracks collect a
+/// gradient, and `forward` still equals `step` unrolled through every one of
 /// those backend hops. This holds under both residual schemes, and the
 /// residual streams of Multi-Gate make the same hop as the tokens.
+///
+/// The stack shares its real layers, so the MGR module of each tracked real
+/// layer also pools below a tracked layer. Real layer 2 runs only the
+/// untracked layers.
 #[test]
 fn grad_horizon_mask_alternates_and_keeps_forward_step_parity() {
     let device = test_device().autodiff();
@@ -607,8 +982,9 @@ fn grad_horizon_mask_alternates_and_keeps_forward_step_parity() {
         },
     ] {
         let build = || LayersBuilder {
+            n_virtual_layers: Some((8, Schedule::Cyclic)),
             residuals: residuals.clone(),
-            ..layers_builder(6)
+            ..layers_builder(3)
         }
         .init(&device);
         let uncut = build();
@@ -617,8 +993,8 @@ fn grad_horizon_mask_alternates_and_keeps_forward_step_parity() {
         let mut cut = build();
         cut.real_layers = uncut.real_layers.clone();
         cut.residuals = uncut.residuals.clone();
-        // Tracked, untracked, tracked, untracked, …: four backend hops.
-        let mask = vec![true, false, true, false, false, true];
+        // Two untracked spans inside the stack: four backend hops.
+        let mask = vec![true, true, false, true, true, false, true, true];
         cut.grad_horizon = Some(GradHorizon::Mask(mask.clone()));
         let (y_cut, _) = cut.forward(x.clone(), None, (), None, None);
         assert!(
@@ -640,12 +1016,13 @@ fn grad_horizon_mask_alternates_and_keeps_forward_step_parity() {
 
         let grads = y_cut.sum().backward();
         assert!(x.grad(&grads).is_some(), "the input crosses every cut");
-        for (i, tracked) in mask.iter().enumerate() {
-            let g = cut.real_layers[i].block.in_proj.weight.val().grad(&grads);
+        for (real, layer) in cut.real_layers.iter().enumerate() {
+            let tracked = (0..mask.len()).any(|i| mask[i] && parts_of(&cut, i).0 == real);
+            let g = layer.block.in_proj.weight.val().grad(&grads);
             assert_eq!(
                 g.is_some(),
-                *tracked,
-                "layer {i} must collect a gradient exactly when the mask tracks it",
+                tracked,
+                "real layer {real} must collect a gradient exactly when the mask tracks one of its applications",
             );
         }
     }

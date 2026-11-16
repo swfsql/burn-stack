@@ -55,13 +55,31 @@
 //!
 //!   At the cut, stream `i` gets `gᵢ · carryᵢ`, and the token gets
 //!   `Σᵢ αᵢ · gᵢ · carryᵢ`. `αᵢ` is the aggregator weight of stream `i` in
-//!   the last pool. A stream that the span appended gets nothing.
-//! - A suppressed skip in a span keeps the gains. So the input still trains
-//!   across it, but the gradient there is not exact.
+//!   the last pool of the span. A stream that the span appended gets nothing.
+//!
+//! The same rule applies at each cut: a cut at the bottom, a cut inside the
+//! stack, and a cut of a span in which the accumulation phase ends. With one
+//! MGR module for each virtual layer, each join of the span reads the gate of
+//! its own virtual layer. `forward`, `step` and `prime` take the same
+//! straight-through carry.
 //!
 //! The values do not change. The rule is exact when each transform of the
 //! span is zero and the scores do not depend on the streams. The init `w = 0`
 //! gives such scores. ADR-0006 gives the reason for the straight-through carry.
+//!
+//! Two settings would leave a parameter with no gradient, and no error would
+//! show it. So `Residuals::assert_horizon_keeps_gradients` panics on each of
+//! them, before the stack runs:
+//!
+//! - A suppressed skip at an untracked layer. The carry path across a
+//!   suppressed skip has gain 0, so the span would cut each gradient path
+//!   across it. So no untracked span holds a suppressed skip. Under MGR, each
+//!   span then pools at least once, and the cut reads the weights `αᵢ` of
+//!   that pool.
+//! - Under MGR, a module that pools in a tracked layer, but only directly
+//!   below untracked layers. The pooled token that enters a span takes no
+//!   straight-through carry. So the aggregator query `w_alpha` of that module
+//!   would never train.
 
 use crate::modules::bidi::NoOp;
 use crate::modules::{MultiGate, MultiGateResidualConfig, lift};
@@ -155,12 +173,9 @@ pub(crate) struct ResidualStreams<const R: usize, const S: usize> {
     /// Under MGR, the `k` residual streams, `[…, k, d_model]`. `None` under
     /// Standard.
     streams: Option<Tensor<S>>,
-    /// Under MGR, the aggregator weights `αᵢ` of the last pool, `[…, k, 1]`.
-    /// `None` under Standard, and under MGR before the first pool of the
-    /// streams. Then the token is the one stream.
-    ///
-    /// Each pool sets them, also outside an untracked span. In a span in which
-    /// no join pools, the cut uses the weights of the pool below the span.
+    /// Inside an untracked span under MGR: the aggregator weights `αᵢ` of the
+    /// last pool of the span, `[…, k, 1]`. The cut reads them. `None`
+    /// elsewhere, and in a span before its first pool.
     alpha: Option<Tensor<S>>,
     /// Inside an untracked span under MGR: the gain of the carry path of each
     /// stream from the start of the span, `[…, k, 1]`. `None` elsewhere.
@@ -214,6 +229,14 @@ pub(crate) struct JoinAt {
     pub(crate) last: bool,
 }
 
+impl JoinAt {
+    /// `true`: the skip of this layer is suppressed (the first or the last
+    /// layer). Then the join does not pool.
+    pub(crate) fn suppressed(&self) -> bool {
+        self.first || self.last
+    }
+}
+
 /// The stream axis `R − 1` of the residual streams. Panics unless
 /// `S == R + 1`.
 fn stream_axis<const R: usize, const S: usize>() -> usize {
@@ -258,12 +281,13 @@ impl Residuals {
         layer: impl FnOnce(Tensor<R>) -> (Tensor<R>, T),
     ) -> (ResidualStreams<R, S>, T) {
         let axis = stream_axis::<R, S>();
-        let ResidualStreams { token, streams, alpha, span_gain } = value;
+        // Each pool replaces the aggregator weights.
+        let ResidualStreams { token, streams, alpha: _, span_gain } = value;
         match self {
             Residuals::Standard(_) => {
                 // Only the skip clones the input. A suppressed skip moves it
                 // into the layer.
-                let (token, extra) = if at.first || at.last {
+                let (token, extra) = if at.suppressed() {
                     layer(token)
                 } else {
                     let (out, extra) = layer(token.clone());
@@ -276,12 +300,15 @@ impl Residuals {
                 // The streams hold the residual, so the token moves into the
                 // layer.
                 let (out, extra) = layer(token);
-                // A suppressed skip keeps the gain of the span.
-                let value = if at.last {
-                    ResidualStreams { token: out, streams: Some(streams), alpha, span_gain }
-                } else if at.first {
-                    let streams = Some(out.clone().unsqueeze_dim::<S>(axis));
-                    ResidualStreams { token: out, streams, alpha: None, span_gain }
+                let value = if at.suppressed() {
+                    // `Layers::grad_tracked` panics when a suppressed skip is
+                    // untracked, so no untracked span holds one.
+                    debug_assert!(span_gain.is_none(), "an untracked span holds a suppressed skip");
+                    let streams = match at.last {
+                        true => streams,
+                        false => out.clone().unsqueeze_dim::<S>(axis),
+                    };
+                    ResidualStreams { token: out, streams: Some(streams), alpha: None, span_gain: None }
                 } else {
                     let mgr = &mg.layers[mg.module_index(at.virtual_idx, at.real_idx)];
                     let out = out.unsqueeze_dim::<S>(axis);
@@ -290,6 +317,8 @@ impl Residuals {
                     } else {
                         mgr.mix_pool(out, streams)
                     };
+                    // Only the cut of a span reads the aggregator weights.
+                    let alpha = span_gain.is_some().then_some(pooled.alpha);
                     let span_gain = span_gain.map(|gain| match pooled.carry_gain {
                         Some(carry_gain) => gain * carry_gain,
                         // The new stream holds only `F_l`, so its carry path
@@ -302,12 +331,70 @@ impl Residuals {
                     ResidualStreams {
                         token: pooled.token.squeeze_dim::<R>(axis),
                         streams: Some(pooled.streams),
-                        alpha: Some(pooled.alpha),
+                        alpha,
                         span_gain,
                     }
                 };
                 (value, extra)
             }
+        }
+    }
+
+    /// Panic on the two settings of the tracked mask `tracked` that would
+    /// leave a parameter with no gradient, and no error would show it.
+    /// `tracked` has one flag for each virtual layer, and `joins` gives the
+    /// residual join of each virtual layer.
+    ///
+    /// The carry path across a suppressed skip has gain 0. So a suppressed
+    /// skip at an untracked end layer cuts each gradient path across its span:
+    ///
+    /// - Under a suppressed first skip at an untracked layer 0, the input of
+    ///   the stack would never train.
+    /// - Under a suppressed last skip at an untracked top layer, no layer of
+    ///   the stack would get a gradient.
+    ///
+    /// Under MGR, the pooled token of a layer is the input of the next layer,
+    /// and it takes no straight-through carry. So the aggregator query
+    /// `w_alpha` of an MGR module trains only through a tracked pool that
+    /// feeds a tracked layer or the output of the stack. A module that pools
+    /// in a tracked layer needs one such pool. A module with no tracked pool
+    /// does not train, as each parameter of an untracked layer.
+    pub(crate) fn assert_horizon_keeps_gradients(&self, tracked: &[bool], joins: &[JoinAt]) {
+        assert_eq!(joins.len(), tracked.len(), "one residual join for each virtual layer");
+        for (at, &is_tracked) in joins.iter().zip(tracked) {
+            let i = at.virtual_idx;
+            assert!(
+                is_tracked || !at.first,
+                "grad_horizon leaves virtual layer {i} untracked, but ignore_first_residual suppresses its skip. \
+                 The input of the stack then has no carry path across the untracked span, so it would never \
+                 train. Track virtual layer {i}, or keep its skip.",
+            );
+            assert!(
+                is_tracked || !at.last,
+                "grad_horizon leaves the top virtual layer {i} untracked, but ignore_last_residual suppresses \
+                 its skip. The output of the stack then has no carry path from the layers below. So no layer \
+                 of the stack would train. Track virtual layer {i}, or keep its skip.",
+            );
+        }
+        let Residuals::MultiGate(mg) = self else {
+            return;
+        };
+        // For each module: the virtual layers of its tracked pools, and
+        // whether one of these pools feeds a tracked layer or the output.
+        let mut pools = vec![(Vec::new(), false); mg.layers.len()];
+        for (i, at) in joins.iter().enumerate().filter(|&(i, at)| tracked[i] && !at.suppressed()) {
+            let (pooled_at, feeds) = &mut pools[mg.module_index(at.virtual_idx, at.real_idx)];
+            pooled_at.push(at.virtual_idx);
+            *feeds |= i + 1 == tracked.len() || tracked[i + 1];
+        }
+        for (module, (pooled_at, feeds)) in pools.iter().enumerate() {
+            assert!(
+                pooled_at.is_empty() || *feeds,
+                "grad_horizon leaves MGR module {module} with no tracked pool that feeds a tracked layer or the \
+                 output. Its tracked pools are at the virtual layers {pooled_at:?}, and an untracked layer reads each \
+                 of them. So its aggregator query `w_alpha` would never train. Track the virtual layer above one \
+                 of them.",
+            );
         }
     }
 
@@ -323,6 +410,7 @@ impl Residuals {
         let axis = stream_axis::<R, S>();
         let ResidualStreams { token, streams, alpha, span_gain } = value;
         debug_assert!(span_gain.is_none(), "an untracked span cannot start inside an untracked span");
+        debug_assert!(alpha.is_none(), "the aggregator weights exist only inside an untracked span");
         match self {
             Residuals::Standard(_) => {
                 let carry = StraightThroughCarry::Token(token.clone() - token.clone().detach());
@@ -334,8 +422,7 @@ impl Residuals {
                 let streams = streams.inner();
                 // One gain for each stream: size 1 on the feature axis.
                 let span_gain = Some(Tensor::ones(resized(&streams, axis + 1, 1), &streams.device()));
-                let (token, alpha) = (token.inner(), alpha.map(Tensor::inner));
-                (ResidualStreams { token, streams: Some(streams), alpha, span_gain }, carry)
+                (ResidualStreams { token: token.inner(), streams: Some(streams), alpha: None, span_gain }, carry)
             }
         }
     }
@@ -369,12 +456,9 @@ impl Residuals {
                 // finds. So the first `k₀` streams entered the span.
                 let k0 = carry.dims()[axis];
                 let carried = carry * lift(gain.narrow(axis, 0, k0), device);
-                let alpha = alpha.map(|a| lift(a, device));
-                let token_carry = match &alpha {
-                    Some(a) => (carried.clone() * a.clone().narrow(axis, 0, k0)).sum_dim(axis),
-                    // No pool yet: the token is the one stream.
-                    None => carried.clone(),
-                };
+                // No untracked span holds a suppressed skip, so each span pools.
+                let alpha = alpha.expect("an untracked span under MGR has the aggregator weights of its last pool");
+                let token_carry = (carried.clone() * lift(alpha.narrow(axis, 0, k0), device)).sum_dim(axis);
                 let streams = streams.map(|streams| {
                     let streams = lift(streams, device);
                     let k = streams.dims()[axis];
@@ -388,7 +472,7 @@ impl Residuals {
                     streams + carried
                 });
                 let token = token + token_carry.squeeze_dim::<R>(axis);
-                ResidualStreams { token, streams, alpha, span_gain: None }
+                ResidualStreams { token, streams, alpha: None, span_gain: None }
             }
         }
     }

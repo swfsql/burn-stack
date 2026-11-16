@@ -60,7 +60,7 @@ pub struct Layers<M: Module> {
     ///   are the tail of each run, and the stack cuts and lifts back once **per
     ///   real layer**. A plain suffix would leave the lower real layers of a
     ///   stretched stack with no tracked application, so they would silently
-    ///   not train.
+    ///   not train. Under MGR, `Depth(1)` can panic (see below).
     ///
     /// [`GradHorizon::Mask`] states the tracked layers directly, one flag per
     /// virtual layer. [`Schedule::Custom`] takes it, because it has no
@@ -101,10 +101,33 @@ pub struct Layers<M: Module> {
     /// enters the span takes its own straight-through carry, with the gain of
     /// its carry path across the span. A stream that the span appends gets
     /// none. At a cut at the bottom of the stack, only the seed stream takes a
-    /// straight-through carry. The module header of
+    /// straight-through carry. A cut inside the stack, a span in which the
+    /// accumulation phase ends, and one MGR module for each virtual layer
+    /// follow the same rule. The module header of
     /// [`crate::modules::residuals`] gives the rule, and when it is exact.
     ///
     /// In every case, the values do not change.
+    ///
+    /// **A horizon that leaves a parameter with no gradient panics** on the
+    /// autodiff backend, before the stack runs. Each case below would let a
+    /// parameter silently not train:
+    ///
+    /// - An untracked application of a layer that unties parameters. Only
+    ///   their own application reads the copies.
+    /// - An untracked layer 0 under `ignore_first_residual`, or an untracked
+    ///   top layer under `ignore_last_residual`. The carry path across a
+    ///   suppressed skip has gain 0. So the input of the stack, or every layer
+    ///   of the stack, would get no gradient.
+    /// - Under MGR, a module that pools in a tracked layer, but only directly
+    ///   below untracked layers. Its pooled token takes no straight-through
+    ///   carry, so its aggregator query `w_alpha` would never train. With no
+    ///   weight sharing, or with one module for each virtual layer, an MGR
+    ///   stack can thus take an untracked span only at the bottom, or directly
+    ///   above a suppressed first skip. Its layer 0 does not pool. Under
+    ///   [`Schedule::Stretched`] with modules for each real layer, `Depth(1)`
+    ///   panics when a run other than the bottom one is longer than one layer.
+    ///   The module of the run below pools only at its tail, directly below
+    ///   the untracked head of that run.
     ///
     /// **Every class embedding trains**, at both marker levels and on both
     /// sides of a cut. The [`ClassToken`]s of a network and the
@@ -184,7 +207,9 @@ where
         zero_caches_for(&self.real_layers[0], self.n_virtual_count(), batch, device)
     }
 
-    fn real_idx(&self, virtual_idx: usize) -> usize {
+    /// The real layer of the virtual layer `virtual_idx`, under the layer
+    /// schedule of the stack.
+    pub(crate) fn real_idx(&self, virtual_idx: usize) -> usize {
         if let Some((n, schedule)) = &self.n_virtual_layers {
             schedule.real_idx(virtual_idx, *n, self.n_real_layers)
         } else {
@@ -213,8 +238,8 @@ where
     ///
     /// The mask can turn off and on again any number of times: once for a
     /// [`Schedule::Cyclic`] stack, once per real layer for a
-    /// [`Schedule::Stretched`] stack, and arbitrarily for a
-    /// [`GradHorizon::Mask`].
+    /// [`Schedule::Stretched`] stack, and as often as a [`GradHorizon::Mask`]
+    /// states. The panics below limit where an untracked span can be.
     ///
     /// Returns `None` off the autodiff backend. A cut there would buy nothing:
     /// `Tensor::inner` and [`lift`](crate::modules::lift) do nothing off it. A
@@ -222,6 +247,10 @@ where
     /// at inference. The device of the module decides
     /// ([`Self::stack_device`]), because [`Self::prime`] has no input tensor
     /// to ask.
+    ///
+    /// Panics on a mask that leaves a parameter with no gradient (see
+    /// [`Self::grad_horizon`]). The residual scheme checks its own cases
+    /// (`Residuals::assert_horizon_keeps_gradients`).
     fn grad_tracked(&self, n: usize) -> Option<Vec<bool>> {
         if !self.stack_device().is_autodiff() {
             return None;
@@ -242,6 +271,8 @@ where
                  train. Track every application of a layer with untied weights.",
             );
         }
+        let joins: Vec<JoinAt> = (0..n).map(|i| self.join_at(i, n)).collect();
+        self.residuals.assert_horizon_keeps_gradients(&tracked, &joins);
         // An all-tracked mask *is* the untouched stack, so take no cut. This
         // keeps a horizon deeper than the application count of every real
         // layer a no-op, down to the graph that it builds.
@@ -637,9 +668,9 @@ where
 /// an untracked span runs such a block in eval mode.
 ///
 /// The mask can turn off and on again any number of times: once per real
-/// layer under `Schedule::Stretched`, and arbitrarily under a
-/// `GradHorizon::Mask`. Each end of an untracked span is a full hop of
-/// everything that crosses it.
+/// layer under `Schedule::Stretched`, and as often as a `GradHorizon::Mask`
+/// states. Each end of an untracked span is a full hop of everything that
+/// crosses it.
 struct BackendHop<'a, M: Block, const R: usize, const S: usize> {
     /// The stack. Its residual scheme takes and adds back the
     /// straight-through carry.

@@ -50,7 +50,7 @@
 //! tokens, through its config or its options.
 
 use crate::modules::{Block, BlockConfig, CacheStack, CacheTensors, Layers, LayersBuilder, TensorZip};
-use crate::utils::test_helpers::{dtype_tol, max_rel_diff, test_device};
+use crate::utils::test_helpers::{dtype_tol, max_rel_diff, panic_text, test_device};
 use crate::utils::{GradHorizon, Packed, Schedule};
 use burn::config::config_to_json;
 use burn::module::{ModuleMapper, ModuleVisitor, Param, ParamId};
@@ -861,11 +861,7 @@ fn run_contract(name: &str, checks: impl FnOnce()) {
     let Err(payload) = catch_unwind(AssertUnwindSafe(checks)) else {
         return;
     };
-    let message = match (payload.downcast_ref::<String>(), payload.downcast_ref::<&str>()) {
-        (Some(message), _) => message.clone(),
-        (None, Some(message)) => message.to_string(),
-        (None, None) => "a check panicked with no text.".to_string(),
-    };
+    let message = panic_text(&*payload).unwrap_or_else(|| "a check panicked with no text.".to_string());
     panic!("block contract `{name}`: {message}");
 }
 
