@@ -129,13 +129,10 @@ impl MultiGateResidual {
     /// - `layer_output`: `F_l` lifted to a unit stream axis, `[…, 1, d_model]`
     /// - `streams`: the `n_stream` residual streams, `[…, n_stream, d_model]`
     ///
-    /// Returns `(h, streams')` with `h` still carrying its unit stream axis
-    /// (`[…, 1, d_model]`) and `streams'` the same shape as `streams`.
-    pub(crate) fn mix_pool<const R: usize>(
-        &self,
-        layer_output: Tensor<R>,
-        streams: Tensor<R>,
-    ) -> (Tensor<R>, Tensor<R>) {
+    /// Returns the [`Pooled`] streams. Their `token` keeps its unit stream
+    /// axis (`[…, 1, d_model]`), and their `streams` have the shape of
+    /// `streams`.
+    pub(crate) fn mix_pool<const R: usize>(&self, layer_output: Tensor<R>, streams: Tensor<R>) -> Pooled<R> {
         let stream_axis = R - 2;
         assert_eq!(
             streams.dims()[stream_axis],
@@ -152,38 +149,44 @@ impl MultiGateResidual {
 
         // β gate: independent per-stream sigmoid gate, `β`: `[…, n_stream, 1]`.
         let beta = sigmoid(self.normed_score(streams.clone(), w_beta) + b_beta);
+        // The carry path: the `1−β` share of each stream.
+        let carry_gain = -beta.clone() + 1.0;
         // Lerp `(1−β)·streams + β·layer_output` (equal to the
         // `streams + β·(layer_output − streams)` of the paper). This form
         // retains no full-width intermediate. `streams` is the already-saved
         // input, and `layer_output` is `[…, 1, d_model]`. So neither `mul`
         // saves a new `[…, n_stream, d_model]` tensor, and the `+` saves
         // nothing.
-        let new_streams = streams * (-beta.clone() + 1.0) + layer_output * beta;
+        let new_streams = streams * carry_gain.clone() + layer_output * beta;
 
-        (self.attn_pool(new_streams.clone()), new_streams)
+        let (token, alpha) = self.pool(new_streams.clone());
+        Pooled { token, streams: new_streams, alpha, carry_gain: Some(carry_gain) }
     }
 
     /// The accumulation-phase counterpart of [`Self::mix_pool`]: append
     /// `layer_output` (`[…, 1, d_model]`) to `streams` (`[…, k, d_model]`,
-    /// `k < n_stream`) as a new stream, then pool as usual. Returns
-    /// `(h, streams')` with `streams'` one stream wider.
-    pub(crate) fn append_pool<const R: usize>(
-        &self,
-        layer_output: Tensor<R>,
-        streams: Tensor<R>,
-    ) -> (Tensor<R>, Tensor<R>) {
+    /// `k < n_stream`) as a new stream, then pool as usual. The `streams'` of
+    /// the [`Pooled`] streams are one stream wider.
+    pub(crate) fn append_pool<const R: usize>(&self, layer_output: Tensor<R>, streams: Tensor<R>) -> Pooled<R> {
         assert!(
             streams.dims()[R - 2] < self.n_stream,
             "the accumulation phase stops at `n_stream` streams"
         );
         let new_streams = Tensor::cat(vec![streams, layer_output], R - 2);
-        (self.attn_pool(new_streams.clone()), new_streams)
+        let (token, alpha) = self.pool(new_streams.clone());
+        Pooled { token, streams: new_streams, alpha, carry_gain: None }
     }
 
     /// Aggregator: depth-wise attention pooling over any stream count `k ≥ 1`
     /// (softmax over the stream axis `R-2`). It keeps that axis at size 1, so
     /// the result still broadcasts against the streams.
     pub fn attn_pool<const R: usize>(&self, streams: Tensor<R>) -> Tensor<R> {
+        self.pool(streams).0
+    }
+
+    /// [`Self::attn_pool`], and the aggregator weights `αᵢ` of the pool,
+    /// `[…, k, 1]`.
+    fn pool<const R: usize>(&self, streams: Tensor<R>) -> (Tensor<R>, Tensor<R>) {
         let (stream_axis, feat_axis) = (R - 2, R - 1);
         assert_eq!(
             streams.dims()[feat_axis],
@@ -192,7 +195,7 @@ impl MultiGateResidual {
         );
         let w_alpha = self.w_alpha.val().unsqueeze::<R>();
         let alpha = softmax(self.normed_score(streams.clone(), w_alpha), stream_axis);
-        (alpha * streams).sum_dim(stream_axis)
+        ((alpha.clone() * streams).sum_dim(stream_axis), alpha)
     }
 
     /// Mix + pool over every position of a window.
@@ -206,8 +209,8 @@ impl MultiGateResidual {
     /// (`[batch, sequence, d_model]`) and the updated streams (same shape as
     /// the input).
     pub fn forward(&self, layer_output: Tensor<3>, streams: Tensor<4>) -> (Tensor<3>, Tensor<4>) {
-        let (new_h, new_streams) = self.mix_pool::<4>(layer_output.unsqueeze_dim(2), streams);
-        (new_h.squeeze_dim(2), new_streams)
+        let pooled = self.mix_pool::<4>(layer_output.unsqueeze_dim(2), streams);
+        (pooled.token.squeeze_dim(2), pooled.streams)
     }
 
     /// Single-token mix + pool (the [`Self::forward`] math with the sequence axis
@@ -218,8 +221,8 @@ impl MultiGateResidual {
     ///
     /// Returns `(h, streams')`: `[batch, d_model]` and `[batch, n_stream, d_model]`.
     pub fn step(&self, layer_output: Tensor<2>, streams: Tensor<3>) -> (Tensor<2>, Tensor<3>) {
-        let (new_h, new_streams) = self.mix_pool::<3>(layer_output.unsqueeze_dim(1), streams);
-        (new_h.squeeze_dim(1), new_streams)
+        let pooled = self.mix_pool::<3>(layer_output.unsqueeze_dim(1), streams);
+        (pooled.token.squeeze_dim(1), pooled.streams)
     }
 
     /// Accumulation phase of [`Self::forward`]: `layer_output` becomes a
@@ -236,8 +239,8 @@ impl MultiGateResidual {
         layer_output: Tensor<3>,
         streams: Tensor<4>,
     ) -> (Tensor<3>, Tensor<4>) {
-        let (new_h, new_streams) = self.append_pool::<4>(layer_output.unsqueeze_dim(2), streams);
-        (new_h.squeeze_dim(2), new_streams)
+        let pooled = self.append_pool::<4>(layer_output.unsqueeze_dim(2), streams);
+        (pooled.token.squeeze_dim(2), pooled.streams)
     }
 
     /// Single-token [`Self::accumulate`] (the sequence axis dropped), the
@@ -252,9 +255,26 @@ impl MultiGateResidual {
         layer_output: Tensor<2>,
         streams: Tensor<3>,
     ) -> (Tensor<2>, Tensor<3>) {
-        let (new_h, new_streams) = self.append_pool::<3>(layer_output.unsqueeze_dim(1), streams);
-        (new_h.squeeze_dim(1), new_streams)
+        let pooled = self.append_pool::<3>(layer_output.unsqueeze_dim(1), streams);
+        (pooled.token.squeeze_dim(1), pooled.streams)
     }
+}
+
+/// The residual streams after the mix or the append of one
+/// [`MultiGateResidual`], at the stream rank `R`. They also hold the
+/// aggregator weights and the gain of each carry path.
+pub(crate) struct Pooled<const R: usize> {
+    /// The pooled token `h = Σᵢ αᵢ·sᵢ'`, with a unit stream axis,
+    /// `[…, 1, d_model]`.
+    pub(crate) token: Tensor<R>,
+    /// The new residual streams `sᵢ'`, `[…, k, d_model]`.
+    pub(crate) streams: Tensor<R>,
+    /// The aggregator weights `αᵢ` of the pool, `[…, k, 1]`.
+    pub(crate) alpha: Tensor<R>,
+    /// The mixing phase: the gain `1 − βᵢ` of the carry path of each stream,
+    /// `[…, k, 1]`. `None` in the accumulation phase. That phase keeps each
+    /// stream that it finds, and the new stream holds only `F_l`.
+    pub(crate) carry_gain: Option<Tensor<R>>,
 }
 
 /// Configuration for a single [`MultiGateResidual`].

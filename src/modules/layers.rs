@@ -88,32 +88,21 @@ pub struct Layers<M: Module> {
     /// it once.
     ///
     /// So every cut re-attaches the input *straight-through*: a value-zero
-    /// term restores an identity gradient path. Under
-    /// [`Residuals::Standard`], the carry path is the skip, so this is not a
-    /// guess. It is the exact leading term of `∂(x + Σ F_l)/∂x`, and the rest
-    /// is the untracked span that the cut chose not to differentiate. The
+    /// term restores the gradient of the carry path of the residual scheme.
+    /// Under [`Residuals::Standard`], the carry path is the skip, so this is
+    /// not a guess. It is the exact leading term of `∂(x + Σ F_l)/∂x`, and the
+    /// rest is the untracked span that the cut chose not to differentiate. The
     /// straight-through carry holds what enters an untracked span, not only
     /// the stack input. So the tracked layers *below* a cut keep their
     /// gradient path to the layers above it.
     ///
     /// Under [`MultiGate`](crate::modules::MultiGate), the residual lives in
-    /// the residual streams, not in the token. So **every** residual stream
-    /// gets the identity path:
-    ///
-    /// - At the bottom of the stack, this is exact. The seed stream is the
-    ///   input and the pool is convex, so an identity span leaves all `k`
-    ///   streams equal to the input. A correction of only the pooled token
-    ///   would leave the contribution of the streams out of the gradient of
-    ///   the input. Under the carry-biased gate init that MGR is built for,
-    ///   that contribution is most of the gradient.
-    /// - A cut that opens *inside* the stack (a stretched layer schedule takes
-    ///   one per real layer) has streams that already differ. It adds the
-    ///   straight-through carry of the pooled token to each of them. One
-    ///   straight-through carry per stream would be the exact identity. But an
-    ///   untracked span also *widens* the streams as it accumulates, and the
-    ///   streams that it adds have no straight-through carry of their own.
-    ///   Every stream still receives gradient, routed by the convex
-    ///   aggregation that produced the token, not one-to-one.
+    /// the residual streams, not in the token. So each residual stream that
+    /// enters the span takes its own straight-through carry, with the gain of
+    /// its carry path across the span. A stream that the span appends gets
+    /// none. At a cut at the bottom of the stack, only the seed stream takes a
+    /// straight-through carry. The module header of
+    /// [`crate::modules::residuals`] gives the rule, and when it is exact.
     ///
     /// In every case, the values do not change.
     ///

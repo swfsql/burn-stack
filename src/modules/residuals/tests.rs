@@ -144,49 +144,93 @@ fn join_at_each_rank_gives_the_same_residual_streams() {
     }
 }
 
-/// An untracked span with no layer: the straight-through carry at its start,
-/// and at its cut. No value changes. The token that enters the span gets the
-/// gradient of the token at the cut. Under MGR, it also gets the gradient of
-/// each residual stream at the cut. The streams that enter the span get no
-/// gradient: they are not part of the straight-through carry.
+/// The closure of a join with a zero transform: an untracked layer of the
+/// test of the straight-through carry.
+fn zero_layer<const R: usize>(x: Tensor<R>) -> (Tensor<R>, ()) {
+    (x.zeros_like(), ())
+}
+
+/// How [`run_joins`] runs its two middle joins.
+#[derive(Clone, Copy)]
+enum MiddleJoins {
+    /// In the graph, as the other joins.
+    Tracked,
+    /// As an untracked span: on the inner backend, between
+    /// [`Residuals::open_span`] and [`Residuals::close_span`].
+    Untracked,
+}
+
+/// A stack of 4 joins. Joins 1 and 2 have zero transforms. The loss is on the
+/// token and on the residual streams at the top. Returns the residual streams
+/// at the top, and the gradient of the input.
+fn run_joins(
+    residuals: &Residuals,
+    x: &Tensor<3>,
+    heads: &(Tensor<3>, Tensor<4>),
+    middle: MiddleJoins,
+) -> (ResidualStreams<3, 4>, Tensor<3>) {
+    let device = x.device();
+    let x = x.clone().require_grad();
+    let (mut value, _) = residuals.join(residuals.seed::<3, 4>(x.clone()), at(0, false, false), layer);
+    match middle {
+        MiddleJoins::Tracked => {
+            for i in [1, 2] {
+                (value, _) = residuals.join(value, at(i, false, false), zero_layer);
+            }
+        }
+        MiddleJoins::Untracked => {
+            let inner = residuals.valid();
+            let (mut inside, carry) = residuals.open_span(value);
+            assert!(!inside.token.device().is_autodiff(), "the span runs on the inner backend");
+            for i in [1, 2] {
+                (inside, _) = inner.join(inside, at(i, false, false), zero_layer);
+            }
+            value = residuals.close_span(inside, carry, &device);
+        }
+    }
+    let (value, _) = residuals.join(value, at(3, false, false), layer);
+    let mut loss = (value.token.clone() * heads.0.clone()).sum();
+    if let Some(streams) = &value.streams {
+        loss = loss + (streams.clone() * heads.1.clone()).sum();
+    }
+    let grad = x.grad(&loss.backward()).expect("the input gets a gradient");
+    (value, grad)
+}
+
+/// An untracked span of two joins with zero transforms, between two tracked
+/// joins. The cut keeps each value. The straight-through carry gives the
+/// gradient of the same joins with no span. The rule is exact here, because
+/// the init `w = 0` makes the scores of the gates and of the aggregator
+/// constant.
+///
+/// Under MGR, the first join appends a stream, so 2 different streams enter
+/// the span. The span appends a third stream, and then it mixes. The gate bias
+/// of each stream is different, so each carry path has a different gain.
 #[test]
-fn straight_through_carry_keeps_the_values_and_routes_the_gradient() {
+fn straight_through_carry_follows_the_carry_path_of_each_scheme() {
     let device = test_device().autodiff();
-    let random = |dims: [usize; 4]| Tensor::<4>::random(dims, Distribution::Default, &device);
-    let (b, s, k) = (2, 5, 3);
+    let n_stream = 3;
     for (scheme, residuals) in [
-        ("Standard", ResidualsConfig::Standard.init(D_MODEL, 1, 1, &device)),
-        ("MultiGate", multi_gate(k, 1, &device)),
+        ("Standard", ResidualsConfig::Standard.init(D_MODEL, 4, 4, &device)),
+        ("MultiGate", multi_gate(n_stream, 4, &device)),
     ] {
-        let token = window(&device).require_grad();
-        // Streams that differ from the token, so that each one gets its own
-        // gradient at the cut.
-        let is_multi_gate = matches!(residuals, Residuals::MultiGate(_));
-        let streams = is_multi_gate.then(|| random([b, s, k, D_MODEL]).require_grad());
-        let value = ResidualStreams { token: token.clone(), streams: streams.clone() };
+        let x = window(&device);
+        let heads = (window(&device), Tensor::random([2, 5, n_stream, D_MODEL], Distribution::Default, &device));
+        let (want, want_grad) = run_joins(&residuals, &x, &heads, MiddleJoins::Tracked);
+        let (got, got_grad) = run_joins(&residuals, &x, &heads, MiddleJoins::Untracked);
 
-        let (inside, carry) = residuals.open_span(value);
-        assert!(!inside.token.device().is_autodiff(), "{scheme}: the span runs on the inner backend");
-        let out = residuals.close_span(inside, carry, &device);
-
-        let diff = max_abs_diff(out.token.clone(), token.clone());
-        assert!(diff < dtype_tol(1e-6), "{scheme}: the token keeps its value");
-        let head_token = window(&device);
-        let mut loss = (out.token * head_token.clone()).sum();
-        let mut want = head_token;
-        if let (Some(before), Some(after)) = (&streams, out.streams) {
-            let diff = max_abs_diff(after.clone(), before.clone());
-            assert!(diff < dtype_tol(1e-6), "{scheme}: the streams keep their values");
-            let head_streams = random([b, s, k, D_MODEL]);
-            loss = loss + (after * head_streams.clone()).sum();
-            want = want + head_streams.sum_dim(2).squeeze_dim::<3>(2);
+        let diff = max_abs_diff(got.token.clone(), want.token.clone());
+        assert!(diff < dtype_tol(1e-6), "{scheme}: the cut changes the token by {diff}");
+        match (&got.streams, &want.streams) {
+            (None, None) => {}
+            (Some(got), Some(want)) => {
+                let diff = max_abs_diff(got.clone(), want.clone());
+                assert!(diff < dtype_tol(1e-6), "{scheme}: the cut changes the streams by {diff}");
+            }
+            _ => panic!("{scheme}: one run has residual streams and the other has none"),
         }
-        let grads = loss.backward();
-        let got = token.grad(&grads).expect("the token gets the gradient across the span");
-        assert!(max_abs_diff(got, want) < dtype_tol(1e-5), "{scheme}: the gradient of the token");
-        if let Some(before) = streams {
-            assert!(before.grad(&grads).is_none(), "{scheme}: the streams in the span get no gradient");
-        }
+        let diff = max_abs_diff(got_grad, want_grad);
+        assert!(diff < dtype_tol(1e-5), "{scheme}: the cut changes the gradient of the input by {diff}");
     }
 }
 

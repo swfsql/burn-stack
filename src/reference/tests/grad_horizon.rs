@@ -415,34 +415,53 @@ fn a_cut_keeps_the_outputs_and_the_caches() {
     }
 }
 
-/// When the untracked span is an identity, the straight-through carry is
-/// exact. So the gradient of the input under the cut equals its gradient
+/// The gates of the untracked layers in [`assert_zero_transform_span_is_exact`].
+/// The tracked layers keep the init gates, so they still mix.
+#[derive(Clone, Copy, Debug)]
+enum UntrackedGates {
+    /// `b = −20`: each gate keeps the streams, so each untracked layer is an
+    /// identity.
+    Closed,
+    /// The init `b = 0`: `β = 0.5`, so the carry path of each stream halves at
+    /// each mixing layer.
+    Open,
+}
+
+/// [`assert_zero_transform_span_is_exact`] with closed gates: the untracked
+/// span is an identity.
+fn assert_identity_span_is_exact(residuals: ResidualsConfig) {
+    assert_zero_transform_span_is_exact(residuals, UntrackedGates::Closed);
+}
+
+/// When the untracked layers have zero transforms, the straight-through carry
+/// is exact. So the gradient of the input under the cut equals its gradient
 /// with no cut.
 ///
 /// A zero `out_proj` makes the output of the block of an untracked layer
-/// zero. So the residual stream passes through the layer unchanged, and the
-/// true gradient across the span is the identity that the straight-through
-/// carry gives. The cut changes no value, so the gradient at the cut is the
-/// same in both runs.
+/// zero. So only the carry path of the residual scheme crosses the span:
 ///
-/// This pins the straight-through carry of the residual streams of
-/// Multi-Gate. Under `Standard`, the token holds the residual. So the
-/// straight-through carry of the token is the whole correction. Under
-/// Multi-Gate, the residual streams hold the residual. With a straight-through
-/// carry on the pooled token only, the gradient of the input omits the
-/// gradient of the streams, and the two runs differ.
-fn assert_identity_span_is_exact(residuals: ResidualsConfig) {
+/// - Under `Standard`, the carry path is the skip, with gain 1. The token
+///   holds the residual, so the straight-through carry of the token is the
+///   whole correction.
+/// - Under Multi-Gate, the residual streams hold the residual. The carry path
+///   of stream `i` has gain `1 − βᵢ` at each mixing layer. A stream that the
+///   accumulation phase appends holds zero.
+///
+/// The init `w = 0` makes the scores of the gates and of the aggregator
+/// constant. So the gradient across the span is the gain of each carry path.
+/// The cut changes no value, so the gradient at the cut is the same in both
+/// runs. A straight-through carry of the pooled token, or a gain of 1 across
+/// an open gate, gives a different gradient of the input.
+fn assert_zero_transform_span_is_exact(residuals: ResidualsConfig, gates: UntrackedGates) {
     let device = test_device().autodiff();
     let (n, k) = (4, 2);
+    let label = format!("{residuals:?} with {gates:?} untracked gates");
     let mut base = LayersBuilder { residuals, ..layers_builder(n) }.init(&device);
     for layer in &mut base.real_layers[..n - k] {
         let w = &mut layer.block.out_proj.weight;
         *w = w.clone().map(|t| t.zeros_like());
     }
-    // Under Multi-Gate, an untracked layer is an identity only when its gate
-    // keeps the streams. A strong negative bias closes the gates of the
-    // untracked layers only, so the tracked layers still mix.
-    if let Residuals::MultiGate(mg) = &mut base.residuals {
+    if let (Residuals::MultiGate(mg), UntrackedGates::Closed) = (&mut base.residuals, gates) {
         for gate in &mut mg.layers[..n - k] {
             let b = &mut gate.b_beta;
             *b = b.clone().map(|t| t.zeros_like() - 20.0);
@@ -465,12 +484,12 @@ fn assert_identity_span_is_exact(residuals: ResidualsConfig) {
     // A stack that is an identity everywhere gives the gradient `head`. Then
     // the two runs can agree also with a wrong straight-through carry.
     let off_identity = max_abs_diff(want.clone(), head);
-    assert!(off_identity > 1e-2, "the tracked layers are identities too, so the check cannot fail");
+    assert!(off_identity > 1e-2, "{label}: the tracked layers are identities too, so the check cannot fail");
     let diff = max_rel_diff(got, want);
     assert!(
         diff < dtype_tol(TOL),
-        "the cut changes the gradient of the input by {diff} across an identity span. The token \
-         or a residual stream has no straight-through carry",
+        "{label}: the cut changes the gradient of the input by {diff}. The straight-through carry \
+         does not follow the carry path of the residual scheme",
     );
 }
 
@@ -480,16 +499,42 @@ fn an_identity_untracked_span_is_exact_under_standard_residuals() {
     assert_identity_span_is_exact(ResidualsConfig::Standard);
 }
 
+/// Multi-Gate Residuals over `n_stream` streams. The gates are open at the
+/// init: `b = 0`, so `β = 0.5`.
+fn multi_gate_residuals(n_stream: usize) -> ResidualsConfig {
+    ResidualsConfig::MultiGate { n_stream, init_bias: 0.0, init_bias_offset: 0.0, per_virtual_layer: false }
+}
+
 /// One residual stream with no accumulation phase. The closed gates keep the
 /// untracked layers identities, and the open gates of the tracked layers mix.
 #[test]
 fn an_identity_untracked_span_is_exact_under_multi_gate_residuals() {
-    assert_identity_span_is_exact(ResidualsConfig::MultiGate {
-        n_stream: 1,
-        init_bias: 0.0,
-        init_bias_offset: 0.0,
-        per_virtual_layer: false,
-    });
+    assert_identity_span_is_exact(multi_gate_residuals(1));
+}
+
+/// Two residual streams. The first untracked layer appends the second stream.
+/// That stream holds only the output of an untracked layer, so it gets no
+/// straight-through carry.
+#[test]
+fn an_identity_untracked_span_is_exact_under_two_residual_streams() {
+    assert_identity_span_is_exact(multi_gate_residuals(2));
+}
+
+/// Four residual streams. The two untracked layers append two streams, and
+/// the seed stream gets the only straight-through carry.
+#[test]
+fn an_identity_untracked_span_is_exact_under_four_residual_streams() {
+    assert_identity_span_is_exact(multi_gate_residuals(4));
+}
+
+/// Open gates in the untracked layers. With 1 and 2 streams, the untracked
+/// layers mix, so the carry path of the seed stream has a gain below 1. With
+/// 4 streams, the untracked layers only append.
+#[test]
+fn an_untracked_span_with_open_gates_is_exact_under_multi_gate_residuals() {
+    for n_stream in [1, 2, 4] {
+        assert_zero_transform_span_is_exact(multi_gate_residuals(n_stream), UntrackedGates::Open);
+    }
 }
 
 /// A stretched layer schedule gives each real layer one contiguous run of
