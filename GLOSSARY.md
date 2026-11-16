@@ -224,6 +224,17 @@ A vector at each position that a layer stack passes from one layer to the
 next. A standard stack has one. Multi-Gate Residuals keep several.
 _Avoid_: lane, depth-stream
 
+**Residual join**:
+The rule of a residual scheme at one layer. From the residual streams and the
+output of the layer, it gives the new residual streams and the input of the
+next layer.
+_Avoid_: transition
+
+**Carry path**:
+The part of a residual join that passes each residual stream to the next
+layer. In the standard scheme, it is the skip. Under Multi-Gate Residuals, it
+is the `1 − β` share of each stream.
+
 **Multi-Gate Residuals (MGR)**:
 The residual scheme that keeps several residual streams between layers and
 mixes them with gates.
@@ -266,6 +277,12 @@ _Avoid_: segment, untracked segment
 **Cut**:
 The place where an untracked span ends and the graph starts again.
 _Avoid_: boundary
+
+**Backend hop**:
+The move of the tensors that cross either end of an untracked span to the
+other backend. They move to the inner backend where the span starts, and to
+the autodiff backend at its cut.
+_Avoid_: horizon hop
 
 **Straight-through carry**:
 What enters an untracked span, added back at its cut with value zero and an
