@@ -231,5 +231,5 @@ The first compare of this ticket listed 16 lost lines and too many items. The ve
 bump gives the test binary a new hash, so the coverage target dir kept the binary of
 0.41.0. `cargo llvm-cov report` merged its zero counts, mapped onto the new source.
 `cargo +nightly llvm-cov clean --workspace` removed it, and the compare above ran after
-that. `scripts/coverage.py` cleans only the profraw files, so each ticket that bumps the
-version can see this.
+that. The user then chose to change `scripts/coverage.py`: each run cleans with
+`cargo llvm-cov clean --workspace`, so it also deletes such an old binary.

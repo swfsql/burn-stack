@@ -10,7 +10,9 @@ CRATE is the directory of a crate, for example a family crate. The default is
 the current directory. The script runs the lib tests of the crate under
 `cargo llvm-cov` on nightly, with `-Zcoverage-options=condition`. Nightly rustc
 has no MC/DC, and condition coverage is the nearest to it. The tests run on one
-thread, as in `cargo test --lib -- --test-threads=1`.
+thread, as in `cargo test --lib -- --test-threads=1`. Each run first deletes the
+counts and the build artifacts of the crate (`cargo llvm-cov clean
+--workspace`), so the crate builds again. The dependencies stay.
 
 The report counts the items of the `src/` of the crate. It does not count a
 test file: a `tests.rs`, or a file in a `tests/` directory.
@@ -401,8 +403,12 @@ def measure(root, target=None):
         return done.stdout
 
     # With `--no-report`, `cargo llvm-cov` keeps the counts of the earlier runs
-    # and adds them to the report. So delete them first.
-    run(["clean", "--profraw-only"], sys.stderr)
+    # and adds them to the report. The report also reads each test binary of
+    # the crate in the target directory. A change of the version gives the
+    # binary a new name, so the old binary stays, and the report maps its zero
+    # counts onto the new source. So delete the counts and the build artifacts
+    # of the crate first. The dependencies stay, so only the crate builds again.
+    run(["clean", "--workspace"], sys.stderr)
     # The output of the tests goes to stderr, so stdout holds only the report.
     run(["--lib", "--no-report", "--", "--test-threads=1"], sys.stderr)
     export = json.loads(run(["report", "--json", "--skip-functions"], subprocess.PIPE))
