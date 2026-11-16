@@ -43,12 +43,16 @@ pub mod mlp;
 /// The config → module interface of a generic training loop
 /// ([`ModelConfigExt`]).
 pub mod model_config;
-/// Multi-Gate Residuals: multi-stream gated depth-wise residuals ([`Residuals`]).
+/// Multi-Gate Residuals: multi-stream gated depth-wise residuals
+/// ([`MultiGate`]).
 pub mod multi_gate;
 /// Block-generic networks ([`LatentNetwork`] / [`VocabNetwork`]).
 pub mod network;
 /// RMS norms ([`RmsNorm`] and [`RmsNormGated`]), fp16-safe.
 pub mod norm;
+/// The residual schemes of a layer stack, and the residual join of each
+/// ([`Residuals`]).
+pub mod residuals;
 /// Serializable network shapes: a stack without its block ([`NetworkShape`]).
 pub mod shape;
 
@@ -77,9 +81,8 @@ pub use hnet::{
 };
 pub use layer::{Layer, LayerUntied};
 pub use layers::{Layers, LayersBuilder};
-pub use multi_gate::{
-    MultiGate, MultiGateResidual, MultiGateResidualConfig, Residuals, ResidualsConfig,
-};
+pub use multi_gate::{MultiGate, MultiGateResidual, MultiGateResidualConfig};
+pub use residuals::{Residuals, ResidualsConfig};
 pub use shape::{BidiShape, LatentShape, NetworkShape, VocabShape};
 pub use network::{
     LatentNetwork, LatentNetworkBuilder, VocabNetwork, VocabNetworkBuilder,

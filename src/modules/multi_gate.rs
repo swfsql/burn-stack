@@ -28,6 +28,11 @@
 //! **independent** (sigmoid) gate is implemented. The competitive (softmax)
 //! gate of the paper is omitted.
 //!
+//! This file holds the math of MGR. The residual join of
+//! [`Residuals::MultiGate`] runs it at each layer of a stack (see
+//! [`crate::modules::residuals`]). The carry path of stream `i` is its
+//! `(1−βᵢ)·sᵢ` share.
+//!
 //! A seed of every stream with a *copy* of the stack input would be a symmetry
 //! that the model can never break. Identical streams give identical scores,
 //! so identical gates and gradients, and MGR collapses to a single lerped
@@ -76,7 +81,6 @@
 //! [`LatentNetwork`]: crate::modules::network::LatentNetwork
 //! [`final_norm`]: crate::modules::network::LatentNetwork::norm_f
 
-use crate::modules::bidi::NoOp;
 use crate::modules::{normed_score, score_scale};
 use burn::config::Config;
 use burn::module::Param;
@@ -118,15 +122,16 @@ impl MultiGateResidual {
     /// *stream* axis is `R-2`, the *feature* axis `R-1`). [`Self::forward`]
     /// (`R = 4`) and [`Self::step`] (`R = 3`) differ only by that rank. So both
     /// lift their `layer_output` to a singleton stream axis, call this, and
-    /// drop the axis again. All reductions keep their axis (size 1) for
-    /// broadcasting, so scores and gates are `[…, n_stream, 1]` throughout.
+    /// drop the axis again. The residual join of a stack does the same at each
+    /// rank. All reductions keep their axis (size 1) for broadcasting, so
+    /// scores and gates are `[…, n_stream, 1]` throughout.
     ///
     /// - `layer_output`: `F_l` lifted to a unit stream axis, `[…, 1, d_model]`
     /// - `streams`: the `n_stream` residual streams, `[…, n_stream, d_model]`
     ///
     /// Returns `(h, streams')` with `h` still carrying its unit stream axis
     /// (`[…, 1, d_model]`) and `streams'` the same shape as `streams`.
-    fn mix_pool<const R: usize>(
+    pub(crate) fn mix_pool<const R: usize>(
         &self,
         layer_output: Tensor<R>,
         streams: Tensor<R>,
@@ -162,7 +167,7 @@ impl MultiGateResidual {
     /// `layer_output` (`[…, 1, d_model]`) to `streams` (`[…, k, d_model]`,
     /// `k < n_stream`) as a new stream, then pool as usual. Returns
     /// `(h, streams')` with `streams'` one stream wider.
-    fn append_pool<const R: usize>(
+    pub(crate) fn append_pool<const R: usize>(
         &self,
         layer_output: Tensor<R>,
         streams: Tensor<R>,
@@ -312,6 +317,11 @@ impl MultiGateResidualConfig {
 /// one module **per real layer** (virtual layers reuse them by real index).
 /// When `true`, there is one **per virtual layer** (each virtual pass owns its
 /// own).
+///
+/// The residual join of
+/// [`Residuals::MultiGate`](crate::modules::Residuals::MultiGate) selects the
+/// module of each layer with [`Self::module_index`] (see
+/// [`crate::modules::residuals`]).
 #[derive(Module, Debug)]
 pub struct MultiGate {
     /// The MGR modules: length `n_real_layers` (per-real) or `n_virtual_layers`
@@ -336,83 +346,6 @@ impl MultiGate {
             virtual_idx
         } else {
             real_idx
-        }
-    }
-}
-
-/// How a [`Layers`](crate::modules::Layers) stack threads residuals between
-/// layers: the plain additive skip, or Multi-Gate Residuals.
-#[derive(Module, Debug)]
-pub enum Residuals {
-    /// Plain Pre-LN additive residual: the stack adds the skip connection of
-    /// each [`Layer`](crate::modules::Layer).
-    Standard(NoOp),
-    /// Multi-Gate Residuals: `n_stream` residual streams with per-layer gated
-    /// mixing + attention pooling.
-    MultiGate(MultiGate),
-}
-
-/// Configuration / factory for [`Residuals`].
-#[derive(Config, Debug)]
-pub enum ResidualsConfig {
-    /// Plain additive Pre-LN residual.
-    Standard,
-    /// Multi-Gate Residuals over `n_stream` streams.
-    MultiGate {
-        /// Number of parallel residual streams `n`.
-        n_stream: usize,
-        /// Initial gate bias of the first stream (see
-        /// [`MultiGateResidualConfig::init_bias`]).
-        init_bias: f64,
-        /// Per-stream gate-bias offset (see
-        /// [`MultiGateResidualConfig::init_bias_offset`]). `0` starts every
-        /// stream equal.
-        init_bias_offset: f64,
-        /// `true` ⇒ one MGR per *virtual* layer. `false` ⇒ one per *real*
-        /// layer (reused across virtual passes). See [`MultiGate::per_virtual`].
-        per_virtual_layer: bool,
-    },
-}
-
-impl ResidualsConfig {
-    /// Build the runtime [`Residuals`] for a stack of `n_real_layers` real
-    /// layers unrolled over `n_virtual_layers` virtual layers. The MGR module
-    /// count follows `per_virtual_layer` (one per virtual layer vs one per real
-    /// layer).
-    pub fn init(
-        &self,
-        d_model: usize,
-        n_real_layers: usize,
-        n_virtual_layers: usize,
-        device: &Device,
-    ) -> Residuals {
-        match self {
-            ResidualsConfig::Standard => Residuals::Standard(NoOp),
-            ResidualsConfig::MultiGate {
-                n_stream,
-                init_bias,
-                init_bias_offset,
-                per_virtual_layer,
-            } => {
-                let count = if *per_virtual_layer {
-                    n_virtual_layers
-                } else {
-                    n_real_layers
-                };
-                let layers = (0..count)
-                    .map(|_| {
-                        MultiGateResidualConfig::new(d_model, *n_stream)
-                            .with_init_bias(*init_bias)
-                            .with_init_bias_offset(*init_bias_offset)
-                            .init(device)
-                    })
-                    .collect();
-                Residuals::MultiGate(MultiGate {
-                    layers,
-                    n_stream: *n_stream,
-                    per_virtual: *per_virtual_layer,
-                })
-            }
         }
     }
 }

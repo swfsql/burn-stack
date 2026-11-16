@@ -140,7 +140,8 @@ src/
 ├─ reference.rs        RefBlock, the test block (ADR-0005). Its tests/: the container tests, one file for each mechanism
 ├─ block_contract.rs   the block contracts: a public test function for each (feature `test-helpers`)
 ├─ modules/            the containers + shared NN modules. mod.rs: Block, BlockConfig
-│  ├─ layers.rs        Layers<M>: the layer stack (gradient horizon, packed rows)
+│  ├─ layers.rs        Layers<M>: the layer stack (gradient horizon, its backend hop, packed rows)
+│  ├─ residuals.rs     Residuals: the residual join of each scheme, its straight-through carry
 │  ├─ shape.rs         NetworkShape, …: the block-free half of a config (ADR-0007)
 │  ├─ cache.rs         CacheStack, CacheTensors, the hop and the detach derived from it, lift
 │  ├─ hnet/            H-Net. mod.rs header = the math. One file for each part

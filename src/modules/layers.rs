@@ -1,5 +1,6 @@
+use crate::modules::residuals::{JoinAt, ResidualStreams, StraightThroughCarry};
 use crate::modules::{
-    GatedMlpConfig, LayerUntied, Residuals, ResidualsConfig, cache_from_inner, cache_to_inner, lift,
+    GatedMlpConfig, LayerUntied, Residuals, ResidualsConfig, cache_from_inner, cache_to_inner,
 };
 use crate::prelude::*;
 use crate::utils::{Applications, GradHorizon, Schedule};
@@ -12,7 +13,8 @@ use burn::module::Param;
 use burn::prelude::*;
 
 /// The layer stack: [`Layer`]s with an optional layer schedule. One struct for
-/// every family.
+/// every family. After each layer, the residual join of [`Self::residuals`]
+/// combines the output of the layer with the residual streams.
 #[derive(Module, Debug)]
 pub struct Layers<M: Module> {
     /// Number of real (weight-bearing) layers.
@@ -27,7 +29,8 @@ pub struct Layers<M: Module> {
     pub ignore_first_residual: bool,
     /// Zero the last virtual layer's residual when `true`.
     pub ignore_last_residual: bool,
-    /// How residuals are threaded between layers (plain additive vs Multi-Gate).
+    /// The residual scheme (plain additive or Multi-Gate). Its residual join
+    /// runs after each layer.
     pub residuals: Residuals,
     /// Positions of the stack-level class latents, spliced into the sequence
     /// once before the first virtual layer. Empty ⇒ none.
@@ -71,6 +74,12 @@ pub struct Layers<M: Module> {
     /// The untracked spans run an inner-backend copy, so each weight still
     /// receives gradient, but only from its tracked applications.
     ///
+    /// The backend hop moves the tensors that cross an untracked span to the
+    /// other backend at each end of the span. These are the token, the
+    /// residual streams and the cache slots. They go to the inner backend
+    /// where the span starts, and back to the autodiff backend at its cut
+    /// (ADR-0003).
+    ///
     /// The stack **input** is the exception, on purpose. It enters at the
     /// bottom and rides the residual stream upward. A cut would sever its only
     /// path, and the `in_proj` of a network (or the embedding of a vocab net)
@@ -80,11 +89,12 @@ pub struct Layers<M: Module> {
     ///
     /// So every cut re-attaches the input *straight-through*: a value-zero
     /// term restores an identity gradient path. Under
-    /// [`Residuals::Standard`] this is not a guess. It is the exact leading
-    /// term of `∂(x + Σ F_l)/∂x`, and the rest is the untracked span that the
-    /// cut chose not to differentiate. The straight-through carry holds what
-    /// enters an untracked span, not only the stack input. So the tracked
-    /// layers *below* a cut keep their gradient path to the layers above it.
+    /// [`Residuals::Standard`], the carry path is the skip, so this is not a
+    /// guess. It is the exact leading term of `∂(x + Σ F_l)/∂x`, and the rest
+    /// is the untracked span that the cut chose not to differentiate. The
+    /// straight-through carry holds what enters an untracked span, not only
+    /// the stack input. So the tracked layers *below* a cut keep their
+    /// gradient path to the layers above it.
     ///
     /// Under [`MultiGate`](crate::modules::MultiGate), the residual lives in
     /// the residual streams, not in the token. So **every** residual stream
@@ -201,8 +211,9 @@ where
     }
 
     /// The device of the stack (that of its parameters), with its autodiff
-    /// context. A cut lifts what it took down back onto this device ([`lift`]),
-    /// so the lifted tensors get its checkpointing strategy.
+    /// context. A cut lifts what it took down back onto this device
+    /// ([`lift`](crate::modules::lift)), so the lifted tensors get its
+    /// checkpointing strategy.
     fn stack_device(&self) -> Device {
         self.real_layers[0].norm.gamma.val().device()
     }
@@ -217,10 +228,11 @@ where
     /// [`GradHorizon::Mask`].
     ///
     /// Returns `None` off the autodiff backend. A cut there would buy nothing:
-    /// `Tensor::inner` and [`lift`] do nothing off it. A horizon left set in a
-    /// config thus falls through to the untouched path at inference. The
-    /// device of the module decides ([`Self::stack_device`]), because
-    /// [`Self::prime`] has no input tensor to ask.
+    /// `Tensor::inner` and [`lift`](crate::modules::lift) do nothing off it. A
+    /// horizon left set in a config thus falls through to the untouched path
+    /// at inference. The device of the module decides
+    /// ([`Self::stack_device`]), because [`Self::prime`] has no input tensor
+    /// to ask.
     fn grad_tracked(&self, n: usize) -> Option<Vec<bool>> {
         if !self.stack_device().is_autodiff() {
             return None;
@@ -250,8 +262,9 @@ where
     /// The forward of a window through every virtual layer.
     ///
     /// [`Layer`] returns only its delta: `F_l = Block(RMSNorm(·))`, plus the
-    /// contribution of the feed-forward sub-block when the layer has one. This
-    /// function adds the outer residual:
+    /// contribution of the feed-forward sub-block when the layer has one. The
+    /// residual join of [`Self::residuals`] adds the outer residual (see
+    /// [`crate::modules::residuals`]):
     ///
     /// - [`Residuals::Standard`]: each layer adds the input skip (unless it is
     ///   suppressed).
@@ -354,9 +367,19 @@ where
         }
     }
 
-    /// The loop of [`Self::forward_padded`] and [`Self::forward_packed`].
-    /// `packed` rows take no padding, and their class latents are already in
-    /// their opening slots.
+    /// Where the residual join of virtual layer `i` of `n` runs.
+    fn join_at(&self, i: usize, n: usize) -> JoinAt {
+        JoinAt {
+            virtual_idx: i,
+            real_idx: self.real_idx(i),
+            first: self.ignore_first_residual && i == 0,
+            last: self.ignore_last_residual && i + 1 == n,
+        }
+    }
+
+    /// The loop of [`Self::forward_padded`] and [`Self::forward_packed`]. The
+    /// window is one [`ResidualStreams`]. `packed` rows take no padding, and
+    /// their class latents are already in their opening slots.
     fn forward_rows(
         &self,
         x: Tensor<3>,
@@ -371,7 +394,7 @@ where
         let mut whole = ClassCursors::new(x.dims()[1]);
         let class = class.unwrap_or(&mut whole);
 
-        let (mut x, padding) = match packed {
+        let (x, padding) = match packed {
             None => self.insert_latents(x, padding, class),
             Some(_) => {
                 assert!(padding.is_none(), "packed rows take no padding");
@@ -380,47 +403,9 @@ where
         };
         let caches = caches.unwrap_or_else(|| self.zero_caches(x.dims()[0], &x.device()));
         assert_eq!(caches.slot_count(), n, "one cache per virtual layer");
-
-        // An untracked layer must build no graph. In Burn, that means it runs
-        // **off the autodiff backend**. A detach is not sufficient. It cuts the
-        // gradient flow, but Burn still registers the untracked op in the
-        // graph. Burn keeps an `UntrackedOpsStep` per op, so that a
-        // memory-bound op can still retrieve an untracked parent. So the output
-        // of the op stays retained (ADR-0003). `grad_horizon_memory_probe` in
-        // `src/reference/tests/grad_horizon.rs` measures the peak memory of a
-        // detach and of the inner backend.
-        //
-        // The stack takes a cut only on an autodiff backend (`grad_tracked`
-        // returns `None` elsewhere). At inference, `grad_horizon` does nothing.
-        // Every lift below goes through `lift` onto the device of the stack,
-        // never through a bare `Tensor::from_inner`. `from_inner` would enable
-        // autodiff also on a plain tensor, and would reset the checkpointing
-        // strategy (see `lift`). `Module::valid` also turns off the training
-        // flags (dropout, …) of a block that has them. So an untracked span
-        // runs such a block in eval mode.
-        //
-        // The mask can have more than one cut. It can turn off and on again any
-        // number of times (once per real layer under `Schedule::Stretched`, see
-        // `grad_horizon`). Each transition is a full hop of everything that the
-        // loop carries.
-        let tracked = self.grad_tracked(n);
-        let inner_stack = tracked.is_some().then(|| Module::valid(self));
-        let device = self.stack_device();
         let mut slots = caches.into_slots();
-        // Straight-through carry (see `grad_horizon`): a value-**zero** tracked
-        // tensor that stands in for what entered the current untracked span.
-        // The loop adds it back where the graph resumes, so everything below
-        // keeps an identity gradient path across the span. It is `Some`
-        // exactly while inside such a span. It must be added on the autodiff
-        // side of the cut. An earlier add would make it a tracked input to an
-        // untracked layer: a backend mismatch, and the end of the memory
-        // saving.
-        let mut st: Option<Tensor<3>> = None;
-
-        // MultiGate carries up to `n_stream` residual streams: the input is the
-        // first, and the early layers append the rest. Standard threads the
-        // single tensor `x` directly, and `streams` stays `None`.
-        let mut streams = self.multi_gate_streams_seed(&x);
+        let mut hop = BackendHop::new(self, n);
+        let mut values = vec![self.residuals.seed::<3, 4>(x)];
         let apps = self.applications();
 
         // `i` is the virtual-layer index (layer schedule, cut, residual flags).
@@ -428,144 +413,21 @@ where
         // cache stack still panics.
         #[allow(clippy::needless_range_loop)]
         for i in 0..n {
-            let track = tracked.as_ref().is_none_or(|t| t[i]);
-            match (st.is_some(), track) {
-                // Entering an untracked span: everything that crosses into it
-                // goes down to the inner backend. The tokens and their residual
-                // streams go here. The cache slot of this layer goes below.
-                (false, false) => {
-                    st = Some(x.clone() - x.clone().detach());
-                    x = x.inner();
-                    streams = streams.map(Tensor::inner);
-                }
-                // Leaving one: lift what it produced back onto the autodiff
-                // backend, as fresh graph roots, and re-attach the
-                // straight-through carry.
-                (true, true) => {
-                    x = lift(x, &device);
-                    streams = streams.map(|s| lift(s, &device));
-                    let st = st.take().expect("inside an untracked span");
-                    // Under MultiGate, the residual lives in the residual
-                    // streams, not in the token. So *every* stream gets the
-                    // identity path. That is what "the span behaved like
-                    // identity" means there. Below the first layer, this is
-                    // exact. The seed stream is the input and the pool is
-                    // convex, so an identity span leaves all `k` streams equal
-                    // to the input. The pooled `x` is not counted twice: its
-                    // route from the input runs through an aggregator whose
-                    // softmax weights sum to one. At a cut further up, the
-                    // streams already differ, and the straight-through carry is
-                    // that of the pooled token alone. Exactness would need one
-                    // straight-through carry per stream, and a span that
-                    // accumulates new streams has nothing to pair it with.
-                    // Either way, the gradient reaches every stream through
-                    // that same convex aggregation. See `grad_horizon`.
-                    streams = streams.map(|s| {
-                        let dims = s.dims();
-                        s + st.clone().unsqueeze_dim::<4>(2).expand(dims)
-                    });
-                    x = x + st;
-                }
-                _ => {}
-            }
-            let real = self.real_idx(i);
-            // `self` on a tracked layer, the inner-backend copy on an untracked
-            // one.
-            let this = match &inner_stack {
-                Some(d) if !track => d,
-                _ => self,
-            };
-            // The layer as its own application sees it, if the layer unties
-            // anything.
-            let layer = this.real_layers[real].application(apps.index[i]);
-            // The cache slot makes the same hop as its layer. A tracked cache
-            // goes down with an untracked layer, because Burn cannot mix
-            // backends within an op. It goes back up below.
-            let cache = slots[i].take().unwrap();
-            let cache = match track {
-                true => cache,
-                false => cache_to_inner(cache),
-            };
-            let first = self.ignore_first_residual && i == 0;
-            let last = self.ignore_last_residual && i + 1 == n;
-
-            match &this.residuals {
-                Residuals::Standard(_noop) => {
-                    // Add the residual (the input) here. When it is suppressed,
-                    // move the input straight in (no clone, no add).
-                    let x_l = x;
-                    let (out, c_) = if first || last {
-                        Self::run_layer(&layer, x_l, cache, options.clone(), padding.as_ref(), packed)
-                    } else {
-                        let (out, c_) = Self::run_layer(
-                            &layer,
-                            x_l.clone(),
-                            cache,
-                            options.clone(),
-                            padding.as_ref(),
-                            packed,
-                        );
-                        (out + x_l, c_)
-                    };
-                    x = out;
-                    slots[i] = Some(c_);
-                }
-                Residuals::MultiGate(mg) => {
-                    let (out, c_) =
-                        Self::run_layer(&layer, x, cache, options.clone(), padding.as_ref(), packed);
-                    slots[i] = Some(c_);
-                    let s = streams.take().unwrap();
-                    // A skipped residual here drops every residual stream. The
-                    // MGR gets the same result when it forces the β gate to
-                    // β ≡ 1 (`new_streams = out`): the aggregator over the
-                    // resulting identical streams collapses to `F_l`. Both
-                    // branches take a shortcut to that result.
-                    if last {
-                        // The output depends only on the transform of the last
-                        // layer.
-                        x = out;
-                        streams = Some(s);
-                    } else if first {
-                        // Drop the input seed: start the streams again from
-                        // `F_0` alone (the accumulation phase refills them).
-                        streams = Some(out.clone().unsqueeze_dim::<4>(2));
-                        x = out;
-                    } else {
-                        let mgr = &mg.layers[mg.module_index(i, real)];
-                        // Accumulate `F_l` as a new stream while there is room,
-                        // then switch to gated mixing (see `MultiGate`).
-                        let (new_h, new_streams) = if s.dims()[2] < mg.n_stream {
-                            mgr.accumulate(out, s)
-                        } else {
-                            mgr.forward(out, s)
-                        };
-                        x = new_h;
-                        streams = Some(new_streams);
-                    }
-                }
-            }
-            if !track {
-                slots[i] = slots[i].take().map(|c| cache_from_inner(c, &device));
-            }
+            let at = self.join_at(i, n);
+            values = hop.layer(i, values, &mut slots[i], |stack, mut values, cache| {
+                // The layer as its own application sees it, if the layer
+                // unties anything.
+                let layer = stack.real_layers[at.real_idx].application(apps.index[i]);
+                let cache = cache.expect("one cache per virtual layer");
+                let value = values.pop().expect("the window is one value");
+                let (value, cache) = stack.residuals.join(value, at, |x| {
+                    Self::run_layer(&layer, x, cache, options.clone(), padding.as_ref(), packed)
+                });
+                (vec![value], Some(cache))
+            });
         }
-        // The stack ended inside an untracked span (its top layers were cut).
-        // Lift the output and re-attach the straight-through carry, exactly as
-        // a cut inside the loop does. The streams are not returned, so they
-        // stay below.
-        if let Some(st) = st.take() {
-            x = lift(x, &device) + st;
-        }
+        let x = hop.finish(values).pop().expect("the window is one value");
         (x, M::Caches::from_slots(slots))
-    }
-
-    /// Seed the residual streams of MultiGate from the input of a window: the
-    /// **single** stream `x` as `[batch, sequence, 1, d_model]`. The layers
-    /// below `n_stream` widen it (see [`MultiGate`](crate::modules::MultiGate)).
-    /// Returns `None` for the Standard path. `x` already carries the
-    /// stack-level class latents, so they seed the streams like any other
-    /// token.
-    fn multi_gate_streams_seed(&self, x: &Tensor<3>) -> Option<Tensor<4>> {
-        matches!(&self.residuals, Residuals::MultiGate(_)).then(|| x.clone().unsqueeze_dim::<4>(2))
     }
 
     /// The step of one token through every virtual layer.
@@ -588,8 +450,9 @@ where
     ///
     /// [`Self::grad_horizon`] applies here exactly as in [`Self::forward`], on
     /// the same virtual layers. So a stack decodes under the truncation that
-    /// it trains under. Note: the cut rebuilds an inner-backend view of the
-    /// stack once per call, which is once per *token* here, not per sequence.
+    /// it trains under. Note: the backend hop rebuilds the `Module::valid` copy
+    /// of the stack once per call, which is once per *token* here, not per
+    /// sequence.
     /// This is negligible against a training step. But do not leave it set
     /// for plain decoding. (There it does nothing anyway, because the model is
     /// then off the autodiff backend.)
@@ -651,189 +514,37 @@ where
     /// stack latents, or stack latents only. This is why a `prime` and the
     /// `step` after it run the same sequence as that `step` alone.
     ///
-    /// Under [`Residuals::MultiGate`], the residual is not in the token but in
-    /// the residual streams of that token. So each element of `stream` comes
-    /// with its `[batch, k, d_model]` stream set. The set is rebuilt per token
-    /// and never crosses steps, exactly as the `[batch, sequence, k, d_model]`
-    /// streams of [`Self::forward`] are a per-position construct.
-    fn cascade(
-        &self,
-        mut stream: Vec<Tensor<2>>,
-        slots: &mut [Option<M::Cache>],
-    ) -> Vec<Tensor<2>> {
+    /// Each token of `stream` is one [`ResidualStreams`], with its own
+    /// residual streams under MGR. A token rebuilds its residual streams at
+    /// each step, so they never cross steps.
+    fn cascade(&self, stream: Vec<Tensor<2>>, slots: &mut [Option<M::Cache>]) -> Vec<Tensor<2>> {
         let n = slots.len();
-        let has_mg = matches!(&self.residuals, Residuals::MultiGate(_));
+        let mut hop = BackendHop::new(self, n);
+        let mut values: Vec<ResidualStreams<2, 3>> =
+            stream.into_iter().map(|token| self.residuals.seed(token)).collect();
         let apps = self.applications();
 
-        // The same mask as in `forward`, layer for layer. An untracked virtual
-        // layer runs on an inner-backend copy of the stack, so it builds no
-        // graph (see `grad_horizon`). Everything that crosses into an untracked
-        // span goes down with it: the token stream, its sets of residual
-        // streams, and the cache slots of those layers. The loop lifts them
-        // back where the graph resumes, as many times as the mask alternates.
-        // As in `forward`, the mask exists only on an autodiff backend, and
-        // every lift goes through `lift` onto the device of the stack.
-        let tracked = self.grad_tracked(n);
-        let inner_stack = tracked.is_some().then(|| Module::valid(self));
-        let device = self.stack_device();
-        // The straight-through carry of `forward`, one entry per token of the
-        // stream that enters the current untracked span (see `grad_horizon`).
-        // It is `Some` exactly while inside such a span.
-        let mut st: Option<Vec<Tensor<2>>> = None;
-
-        // MultiGate: one stream set per token, seeded (like `forward`'s) with
-        // the token itself as the single stream. Empty for the Standard path.
-        let mut stream_sets: Vec<Tensor<3>> = match has_mg {
-            false => Vec::new(),
-            true => stream
-                .iter()
-                .map(|t| t.clone().unsqueeze_dim::<3>(1))
-                .collect(),
-        };
-
-        // `pos` is the virtual-layer index (layer schedule, cut). The slot
-        // lookup is incidental.
-        #[allow(clippy::needless_range_loop)]
-        for pos in 0..n {
-            // The backend hops that `forward` makes, in the shape of a token
-            // stream.
-            let track = tracked.as_ref().is_none_or(|t| t[pos]);
-            match (st.is_some(), track) {
-                // Entering an untracked span: take the straight-through carry,
-                // then send the stream (and its sets of residual streams) down.
-                (false, false) => {
-                    st = Some(
-                        stream
-                            .iter()
-                            .map(|t| t.clone() - t.clone().detach())
-                            .collect(),
-                    );
-                    stream = stream.into_iter().map(Tensor::inner).collect();
-                    stream_sets = stream_sets.into_iter().map(Tensor::inner).collect();
+        // `i` is the virtual-layer index (layer schedule, cut, residual flags).
+        for (i, slot) in slots.iter_mut().enumerate() {
+            let at = self.join_at(i, n);
+            values = hop.layer(i, values, slot, |stack, values, mut cache| {
+                // The layer as its own application sees it, if the layer
+                // unties anything.
+                let layer = stack.real_layers[at.real_idx].application(apps.index[i]);
+                // The tokens go through the layer one after the other, and
+                // each one advances the cache. `Layer::step` fills an empty
+                // slot on the backend of the tokens.
+                let mut next = Vec::with_capacity(values.len());
+                for value in values {
+                    let (value, c) =
+                        stack.residuals.join(value, at, |token| layer.step(token, cache.take()));
+                    next.push(value);
+                    cache = Some(c);
                 }
-                // Leaving one: lift what it produced back onto the autodiff
-                // backend, as fresh graph roots, and re-attach the
-                // straight-through carry.
-                (true, true) => {
-                    stream = stream.into_iter().map(|t| lift(t, &device)).collect();
-                    stream_sets = stream_sets.into_iter().map(|t| lift(t, &device)).collect();
-                    let st = st.take().expect("inside an untracked span");
-                    debug_assert_eq!(
-                        st.len(),
-                        stream.len(),
-                        "the straight-through carry tracks the stream"
-                    );
-                    // Every residual stream, as in `forward`. Under MultiGate,
-                    // each token brings its own `[batch, k, d]` stream set and
-                    // adds the straight-through carry of the pooled token into
-                    // all of them.
-                    if !stream_sets.is_empty() {
-                        debug_assert_eq!(stream_sets.len(), st.len(), "one stream set per token");
-                        stream_sets = stream_sets
-                            .into_iter()
-                            .zip(&st)
-                            .map(|(c, s)| {
-                                let dims = c.dims();
-                                c + s.clone().unsqueeze_dim::<3>(1).expand(dims)
-                            })
-                            .collect();
-                    }
-                    stream = stream.into_iter().zip(st).map(|(t, s)| t + s).collect();
-                }
-                _ => {}
-            }
-            let real = self.real_idx(pos);
-            // `self` on a tracked layer, the inner-backend copy on an untracked
-            // one. This holds for layer weights and MultiGate gates.
-            let this = match &inner_stack {
-                Some(d) if !track => d,
-                _ => self,
-            };
-            // The layer as its own application sees it, if the layer unties
-            // anything.
-            let layer = this.real_layers[real].application(apps.index[pos]);
-            let mg = match &this.residuals {
-                Residuals::Standard(_noop) => None,
-                Residuals::MultiGate(mg) => Some(mg),
-            };
-            let first = self.ignore_first_residual && pos == 0;
-            let last = self.ignore_last_residual && pos + 1 == n;
-
-            // The cache slot makes the same hop as its layer (see `forward`).
-            // `Layer::step` fills an empty slot on the backend of the tokens.
-            let mut cache = slots[pos].take();
-            if !track {
-                cache = cache.map(cache_to_inner);
-            }
-            let mut next: Vec<Tensor<2>> = Vec::with_capacity(stream.len());
-            let mut next_stream_sets: Vec<Tensor<3>> =
-                Vec::with_capacity(mg.map_or(0, |_| stream.len()));
-            // One token through the layer, then its residual: the plain additive
-            // skip, or the Multi-Gate mix into the streams of that token. A
-            // suppressed skip moves the token straight in (no clone/add).
-            let advance = |token: Tensor<2>,
-                           tok_streams: Option<Tensor<3>>,
-                           cache: Option<M::Cache>|
-             -> (Tensor<2>, Option<Tensor<3>>, M::Cache) {
-                let Some(mg) = mg else {
-                    return if first || last {
-                        let (out, c) = layer.step(token, cache);
-                        (out, None, c)
-                    } else {
-                        let (out, c) = layer.step(token.clone(), cache);
-                        (out + token, None, c)
-                    };
-                };
-                let s = tok_streams.expect("MultiGate carries one stream set per token");
-                let (out, c) = layer.step(token, cache);
-                // As in `forward`, a skipped residual is the β gate at β ≡ 1
-                // (`new_streams = F_l`). The aggregator then collapses to `F_l`.
-                if last {
-                    (out, Some(s), c) // the output depends only on `F_l`
-                } else if first {
-                    // Drop the input seed: start the streams again from `F_0`.
-                    (out.clone(), Some(out.unsqueeze_dim::<3>(1)), c)
-                } else {
-                    let mgr = &mg.layers[mg.module_index(pos, real)];
-                    let (h, s) = if s.dims()[1] < mg.n_stream {
-                        mgr.accumulate_step(out, s)
-                    } else {
-                        mgr.step(out, s)
-                    };
-                    (h, Some(s), c)
-                }
-            };
-            let mut tokens_streams = stream_sets.into_iter();
-            for token in stream {
-                let (out, s, c) = advance(token, tokens_streams.next(), cache);
-                next.push(out);
-                next_stream_sets.extend(s);
-                cache = Some(c);
-            }
-            slots[pos] = match track {
-                true => cache,
-                false => cache.map(|c| cache_from_inner(c, &device)),
-            };
-            stream = next;
-            stream_sets = next_stream_sets;
+                (next, cache)
+            });
         }
-        // The stack ended inside an untracked span: lift what it hands back and
-        // re-attach the straight-through carry, exactly as a cut inside the
-        // loop does.
-        if let Some(st) = st.take() {
-            debug_assert_eq!(
-                st.len(),
-                stream.len(),
-                "the straight-through carry tracks the stream"
-            );
-            stream = stream
-                .into_iter()
-                .map(|t| lift(t, &device))
-                .zip(st)
-                .map(|(t, s)| t + s)
-                .collect();
-        }
-        stream
+        hop.finish(values)
     }
 
     /// Step the class latents that the stack has waiting for its next user
@@ -896,6 +607,157 @@ where
         };
         let out = self.cascade(stream, &mut slots).pop();
         (out, Some(M::Caches::from_slots(slots)))
+    }
+}
+
+/// The backend hop of the gradient horizon (see [`Layers::grad_horizon`]).
+/// It owns the hop at either end of an untracked span, and the state of that
+/// hop:
+///
+/// - the tracked mask of [`Layers::grad_tracked`],
+/// - the `Module::valid` copy of the stack, and the view of each virtual
+///   layer,
+/// - the device of the stack,
+/// - the straight-through carry of each [`ResidualStreams`],
+/// - the hop of the cache slots,
+/// - the lift at the top of the stack.
+///
+/// The loop of `forward` gives it one `ResidualStreams`: the window. The
+/// cascade of `step` and `prime` gives it one `ResidualStreams` for each token
+/// of its stream. It knows no residual scheme. At the start of an untracked
+/// span, [`Residuals::open_span`] takes the straight-through carry of each
+/// value, and moves the value down. At the cut, [`Residuals::close_span`]
+/// lifts each value and adds its straight-through carry back. Both methods
+/// run on the residual scheme of the tracked stack, not on the view.
+///
+/// An untracked layer must build no graph. In Burn, that means it runs **off
+/// the autodiff backend**. A detach is not sufficient. It cuts the gradient
+/// flow, but Burn still registers the untracked op in the graph. Burn keeps an
+/// `UntrackedOpsStep` per op, so that a memory-bound op can still retrieve an
+/// untracked parent. So the output of the op stays retained (ADR-0003).
+/// `grad_horizon_memory_probe` in `src/reference/tests/grad_horizon.rs`
+/// measures the peak memory of a detach and of the inner backend.
+///
+/// The stack takes a cut only on an autodiff backend
+/// ([`Layers::grad_tracked`] returns `None` elsewhere). At inference, the
+/// horizon does nothing. Each lift goes through
+/// [`lift`](crate::modules::lift) onto the device of the stack, never through
+/// a bare `Tensor::from_inner`. `from_inner` would enable autodiff also on a
+/// plain tensor, and would reset the checkpointing strategy. `Module::valid`
+/// also turns off the training flags (dropout, …) of a block that has them. So
+/// an untracked span runs such a block in eval mode.
+///
+/// The mask can turn off and on again any number of times: once per real
+/// layer under `Schedule::Stretched`, and arbitrarily under a
+/// `GradHorizon::Mask`. Each end of an untracked span is a full hop of
+/// everything that crosses it.
+struct BackendHop<'a, M: Block, const R: usize, const S: usize> {
+    /// The stack. Its residual scheme takes and adds back the
+    /// straight-through carry.
+    stack: &'a Layers<M>,
+    /// The tracked mask of [`Layers::grad_tracked`]. `None`: no cut.
+    tracked: Option<Vec<bool>>,
+    /// The `Module::valid` copy of the stack: the view of each untracked
+    /// layer. `Some` exactly when `tracked` is.
+    inner_stack: Option<Layers<M>>,
+    /// The device of the stack. Each lift goes onto it.
+    device: Device,
+    /// The straight-through carry of each value. `Some` exactly inside an
+    /// untracked span.
+    carry: Option<Vec<StraightThroughCarry<R, S>>>,
+}
+
+impl<'a, M: Block, const R: usize, const S: usize> BackendHop<'a, M, R, S>
+where
+    M::Options: Clone,
+{
+    /// The hop of `stack` over its `n` virtual layers.
+    fn new(stack: &'a Layers<M>, n: usize) -> Self {
+        let tracked = stack.grad_tracked(n);
+        let inner_stack = tracked.is_some().then(|| Module::valid(stack));
+        Self { stack, tracked, inner_stack, device: stack.stack_device(), carry: None }
+    }
+
+    /// Run the virtual layer `i` on `values`, with the hop at either end of an
+    /// untracked span.
+    ///
+    /// `run` gets the view of the stack for this layer, the values and the
+    /// cache slot, all on the backend of the layer. It returns the values and
+    /// the cache slot for the next layer. A tracked layer runs on the stack,
+    /// and an untracked one on its `Module::valid` copy. This holds for the
+    /// weights of the layer and for the MGR gates. The cache slot makes the
+    /// same hop as its layer. A tracked cache goes down with an untracked
+    /// layer, because Burn cannot mix backends within an op. It goes back up
+    /// after the layer.
+    fn layer(
+        &mut self,
+        i: usize,
+        values: Vec<ResidualStreams<R, S>>,
+        slot: &mut Option<M::Cache>,
+        run: impl FnOnce(
+            &Layers<M>,
+            Vec<ResidualStreams<R, S>>,
+            Option<M::Cache>,
+        ) -> (Vec<ResidualStreams<R, S>>, Option<M::Cache>),
+    ) -> Vec<ResidualStreams<R, S>> {
+        let stack = self.stack;
+        let track = self.tracked.as_ref().is_none_or(|t| t[i]);
+        let values = match (self.carry.take(), track) {
+            // The start of an untracked span.
+            (None, false) => {
+                let (values, carry) = values.into_iter().map(|v| stack.residuals.open_span(v)).unzip();
+                self.carry = Some(carry);
+                values
+            }
+            // A cut.
+            (Some(carry), true) => self.close(values, carry),
+            // Inside an untracked span, or inside the graph.
+            (carry, _) => {
+                self.carry = carry;
+                values
+            }
+        };
+        let view = match &self.inner_stack {
+            Some(inner) if !track => inner,
+            _ => stack,
+        };
+        let cache = match track {
+            true => slot.take(),
+            false => slot.take().map(cache_to_inner),
+        };
+        let (values, cache) = run(view, values, cache);
+        *slot = match track {
+            true => cache,
+            false => cache.map(|c| cache_from_inner(c, &self.device)),
+        };
+        values
+    }
+
+    /// The cut: [`Residuals::close_span`] on each value, with its
+    /// straight-through carry.
+    fn close(
+        &self,
+        values: Vec<ResidualStreams<R, S>>,
+        carry: Vec<StraightThroughCarry<R, S>>,
+    ) -> Vec<ResidualStreams<R, S>> {
+        debug_assert_eq!(carry.len(), values.len(), "one straight-through carry for each value");
+        values
+            .into_iter()
+            .zip(carry)
+            .map(|(value, carry)| self.stack.residuals.close_span(value, carry, &self.device))
+            .collect()
+    }
+
+    /// The top of the stack: the token of each value. A stack whose top
+    /// layers are untracked lifts each token at the top, and adds its
+    /// straight-through carry back. The residual streams end at the top layer,
+    /// so they stay on the inner backend.
+    fn finish(mut self, values: Vec<ResidualStreams<R, S>>) -> Vec<Tensor<R>> {
+        let values = match self.carry.take() {
+            Some(carry) => self.close(values.into_iter().map(ResidualStreams::into_top).collect(), carry),
+            None => values,
+        };
+        values.into_iter().map(ResidualStreams::into_token).collect()
     }
 }
 

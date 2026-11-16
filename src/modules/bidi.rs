@@ -10,6 +10,7 @@
 //! (`RmsNorm`/`Linear` over `Tensor<3>`).
 
 use crate::modules::layers::zero_caches_for;
+use crate::modules::residuals::JoinAt;
 use crate::modules::{LayerUntied, Residuals, ResidualsConfig, RmsNorm};
 use crate::prelude::*;
 use crate::utils::{Applications, BidiSchedule};
@@ -199,7 +200,9 @@ where
 }
 
 /// A stack of bidirectional [`Layer`] pairs with an optional layer schedule.
-/// One struct for every family.
+/// One struct for every family. After each pair, the residual join of
+/// [`Self::residuals`] combines the merged output with the residual streams.
+/// The stack has no gradient horizon, so no pair runs in an untracked span.
 #[derive(Module, Debug)]
 pub struct BidiLayers<M: Module> {
     /// Number of real (weight-bearing) layers. Must be even (used in pairs).
@@ -216,8 +219,9 @@ pub struct BidiLayers<M: Module> {
     pub ignore_last_residual: bool,
     /// One merge per real pair, length `n_real_layers / 2`.
     pub outputs_merge: Vec<OutputMerge>,
-    /// How residuals are threaded between **pairs** (plain additive vs
-    /// Multi-Gate). The MGR unit is the pair: one module per real/virtual pair.
+    /// The residual scheme (plain additive or Multi-Gate). Its residual join
+    /// runs after each **pair**. The MGR unit is the pair: one module per
+    /// real/virtual pair.
     pub residuals: Residuals,
     /// Positions of the stack-level class latents, spliced into the sequence
     /// once before the first pair.
@@ -261,21 +265,12 @@ where
         out
     }
 
-    /// Seed the residual streams of MultiGate from the input of a window: the
-    /// **single** stream `x` as `[batch, sequence, 1, d_model]`. The first
-    /// pairs widen it to `n_stream` (see
-    /// [`MultiGate`](crate::modules::MultiGate)). Returns `None` for the
-    /// Standard path. `x` already carries the stack-level class latents
-    /// (spliced before the seed), so they seed the streams like any other
-    /// token.
-    fn multi_gate_streams_seed(&self, x: &Tensor<3>) -> Option<Tensor<4>> {
-        matches!(&self.residuals, Residuals::MultiGate(_)).then(|| x.clone().unsqueeze_dim::<4>(2))
-    }
-
     /// `[batch, sequence, d_model]` → `[batch, sequence, d_model]`
     /// (`sequence` grows by the stack-level class-latent count).
     ///
-    /// Each pair returns its merged transform `F_l` (no residual). Then:
+    /// Each pair returns its merged transform `F_l` (no residual). Then the
+    /// residual join of [`Self::residuals`] runs, with the pair as its unit
+    /// (see [`crate::modules::residuals`]):
     ///
     /// - [`Residuals::Standard`]: the input skip is added per pair (unless it
     ///   is suppressed).
@@ -302,7 +297,7 @@ where
     ) -> (Tensor<3>, M::Caches) {
         // No cursors ⇒ this one call covers the whole sequence.
         let mut whole = ClassCursors::new(x.dims()[1]);
-        let (mut x, padding) =
+        let (x, padding) =
             self.insert_latents(x, pad.map(Padding::new), class.unwrap_or(&mut whole));
         let n = self
             .n_virtual_layers
@@ -329,10 +324,7 @@ where
         let apps = bidi_applications(&self.n_virtual_layers, self.n_real_layers);
 
         let mut slots = caches.into_slots();
-        // MultiGate carries up to `n_stream` residual streams: the input is the
-        // first, and the early pairs append the rest. Standard threads the
-        // single tensor `x` directly, and `streams` stays `None`.
-        let mut streams = self.multi_gate_streams_seed(&x);
+        let mut value = self.residuals.seed::<3, 4>(x);
         for i in 0..n / 2 {
             let (straight_i, reverse_i) = (i * 2, i * 2 + 1);
             let (straight_idx, reverse_idx) =
@@ -352,16 +344,13 @@ where
             let straight_cache = slots[straight_i].take().unwrap();
             let reverse_cache = slots[reverse_i].take().unwrap();
 
-            let first = self.ignore_first_residual && i == 0;
-            let last = self.ignore_last_residual && i + 1 == n / 2;
-
-            // For the Standard path, the residual is the (pre-pair) input skip.
-            // Clone it before the pair consumes `x`, and only when it is used.
-            // MultiGate carries the residual in its streams, so it clones
-            // nothing.
-            let residual = match &self.residuals {
-                Residuals::Standard(_) if !(first || last) => Some(x.clone()),
-                _ => None,
+            // The MGR unit is the pair: virtual pair `i`, real pair
+            // `straight_idx / 2` (the straight index of a pair is even).
+            let at = JoinAt {
+                virtual_idx: i,
+                real_idx: straight_idx / 2,
+                first: self.ignore_first_residual && i == 0,
+                last: self.ignore_last_residual && i + 1 == n / 2,
             };
 
             // Run the pair directly on the layers above. The stack-level class
@@ -371,66 +360,29 @@ where
             // Each real pair has its own merge (`n_real_layers / 2` of them).
             // So the *real* pair `straight_idx / 2` indexes it, not the virtual
             // pair `i`. It shares weights under a layer schedule, like the
-            // blocks (and like the MGR real-pair index below). In the
+            // blocks (and like the MGR module of a real pair). In the
             // non-virtual case `straight_idx == i * 2`, so this is `i`.
-            let (merged, sc, rc) = bidi_pair_forward(
-                &straight_layer.norm,
-                &reverse_layer.norm,
-                &straight_layer.block,
-                &reverse_layer.block,
-                &self.outputs_merge[straight_idx / 2],
-                x,
-                Some(straight_cache),
-                Some(reverse_cache),
-                options.clone(),
-                padding.as_ref(),
-            );
+            let (next, (sc, rc)) = self.residuals.join(value, at, |x| {
+                let (merged, sc, rc) = bidi_pair_forward(
+                    &straight_layer.norm,
+                    &reverse_layer.norm,
+                    &straight_layer.block,
+                    &reverse_layer.block,
+                    &self.outputs_merge[straight_idx / 2],
+                    x,
+                    Some(straight_cache),
+                    Some(reverse_cache),
+                    options.clone(),
+                    padding.as_ref(),
+                );
+                (merged, (sc, rc))
+            });
+            value = next;
             slots[straight_i] = Some(sc);
             slots[reverse_i] = Some(rc);
-
-            match &self.residuals {
-                Residuals::Standard(_noop) => {
-                    // Add the input skip here (the pair already consumed `x`).
-                    // When the residual is suppressed, output the bare
-                    // transform.
-                    x = match residual {
-                        Some(r) => merged + r,
-                        None => merged,
-                    };
-                }
-                Residuals::MultiGate(mg) => {
-                    let s = streams.take().unwrap();
-                    // A skipped residual is the β gate at β ≡ 1 (`new_streams =
-                    // F_l`), and the aggregator then collapses to `F_l`. Both
-                    // branches take a shortcut to that result (as in
-                    // `Layers::forward`). The MGR unit is the pair: virtual pair
-                    // `i`, real pair `straight_idx / 2` (the straight index of a
-                    // pair is even).
-                    if last {
-                        x = merged;
-                        streams = Some(s);
-                    } else if first {
-                        // Drop the input seed: start again from `F_0` alone
-                        // (the accumulation phase refills the streams).
-                        streams = Some(merged.clone().unsqueeze_dim::<4>(2));
-                        x = merged;
-                    } else {
-                        let mgr = &mg.layers[mg.module_index(i, straight_idx / 2)];
-                        // Accumulate `F_l` as a new stream while there is room,
-                        // then switch to gated mixing.
-                        let (new_h, new_streams) = if s.dims()[2] < mg.n_stream {
-                            mgr.accumulate(merged, s)
-                        } else {
-                            mgr.forward(merged, s)
-                        };
-                        x = new_h;
-                        streams = Some(new_streams);
-                    }
-                }
-            }
         }
 
-        (x, M::Caches::from_slots(slots))
+        (value.into_token(), M::Caches::from_slots(slots))
     }
 }
 
