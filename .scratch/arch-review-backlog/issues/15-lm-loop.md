@@ -1,0 +1,34 @@
+# 15: The LM loop owns the sequence of a training step
+
+Status: needs-triage
+
+Blocked by: None
+
+From the architecture review of 2026-11-16. Line numbers are those of burn-stack
+commit `b198fa5` and burn-mamba commit `7807d31b`. The review compiled nothing.
+
+**Files:** `src/examples/tiny_stories/lm.rs:456-527` (`LmModel`), `:707-960` (the
+loops), `../burn-mamba/examples/tiny-stories/training.rs:190-300`,
+`../burn-mamba/examples/hnet-stories/training.rs:236-320`.
+
+**Problem:** `LmModel` has 7 methods and 2 associated types. Its two impls differ in
+three things:
+
+- the forward of a window (the H-Net adds a ratio loss),
+- the learning-rate groups of the optimizer update (the H-Net has one for each stage),
+- `generate`.
+
+They repeat the rest: the VRAM cleanup, the timer marks, the backward into
+`GradientsParams`, the VRAM check, the timers of the optimizer, `save_model` and
+`caches.detach()`. The doc of `detach_caches` tells the implementer which function to
+call, so a rule of the loop is in the interface.
+
+**Direction:** The loop does the common sequence. The model gives the three things
+that differ. The contrast of `tiny-stories` (a second backward, with a sum of the
+gradients) is one optional hook after the backward. A test can then run the loop with
+no real model.
+
+**Related:** Ticket 03 (the tests of `Session`) and ticket 04 (the captured-step
+rules). This ticket is about `LmModel` only.
+
+Split this ticket by repo at triage.
