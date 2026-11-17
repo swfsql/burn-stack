@@ -6,7 +6,7 @@
 
 use crate::modules::bidi::{BidiLayersBuilder, OutputMergeConfig};
 use crate::modules::{LatentNetworkBuilder, Layers, LayersBuilder, ResidualsConfig};
-use crate::reference::{RefBlock, RefBlockConfig, RefCaches};
+use crate::reference::{RefBlock, RefBlockConfig, RefCache};
 use crate::utils::class::{ClassMarker, class_window_plan};
 use crate::utils::test_helpers::{dtype_tol, max_rel_diff};
 use crate::utils::{ClassCursor, ClassCursors, ClassLatent, ClassToken, GradHorizon};
@@ -134,7 +134,7 @@ fn check_each_row_alone<M: Module>(
     lens: &[usize],
     input_width: usize,
     positions: impl Fn(usize) -> Vec<Position>,
-    forward: impl Fn(Tensor<3>, Option<Tensor<2, Bool>>) -> (Tensor<3>, RefCaches),
+    forward: impl Fn(Tensor<3>, Option<Tensor<2, Bool>>) -> (Tensor<3>, Vec<RefCache>),
 ) {
     let device = test_device().autodiff();
     let padded = *lens.iter().max().unwrap();
@@ -156,7 +156,7 @@ fn check_each_row_alone<M: Module>(
         let y_owned = y.clone().narrow(0, b, 1).select(1, idx.clone());
         let diff = max_rel_diff(y_owned.clone(), y_solo.clone());
         assert!(diff < dtype_tol(TOL), "row {b} (length {len}): its positions differ by {diff}");
-        for (l, (c, c_solo)) in caches.caches.iter().zip(&caches_solo.caches).enumerate() {
+        for (l, (c, c_solo)) in caches.iter().zip(&caches_solo).enumerate() {
             let diff = max_rel_diff(c.state_bd.clone().narrow(0, b, 1), c_solo.state_bd.clone());
             assert!(diff < dtype_tol(TOL), "row {b} (length {len}): cache {l} differs by {diff}");
         }

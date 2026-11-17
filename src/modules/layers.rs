@@ -200,10 +200,11 @@ where
             .unwrap_or(self.n_real_layers)
     }
 
-    /// The zero caches that [`Self::forward`] and [`Self::step`] start from
-    /// when they get `None`: one [`Block::zero_cache`] for each virtual layer,
-    /// for `batch` rows on `device`.
-    pub fn zero_caches(&self, batch: usize, device: &Device) -> M::Caches {
+    /// The zero caches that [`Self::forward`], [`Self::step`] and
+    /// [`Self::prime`] start from when they get `None`: one
+    /// [`Block::zero_cache`] for each virtual layer, for `batch` rows on
+    /// `device`.
+    pub fn zero_caches(&self, batch: usize, device: &Device) -> Vec<M::Cache> {
         zero_caches_for(&self.real_layers[0], self.n_virtual_count(), batch, device)
     }
 
@@ -320,11 +321,11 @@ where
     pub fn forward(
         &self,
         x: Tensor<3>,
-        caches: Option<M::Caches>,
+        caches: Option<Vec<M::Cache>>,
         options: M::Options,
         class: Option<&mut ClassCursors>,
         pad: Option<Tensor<2, Bool>>,
-    ) -> (Tensor<3>, M::Caches) {
+    ) -> (Tensor<3>, Vec<M::Cache>) {
         self.forward_padded(x, caches, options, class, pad.map(Padding::new))
     }
 
@@ -340,10 +341,10 @@ where
     pub fn forward_packed(
         &self,
         x: Tensor<3>,
-        caches: Option<M::Caches>,
+        caches: Option<Vec<M::Cache>>,
         options: M::Options,
         packed: &Packed,
-    ) -> (Tensor<3>, M::Caches) {
+    ) -> (Tensor<3>, Vec<M::Cache>) {
         assert!(
             self.only_start_latents(),
             "a packed stack takes only `Start` class latents"
@@ -364,11 +365,11 @@ where
     pub(crate) fn forward_padded(
         &self,
         x: Tensor<3>,
-        caches: Option<M::Caches>,
+        caches: Option<Vec<M::Cache>>,
         options: M::Options,
         class: Option<&mut ClassCursors>,
         padding: Option<Padding>,
-    ) -> (Tensor<3>, M::Caches) {
+    ) -> (Tensor<3>, Vec<M::Cache>) {
         self.forward_rows(x, caches, options, class, padding, None)
     }
 
@@ -382,8 +383,8 @@ where
         packed: Option<&Packed>,
     ) -> (Tensor<3>, M::Cache) {
         match packed {
-            None => layer.forward(x, Some(cache), options, padding),
-            Some(packed) => layer.forward_packed(x, Some(cache), options, packed),
+            None => layer.forward(x, cache, options, padding),
+            Some(packed) => layer.forward_packed(x, cache, options, packed),
         }
     }
 
@@ -403,12 +404,12 @@ where
     fn forward_rows(
         &self,
         x: Tensor<3>,
-        caches: Option<M::Caches>,
+        caches: Option<Vec<M::Cache>>,
         options: M::Options,
         class: Option<&mut ClassCursors>,
         padding: Option<Padding>,
         packed: Option<&Packed>,
-    ) -> (Tensor<3>, M::Caches) {
+    ) -> (Tensor<3>, Vec<M::Cache>) {
         let n = self.n_virtual_count();
         // No cursors ⇒ this one call covers the whole sequence.
         let mut whole = ClassCursors::new(x.dims()[1]);
@@ -422,32 +423,30 @@ where
             }
         };
         let caches = caches.unwrap_or_else(|| self.zero_caches(x.dims()[0], &x.device()));
-        assert_eq!(caches.slot_count(), n, "one cache per virtual layer");
-        let mut slots = caches.into_slots();
+        assert_eq!(caches.len(), n, "one cache per virtual layer");
         let mut hop = BackendHop::new(self, n);
         let mut values = vec![self.residuals.seed::<3, 4>(x)];
         let apps = self.applications();
+        let mut advanced = Vec::with_capacity(n);
 
         // `i` is the virtual-layer index (layer schedule, cut, residual flags).
-        // The slot lookup is incidental. The bound stays `n`, so a mis-sized
-        // cache stack still panics.
-        #[allow(clippy::needless_range_loop)]
-        for i in 0..n {
+        for (i, cache) in caches.into_iter().enumerate() {
             let at = self.join_at(i, n);
-            values = hop.layer(i, values, &mut slots[i], |stack, mut values, cache| {
+            let (next, cache) = hop.layer(i, values, cache, |stack, mut values, cache| {
                 // The layer as its own application sees it, if the layer
                 // unties anything.
                 let layer = stack.real_layers[at.real_idx].application(apps.index[i]);
-                let cache = cache.expect("one cache per virtual layer");
                 let value = values.pop().expect("the window is one value");
                 let (value, cache) = stack.residuals.join(value, at, |x| {
                     Self::run_layer(&layer, x, cache, options.clone(), padding.as_ref(), packed)
                 });
-                (vec![value], Some(cache))
+                (vec![value], cache)
             });
+            values = next;
+            advanced.push(cache);
         }
         let x = hop.finish(values).pop().expect("the window is one value");
-        (x, M::Caches::from_slots(slots))
+        (x, advanced)
     }
 
     /// The step of one token through every virtual layer.
@@ -479,14 +478,13 @@ where
     pub fn step(
         &self,
         x: Tensor<2>,
-        caches: Option<M::Caches>,
+        caches: Option<Vec<M::Cache>>,
         class: Option<&mut ClassCursors>,
-    ) -> (Tensor<2>, M::Caches) {
+    ) -> (Tensor<2>, Vec<M::Cache>) {
         let [batch, d_model] = x.dims();
         let n = self.n_virtual_count();
         let caches = caches.unwrap_or_else(|| self.zero_caches(batch, &x.device()));
-        assert_eq!(caches.slot_count(), n, "one cache per virtual layer");
-        let mut slots = caches.into_slots();
+        assert_eq!(caches.len(), n, "one cache per virtual layer");
 
         // The bottom input stream for this user step: the stack-level class
         // latents that fall on it, around the user token. They go through the
@@ -515,19 +513,19 @@ where
             stream.push(x);
         }
 
-        let mut stream = self.cascade(stream, &mut slots);
+        let (mut stream, caches) = self.cascade(stream, caches);
 
         // The stream keeps the token order of `forward`. So its last element is
         // the latest token of the sequence: the user token, or an `End` after
         // it.
         let out = stream.pop().expect("the user token is always emitted");
-        (out, M::Caches::from_slots(slots))
+        (out, caches)
     }
 
     /// Thread `stream` (the tokens that enter the bottom layer) up through
-    /// every virtual layer. Each layer adds its residual to each token and
-    /// gives the result to the next layer. Returns what leaves the top layer.
-    /// `slots` holds the advanced caches.
+    /// every virtual layer, from `caches`. Each layer adds its residual to
+    /// each token and gives the result to the next layer. Returns what leaves
+    /// the top layer, and the advanced caches.
     ///
     /// This is the shared body of [`Self::step`] and [`Self::prime`]. They
     /// differ only in the stream that they open with: a user token among the
@@ -537,34 +535,39 @@ where
     /// Each token of `stream` is one [`ResidualStreams`], with its own
     /// residual streams under MGR. A token rebuilds its residual streams at
     /// each step, so they never cross steps.
-    fn cascade(&self, stream: Vec<Tensor<2>>, slots: &mut [Option<M::Cache>]) -> Vec<Tensor<2>> {
-        let n = slots.len();
+    fn cascade(
+        &self,
+        stream: Vec<Tensor<2>>,
+        caches: Vec<M::Cache>,
+    ) -> (Vec<Tensor<2>>, Vec<M::Cache>) {
+        let n = caches.len();
         let mut hop = BackendHop::new(self, n);
         let mut values: Vec<ResidualStreams<2, 3>> =
             stream.into_iter().map(|token| self.residuals.seed(token)).collect();
         let apps = self.applications();
+        let mut advanced = Vec::with_capacity(n);
 
         // `i` is the virtual-layer index (layer schedule, cut, residual flags).
-        for (i, slot) in slots.iter_mut().enumerate() {
+        for (i, cache) in caches.into_iter().enumerate() {
             let at = self.join_at(i, n);
-            values = hop.layer(i, values, slot, |stack, values, mut cache| {
+            let (next, cache) = hop.layer(i, values, cache, |stack, values, mut cache| {
                 // The layer as its own application sees it, if the layer
                 // unties anything.
                 let layer = stack.real_layers[at.real_idx].application(apps.index[i]);
                 // The tokens go through the layer one after the other, and
-                // each one advances the cache. `Layer::step` fills an empty
-                // slot on the backend of the tokens.
-                let mut next = Vec::with_capacity(values.len());
+                // each one advances the cache.
+                let mut after = Vec::with_capacity(values.len());
                 for value in values {
-                    let (value, c) =
-                        stack.residuals.join(value, at, |token| layer.step(token, cache.take()));
-                    next.push(value);
-                    cache = Some(c);
+                    let (value, c) = stack.residuals.join(value, at, |token| layer.step(token, cache));
+                    after.push(value);
+                    cache = c;
                 }
-                (next, cache)
+                (after, cache)
             });
+            values = next;
+            advanced.push(cache);
         }
-        hop.finish(values)
+        (hop.finish(values), advanced)
     }
 
     /// Step the class latents that the stack has waiting for its next user
@@ -586,21 +589,22 @@ where
     /// latent rows, which are the only inputs.
     ///
     /// When nothing ran, the caches come back as they went in (`None`
-    /// included). `None` cursors inject nothing (`Middle`/`End` latents then
-    /// panic, as in `step`).
+    /// included). When a latent runs from `None`, the cascade starts from
+    /// [`Self::zero_caches`]. `None` cursors inject nothing (`Middle`/`End`
+    /// latents then panic, as in `step`).
     pub fn prime(
         &self,
         batch: usize,
-        caches: Option<M::Caches>,
+        caches: Option<Vec<M::Cache>>,
         class: Option<&mut ClassCursors>,
-    ) -> (Option<Tensor<2>>, Option<M::Caches>) {
+    ) -> (Option<Tensor<2>>, Option<Vec<M::Cache>>) {
         let n = self.n_virtual_count();
         let Some(class) = class else {
             assert_full_len_known(&self.class_latents, None, "Layers");
             return (None, caches);
         };
         if let Some(caches) = &caches {
-            assert_eq!(caches.slot_count(), n, "one cache per virtual layer");
+            assert_eq!(caches.len(), n, "one cache per virtual layer");
         }
 
         // Bottom input stream for this prime: the stack-level class latents due
@@ -619,14 +623,11 @@ where
             .into_iter()
             .map(|(_at, i)| class_row(emb, i, batch, width))
             .collect();
-        // A stack with no caches starts from empty slots. `Layer::step` fills
-        // each one on the backend of the tokens.
-        let mut slots: Vec<Option<M::Cache>> = match caches {
-            Some(caches) => caches.into_slots(),
-            None => (0..n).map(|_| None).collect(),
-        };
-        let out = self.cascade(stream, &mut slots).pop();
-        (out, Some(M::Caches::from_slots(slots)))
+        // A stack with no caches starts from its zero caches, on the device of
+        // the latents.
+        let caches = caches.unwrap_or_else(|| self.zero_caches(batch, &stream[0].device()));
+        let (mut out, caches) = self.cascade(stream, caches);
+        (out.pop(), Some(caches))
     }
 }
 
@@ -639,7 +640,7 @@ where
 ///   layer,
 /// - the device of the stack,
 /// - the straight-through carry of each [`ResidualStreams`],
-/// - the hop of the cache slots,
+/// - the hop of the cache of each layer,
 /// - the lift at the top of the stack.
 ///
 /// The loop of `forward` gives it one `ResidualStreams`: the window. The
@@ -702,24 +703,25 @@ where
     /// untracked span.
     ///
     /// `run` gets the view of the stack for this layer, the values and the
-    /// cache slot, all on the backend of the layer. It returns the values and
-    /// the cache slot for the next layer. A tracked layer runs on the stack,
-    /// and an untracked one on its `Module::valid` copy. This holds for the
-    /// weights of the layer and for the MGR gates. The cache slot makes the
-    /// same hop as its layer. A tracked cache goes down with an untracked
-    /// layer, because Burn cannot mix backends within an op. It goes back up
-    /// after the layer.
+    /// cache of the layer, all on the backend of the layer. It returns the
+    /// values for the next layer and the advanced cache. This call returns
+    /// them too, with the cache back on the device of the stack. A tracked
+    /// layer runs on the stack, and an untracked one on its `Module::valid`
+    /// copy. This holds for the weights of the layer and for the MGR gates.
+    /// The cache makes the same hop as its layer. A tracked cache goes down
+    /// with an untracked layer, because Burn cannot mix backends within an
+    /// op. It goes back up after the layer.
     fn layer(
         &mut self,
         i: usize,
         values: Vec<ResidualStreams<R, S>>,
-        slot: &mut Option<M::Cache>,
+        cache: M::Cache,
         run: impl FnOnce(
             &Layers<M>,
             Vec<ResidualStreams<R, S>>,
-            Option<M::Cache>,
-        ) -> (Vec<ResidualStreams<R, S>>, Option<M::Cache>),
-    ) -> Vec<ResidualStreams<R, S>> {
+            M::Cache,
+        ) -> (Vec<ResidualStreams<R, S>>, M::Cache),
+    ) -> (Vec<ResidualStreams<R, S>>, M::Cache) {
         let stack = self.stack;
         let track = self.tracked.as_ref().is_none_or(|t| t[i]);
         let values = match (self.carry.take(), track) {
@@ -742,15 +744,15 @@ where
             _ => stack,
         };
         let cache = match track {
-            true => slot.take(),
-            false => slot.take().map(cache_to_inner),
+            true => cache,
+            false => cache_to_inner(cache),
         };
         let (values, cache) = run(view, values, cache);
-        *slot = match track {
+        let cache = match track {
             true => cache,
-            false => cache.map(|c| cache_from_inner(c, &self.device)),
+            false => cache_from_inner(cache, &self.device),
         };
-        values
+        (values, cache)
     }
 
     /// The cut: [`Residuals::close_span`] on each value, with its
@@ -801,10 +803,9 @@ pub(crate) fn zero_caches_for<M: Block>(
     n: usize,
     batch: usize,
     device: &Device,
-) -> M::Caches {
+) -> Vec<M::Cache> {
     let layer = layer.application(0);
-    let slots = (0..n).map(|_| Some(layer.block.zero_cache(batch, device))).collect();
-    M::Caches::from_slots(slots)
+    (0..n).map(|_| layer.block.zero_cache(batch, device)).collect()
 }
 
 /// The [`Applications`] of a stack of `n_real_layers` under this optional

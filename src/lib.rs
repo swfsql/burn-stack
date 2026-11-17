@@ -11,16 +11,15 @@
 //!
 //! - [`Block`](modules::Block): `block_forward` (parallel, for training and
 //!   prefill), `block_step` (recurrent, for decoding), and `zero_cache`, plus
-//!   the associated `Cache` / `Caches` / `Options` types.
+//!   the associated `Cache` / `Options` types.
 //! - [`BlockConfig`](modules::BlockConfig): `d_model`, `init_block`, and the
 //!   Muon-eligible projections of the block.
 //!
-//! Its cache collection also implements [`CacheStack`](modules::CacheStack),
-//! which is all that the generic loops need: one cache per virtual layer. Its
-//! cache implements [`CacheTensors`](modules::CacheTensors), the cache
+//! Its cache implements [`CacheTensors`](modules::CacheTensors), the cache
 //! traversal: the one list of the tensors of a cache. The backend hop of
 //! [`Layers::grad_horizon`](modules::Layers::grad_horizon) follows from that
-//! list.
+//! list. The caches of a layer stack are a `Vec` of block caches, one for
+//! each virtual layer, so the family writes no type for them.
 //!
 //! ## Composition hierarchy
 //!
@@ -80,7 +79,7 @@ pub mod utils;
 /// types and the two block traits into scope.
 pub mod prelude {
     pub use crate::modules::{
-        BidiLayerPair, BidiLayers, Block, BlockConfig, CacheStack, CacheTensors, GatedMlp,
+        BidiLayerPair, BidiLayers, Block, BlockConfig, CacheTensors, GatedMlp,
         GatedMlpConfig,
         LatentNetwork, Layer, LayerUntied, Layers, LayersBuilder, MultiGateResidualConfig, OutputMerge,
         OutputMergeConfig, Residuals, ResidualsConfig, RmsNorm, RmsNormConfig, VocabNetwork,

@@ -94,7 +94,7 @@ pub use network::HNetVocabNetwork;
 pub use routing::{Router, RouterCache, Routing};
 pub use shape::{HNetShape, HNetStageShape, HNetVocabShape};
 
-use crate::modules::{Block, CacheTensors, Layers, RmsNorm};
+use crate::modules::{Block, Layers, RmsNorm};
 use burn::module::Param;
 use burn::nn::Linear;
 use burn::prelude::*;
@@ -219,17 +219,17 @@ where
     fn forward(
         &self,
         x_bsd: Tensor<3>,
-        caches: Option<M::Caches>,
+        caches: Option<Vec<M::Cache>>,
         options: M::Options,
         pad_bs: Option<Tensor<2, Bool>>,
-    ) -> (Tensor<3>, M::Caches) {
+    ) -> (Tensor<3>, Vec<M::Cache>) {
         let [_batch, _sequence, d_in] = x_bsd.dims();
         let x_bsd = widen(x_bsd, &self.pad_dimension);
         let (y_bsd, caches) = self.layers.forward(x_bsd, caches, options, None, pad_bs);
         (narrow_last(self.norm.forward(y_bsd), d_in), caches)
     }
 
-    fn step(&self, x_bd: Tensor<2>, caches: M::Caches) -> (Tensor<2>, M::Caches) {
+    fn step(&self, x_bd: Tensor<2>, caches: Vec<M::Cache>) -> (Tensor<2>, Vec<M::Cache>) {
         let [_batch, d_in] = x_bd.dims();
         let x_bd = widen(x_bd, &self.pad_dimension);
         let (y_bd, caches) = self.layers.step(x_bd, Some(caches), None);
@@ -289,11 +289,7 @@ where
         x: Tensor<2>,
         caches: Option<HNetCaches<E, M>>,
         mode: StepMode,
-    ) -> (Tensor<2>, HNetCaches<E, M>, Vec<Routing>)
-    where
-        E::Caches: CacheTensors,
-        M::Caches: CacheTensors,
-    {
+    ) -> (Tensor<2>, HNetCaches<E, M>, Vec<Routing>) {
         let [batch, _d] = x.dims();
         let caches = caches.unwrap_or_else(|| self.zero_caches(batch, &x.device()));
         assert_eq!(caches.stages.len(), self.stages.len(), "one cache per stage");
@@ -411,11 +407,7 @@ where
         caches: HNetCaches<E, M>,
         mode: StepMode,
         routing: &mut Vec<Routing>,
-    ) -> (Tensor<2>, HNetCaches<E, M>)
-    where
-        E::Caches: CacheTensors,
-        M::Caches: CacheTensors,
-    {
+    ) -> (Tensor<2>, HNetCaches<E, M>) {
         let Some(stage) = self.stages.get(s) else {
             let (y_bd, main) = self.main.step(x_bd, caches.main);
             return (y_bd, HNetCaches { stages: Vec::new(), main });

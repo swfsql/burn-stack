@@ -93,11 +93,11 @@ where
     pub fn forward(
         &self,
         x: Tensor<3>,
-        caches: Option<M::Caches>,
+        caches: Option<Vec<M::Cache>>,
         options: M::Options,
         class: Option<&mut ClassCursors>,
         pad: Option<Tensor<2, Bool>>,
-    ) -> (Tensor<3>, M::Caches) {
+    ) -> (Tensor<3>, Vec<M::Cache>) {
         // No cursors ⇒ this one call covers the whole sequence.
         let mut whole = ClassCursors::new(x.dims()[1]);
         let class = class.unwrap_or(&mut whole);
@@ -132,9 +132,9 @@ where
     pub fn step(
         &self,
         x: Tensor<2>,
-        caches: Option<M::Caches>,
+        caches: Option<Vec<M::Cache>>,
         class: Option<&mut ClassCursors>,
-    ) -> (Tensor<2>, M::Caches) {
+    ) -> (Tensor<2>, Vec<M::Cache>) {
         let Some(class) = class else {
             assert_full_len_known(&self.class_tokens, None, "LatentNetwork");
             return self.step_one(x, caches, None);
@@ -185,9 +185,9 @@ where
     pub fn prime(
         &self,
         batch: usize,
-        caches: Option<M::Caches>,
+        caches: Option<Vec<M::Cache>>,
         class: Option<&mut ClassCursors>,
-    ) -> (Option<Tensor<2>>, Option<M::Caches>) {
+    ) -> (Option<Tensor<2>>, Option<Vec<M::Cache>>) {
         let Some(class) = class else {
             // No cursors ⇒ nothing is injected, exactly as in a `None` step.
             assert_full_len_known(&self.class_tokens, None, "LatentNetwork");
@@ -225,9 +225,9 @@ where
     fn step_one(
         &self,
         x: Tensor<2>,
-        caches: Option<M::Caches>,
+        caches: Option<Vec<M::Cache>>,
         class: Option<&mut ClassCursors>,
-    ) -> (Tensor<2>, M::Caches) {
+    ) -> (Tensor<2>, Vec<M::Cache>) {
         let x = self.in_proj.forward(x);
         let (x, caches) = match class {
             // The sequence of the stack is this one, made longer by the class
@@ -345,11 +345,11 @@ where
     pub fn forward(
         &self,
         x: Tensor<3, Int>,
-        caches: Option<M::Caches>,
+        caches: Option<Vec<M::Cache>>,
         options: M::Options,
         class: Option<&mut ClassCursors>,
         pad: Option<Tensor<2, Bool>>,
-    ) -> (Tensor<3>, M::Caches) {
+    ) -> (Tensor<3>, Vec<M::Cache>) {
         let x = self.embed(x);
         let (x, caches) = self.layers.forward(x, caches, options, class, pad);
         let x = self.norm_f.forward(x);
@@ -364,10 +364,10 @@ where
     pub fn forward_packed(
         &self,
         x: Tensor<3, Int>,
-        caches: Option<M::Caches>,
+        caches: Option<Vec<M::Cache>>,
         options: M::Options,
         packed: &Packed,
-    ) -> (Tensor<3>, M::Caches) {
+    ) -> (Tensor<3>, Vec<M::Cache>) {
         let x = self.embed(x);
         let (x, caches) = self.layers.forward_packed(x, caches, options, packed);
         let x = self.norm_f.forward(x);
@@ -383,9 +383,9 @@ where
     pub fn step(
         &self,
         x: Tensor<2, Int>,
-        caches: Option<M::Caches>,
+        caches: Option<Vec<M::Cache>>,
         class: Option<&mut ClassCursors>,
-    ) -> (Tensor<2>, M::Caches) {
+    ) -> (Tensor<2>, Vec<M::Cache>) {
         // Embed the single token via a temporary unit sequence axis.
         let x = self.embed(x.unsqueeze_dim::<3>(1)).squeeze_dim(1);
         let (x, caches) = self.layers.step(x, caches, class);
@@ -404,9 +404,9 @@ where
     pub fn prime(
         &self,
         batch: usize,
-        caches: Option<M::Caches>,
+        caches: Option<Vec<M::Cache>>,
         class: Option<&mut ClassCursors>,
-    ) -> (Option<Tensor<2>>, Option<M::Caches>) {
+    ) -> (Option<Tensor<2>>, Option<Vec<M::Cache>>) {
         let (x, caches) = self.layers.prime(batch, caches, class);
         let logits = x.map(|x| {
             let x = self.norm_f.forward(x);

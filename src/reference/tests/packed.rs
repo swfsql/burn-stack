@@ -87,10 +87,11 @@ fn layer_forward_packed_equals_each_segment_alone() {
     let (packed, starts, width) = packed_layout(&layer.block, 0, &device);
     let x = randn3(2, width, &device);
 
-    let (y, cache) = layer.forward_packed(x.clone(), None, (), &packed);
+    let (y, cache) = layer.forward_packed(x.clone(), layer.block.zero_cache(2, &device), (), &packed);
 
     for (b, start, end) in packed_segments(&starts, width) {
-        let (alone, alone_cache) = layer.forward(segment_of(x.clone(), b, start, end), None, (), None);
+        let zero = layer.block.zero_cache(1, &device);
+        let (alone, alone_cache) = layer.forward(segment_of(x.clone(), b, start, end), zero, (), None);
         assert!(max_abs_diff(segment_of(y.clone(), b, start, end), alone) < dtype_tol(TOL));
         if end == width {
             let last = cache.state_bd.clone().narrow(0, b, 1);
@@ -124,7 +125,7 @@ fn layers_forward_packed_equals_each_segment_alone() {
         let (alone, alone_caches) = layers.forward(tokens, None, (), None, None);
         assert!(max_abs_diff(segment_of(y.clone(), b, start, end), alone) < dtype_tol(TOL));
         if end == width {
-            for (cache, alone_cache) in caches.caches.iter().zip(alone_caches.caches) {
+            for (cache, alone_cache) in caches.iter().zip(alone_caches) {
                 let last = cache.state_bd.clone().narrow(0, b, 1);
                 assert!(max_abs_diff(last, alone_cache.state_bd) < dtype_tol(TOL));
             }

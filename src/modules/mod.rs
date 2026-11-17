@@ -20,8 +20,8 @@ use burn::prelude::*;
 pub mod activation;
 /// Bidirectional layer stacks (straight + reversed passes, merged per pair).
 pub mod bidi;
-/// The cache traits ([`CacheStack`], [`CacheTensors`]) and the backend hop
-/// that follows from the traversal.
+/// The cache traversal ([`CacheTensors`]) and the backend hop that follows
+/// from it.
 pub mod cache;
 /// A Pre-LN norm around one block, with an optional feed-forward part
 /// ([`Layer`]).
@@ -72,8 +72,7 @@ pub use norm::rms_score::{normed_score, rms_denom, score_scale};
 
 pub use bidi::{BidiLayerPair, BidiLayers, BidiLayersBuilder, OutputMerge, OutputMergeConfig};
 pub use cache::{
-    CacheStack, CacheTensors, TensorZip, cache_detach, cache_device, cache_from_inner, cache_to_inner,
-    lift,
+    CacheTensors, TensorZip, cache_detach, cache_device, cache_from_inner, cache_to_inner, lift,
 };
 pub use hnet::{
     HNet, HNetCaches, HNetShape, HNetStageShape, HNetVocabNetwork, HNetVocabShape, Routing,
@@ -101,13 +100,15 @@ pub use network::{
 /// [`Layers::grad_horizon`](crate::modules::Layers::grad_horizon) move the
 /// stack to the inner backend for its untracked spans. A
 /// `#[derive(Module)]` block satisfies both.
+///
+/// A block always gets a cache. A container starts each slot from
+/// [`Self::zero_cache`], and the caches of a layer stack are a
+/// `Vec<Self::Cache>`, one cache for each virtual layer. Outside of this
+/// trait, the API of a family can take an `Option` of its cache.
 pub trait Block: Module + burn::module::ModuleDisplay {
-    /// The cache of one block (the state of one layer). It is the
-    /// [`CacheStack::Cache`] of [`Self::Caches`], so it has the same
-    /// [`CacheTensors`] bound.
+    /// The cache of one block (the state of one layer). Its traversal
+    /// ([`CacheTensors`]) gives the backend hop and the detach of the cache.
     type Cache: CacheTensors;
-    /// The per-network cache collection for this family.
-    type Caches: CacheStack<Cache = Self::Cache>;
     /// Per-call algorithm/chunking options threaded down to
     /// [`Self::block_forward`]. `()` for a block with nothing to select.
     type Options;
@@ -124,7 +125,7 @@ pub trait Block: Module + burn::module::ModuleDisplay {
     fn block_forward(
         &self,
         x: Tensor<3>,
-        cache: Option<Self::Cache>,
+        cache: Self::Cache,
         options: Self::Options,
         pad: Option<Tensor<2, Bool>>,
     ) -> (Tensor<3>, Self::Cache);
@@ -147,7 +148,7 @@ pub trait Block: Module + burn::module::ModuleDisplay {
     fn block_forward_packed(
         &self,
         x: Tensor<3>,
-        cache: Option<Self::Cache>,
+        cache: Self::Cache,
         options: Self::Options,
         reset: Tensor<2, Bool>,
     ) -> (Tensor<3>, Self::Cache) {
@@ -165,16 +166,13 @@ pub trait Block: Module + burn::module::ModuleDisplay {
     }
 
     /// The step: the recurrent call over one token of each row, for decode.
-    fn block_step(&self, x: Tensor<2>, cache: Option<Self::Cache>) -> (Tensor<2>, Self::Cache);
+    fn block_step(&self, x: Tensor<2>, cache: Self::Cache) -> (Tensor<2>, Self::Cache);
 
     /// The zero cache of one layer, for `batch` rows on `device`. The same
-    /// cache serves `forward` and `step`. A container calls it once for each
-    /// slot, so each slot has its own buffers (a captured step writes each
-    /// slot in place).
-    ///
-    /// The zero cache equals no cache: `block_forward` and `block_step` from
-    /// it give what they give from `None`. A container starts a slot in
-    /// either way.
+    /// cache serves `forward` and `step`. A container starts each slot from
+    /// it, because a block always gets a cache. A container calls it once for
+    /// each slot, so each slot has its own buffers (a captured step writes
+    /// each slot in place).
     fn zero_cache(&self, batch: usize, device: &Device) -> Self::Cache;
 
     /// The parameters that this block stores **once per application** of its

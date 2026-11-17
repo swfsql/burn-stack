@@ -11,7 +11,7 @@
 
 use super::CapturedStep;
 use crate::modules::{Layers, LayersBuilder, VocabNetwork, VocabNetworkBuilder};
-use crate::reference::{RefBlock, RefBlockConfig, RefCaches};
+use crate::reference::{RefBlock, RefBlockConfig, RefCache};
 use crate::utils::test_helpers::max_abs_diff;
 use crate::utils::{ClassCursors, ClassLatent};
 use burn::prelude::*;
@@ -31,9 +31,9 @@ fn expects_recording(device: &Device) -> bool {
         && (name.contains("Cuda") || name.contains("Hip"))
 }
 
-fn assert_caches(label: &str, a: &RefCaches, b: &RefCaches) {
-    assert_eq!(a.caches.len(), b.caches.len());
-    for (i, (a, b)) in a.caches.iter().zip(&b.caches).enumerate() {
+fn assert_caches(label: &str, a: &[RefCache], b: &[RefCache]) {
+    assert_eq!(a.len(), b.len());
+    for (i, (a, b)) in a.iter().zip(b).enumerate() {
         let d = max_abs_diff(a.state_bd.clone(), b.state_bd.clone());
         assert_eq!(d, 0.0, "{label}: slot {i} differs by {d}");
     }
@@ -67,7 +67,7 @@ fn vocab_net(device: &Device) -> VocabNetwork<RefBlock> {
 }
 
 /// Eager: every step with the cursors, from the opening.
-fn eager_run(net: &VocabNetwork<RefBlock>, device: &Device) -> (Vec<Tensor<2>>, RefCaches) {
+fn eager_run(net: &VocabNetwork<RefBlock>, device: &Device) -> (Vec<Tensor<2>>, Vec<RefCache>) {
     let mut class = ClassCursors::stream();
     let (_, caches) = net.prime(BATCH, None, Some(&mut class));
     let mut caches = caches.expect("two Start latents leave a cache");

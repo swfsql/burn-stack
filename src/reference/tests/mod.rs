@@ -14,7 +14,8 @@
 //! - `grad_horizon.rs`: gradient reachability across a `grad_horizon` cut,
 //!   the gradients of a cut stack against one window and against the step,
 //!   and a probe of the memory that a cut saves,
-//! - `cache.rs`: the detach of the cache stack,
+//! - `cache.rs`: the detach and the cache traversal of the caches of a layer
+//!   stack,
 //! - `multi_gate.rs`: Multi-Gate Residuals in `Layers` and in a bidirectional
 //!   stack, and with the class markers,
 //! - `bidi.rs`: bidirectional pairing, and the ignored residuals of a pair,
@@ -32,7 +33,7 @@ use super::*;
 use crate::modules::bidi::{BidiLayersBuilder, OutputMergeConfig};
 use crate::modules::{
     GatedMlpConfig, LatentNetworkBuilder, LayerUntied, Layers, LayersBuilder, ResidualsConfig,
-    VocabNetworkBuilder,
+    VocabNetworkBuilder, cache_detach,
 };
 use crate::utils::test_helpers::{dtype_tol, max_abs_diff, max_rel_diff};
 use crate::utils::{BidiSchedule, ClassLatent, ClassToken, GradHorizon, Packed, Schedule};
@@ -77,7 +78,7 @@ fn step_unrolled(layers: &Layers<RefBlock>, x: Tensor<3>) -> Tensor<3> {
 }
 
 /// [`step_unrolled`], with the final caches of the last step.
-fn step_unrolled_with_caches(layers: &Layers<RefBlock>, x: Tensor<3>) -> (Tensor<3>, RefCaches) {
+fn step_unrolled_with_caches(layers: &Layers<RefBlock>, x: Tensor<3>) -> (Tensor<3>, Vec<RefCache>) {
     let [_batch, sequence, _d_model] = x.dims();
     let mut caches = None;
     let mut ys = Vec::with_capacity(sequence);
@@ -91,9 +92,9 @@ fn step_unrolled_with_caches(layers: &Layers<RefBlock>, x: Tensor<3>) -> (Tensor
 }
 
 /// Panic unless each final cache in `got` matches its cache in `want`.
-fn assert_same_caches(want: &RefCaches, got: &RefCaches, label: &str) {
-    assert_eq!(want.caches.len(), got.caches.len(), "{label}: the counts of the cache slots differ");
-    for (i, (want, got)) in want.caches.iter().zip(&got.caches).enumerate() {
+fn assert_same_caches(want: &[RefCache], got: &[RefCache], label: &str) {
+    assert_eq!(want.len(), got.len(), "{label}: the counts of the cache slots differ");
+    for (i, (want, got)) in want.iter().zip(got).enumerate() {
         let diff = max_rel_diff(got.state_bd.clone(), want.state_bd.clone());
         assert!(diff < dtype_tol(TOL), "{label}: the final caches of virtual layer {i} differ by {diff}");
     }

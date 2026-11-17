@@ -38,14 +38,14 @@ fn assert_only_tracked_layers_train(layers: &Layers<RefBlock>, grads: &Gradients
 /// random weights, with the shapes of `y` and `caches`. In a plain sum, a sign
 /// error or an order error can cancel. In a sum with random weights, it
 /// stays.
-fn weighted_loss(y: &Tensor<3>, caches: &RefCaches) -> impl Fn(Tensor<3>, RefCaches) -> Tensor<1> + use<> {
+fn weighted_loss(y: &Tensor<3>, caches: &[RefCache]) -> impl Fn(Tensor<3>, Vec<RefCache>) -> Tensor<1> + use<> {
     let normal = Distribution::Normal(0.0, 1.0);
     let device = y.device();
     let y_weights = Tensor::<3>::random(y.dims(), normal, &device);
     let state_weights: Vec<Tensor<2>> =
-        caches.caches.iter().map(|c| Tensor::random(c.state_bd.dims(), normal, &device)).collect();
+        caches.iter().map(|c| Tensor::random(c.state_bd.dims(), normal, &device)).collect();
     move |y, caches| {
-        let states = caches.caches.into_iter().zip(&state_weights);
+        let states = caches.into_iter().zip(&state_weights);
         states.fold((y * y_weights.clone()).sum(), |acc, (c, w)| acc + (c.state_bd * w.clone()).sum())
     }
 }
@@ -138,9 +138,9 @@ fn nothing_tracked_reaches_the_untracked_caches() {
     let device = test_device().autodiff();
     let (n, k) = (4, 2);
     let mut layers = layers(n, &device);
-    let grads_of_untracked_caches = |caches: RefCaches| {
+    let grads_of_untracked_caches = |caches: Vec<RefCache>| {
         let anchor = Tensor::<1>::zeros([1], &device).require_grad();
-        let untracked = caches.caches.into_iter().take(n - k);
+        let untracked = caches.into_iter().take(n - k);
         let grads = untracked.fold(anchor.clone().sum(), |acc, c| acc + c.state_bd.sum()).backward();
         assert!(anchor.grad(&grads).is_some(), "the anchor is not in the graph");
         grads
@@ -938,7 +938,7 @@ fn grad_horizon_stretched_trains_every_real_layer() {
         max_abs_diff(y_uncut, y_cut.clone()) < dtype_tol(TOL),
         "a horizon changes the graph, never the values",
     );
-    for (a, b) in caches_uncut.caches.into_iter().zip(caches_cut.caches) {
+    for (a, b) in caches_uncut.into_iter().zip(caches_cut) {
         assert!(
             max_abs_diff(a.state_bd, b.state_bd) < dtype_tol(TOL),
             "nor the caches it hands back",
@@ -1048,7 +1048,7 @@ fn grad_horizon_keeps_the_checkpointing_strategy() {
     // The backward above consumed the graph of the caches, so the step takes
     // them detached (Burn has no `retain_graph`).
     let x_t = x.narrow(1, 0, 1).squeeze_dim::<2>(1);
-    let (y_t, _) = layers.step(x_t, Some(caches.detach()), None);
+    let (y_t, _) = layers.step(x_t, Some(cache_detach(caches)), None);
     let _ = y_t.sum().backward();
 }
 

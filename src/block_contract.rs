@@ -20,8 +20,7 @@
 //!   can call each contract in the same way.
 //! - A contract that needs more than [`BlockConfig`] and [`Block`] require
 //!   states it in its bounds. For example, a contract that builds a layer
-//!   stack needs `C: Clone`, and [`cache_stack_moves_every_slot`] needs the
-//!   cache traversal of `Block::Caches`.
+//!   stack needs `C: Clone`.
 //! - The contract builds the block on [`test_device`], for one application,
 //!   when its docs do not give another device or count. It draws random
 //!   inputs.
@@ -49,7 +48,7 @@
 //! window. So a family crate gives such a block a short chunk, for example 4
 //! tokens, through its config or its options.
 
-use crate::modules::{Block, BlockConfig, CacheStack, CacheTensors, Layers, LayersBuilder, TensorZip};
+use crate::modules::{Block, BlockConfig, CacheTensors, Layers, LayersBuilder, TensorZip};
 use crate::utils::test_helpers::{dtype_tol, max_rel_diff, panic_text, test_device};
 use crate::utils::{GradHorizon, Packed, Schedule};
 use burn::config::config_to_json;
@@ -70,7 +69,8 @@ const SPLIT: usize = 3;
 const WARM: usize = 2;
 
 /// `block_forward` over a window equals `block_step` unrolled over the same
-/// window, on the outputs and on the final cache. Both start from no cache.
+/// window, on the outputs and on the final cache. Both start from the zero
+/// cache.
 ///
 /// The containers rely on this: `forward` for training and prefill, `step`
 /// for decode.
@@ -85,8 +85,10 @@ pub fn forward_equals_step_unrolled<C: BlockConfig>(
         let block = config.init_block(1, &device);
         let x_bsd = randn(BATCH, SEQUENCE, config.d_model(), &device);
 
-        let (y_fwd, cache_fwd) = block.block_forward(x_bsd.clone(), None, options, None);
-        let (y_step, cache_step) = step_unrolled(&block, x_bsd, None);
+        let zero = || block.zero_cache(BATCH, &device);
+
+        let (y_fwd, cache_fwd) = block.block_forward(x_bsd.clone(), zero(), options, None);
+        let (y_step, cache_step) = step_unrolled(&block, x_bsd, zero());
 
         check("the outputs of the forward and of the step unrolled", max_rel_diff(y_fwd, y_step), tol);
         let what = "the final caches of the forward and of the step unrolled";
@@ -114,11 +116,13 @@ pub fn forward_splits_into_windows_through_the_cache<C: BlockConfig>(
         let block = config.init_block(1, &device);
         let x_bsd = randn(BATCH, SEQUENCE, config.d_model(), &device);
 
-        let (y_all, cache_all) = block.block_forward(x_bsd.clone(), None, options.clone(), None);
+        let zero = || block.zero_cache(BATCH, &device);
+
+        let (y_all, cache_all) = block.block_forward(x_bsd.clone(), zero(), options.clone(), None);
         let first_bsd = x_bsd.clone().narrow(1, 0, SPLIT);
-        let (y_first, cache_first) = block.block_forward(first_bsd, None, options.clone(), None);
+        let (y_first, cache_first) = block.block_forward(first_bsd, zero(), options.clone(), None);
         let second_bsd = x_bsd.narrow(1, SPLIT, SEQUENCE - SPLIT);
-        let (y_second, cache_second) = block.block_forward(second_bsd, Some(cache_first), options, None);
+        let (y_second, cache_second) = block.block_forward(second_bsd, cache_first, options, None);
 
         let y_split = Tensor::cat(vec![y_first, y_second], 1);
         check("the outputs of the two windows and of one window", max_rel_diff(y_split, y_all), tol);
@@ -127,55 +131,12 @@ pub fn forward_splits_into_windows_through_the_cache<C: BlockConfig>(
     });
 }
 
-/// The zero cache equals no cache. The forward and the step unrolled from
-/// [`Block::zero_cache`] give the outputs and the final caches that they give
-/// from `None`.
-///
-/// The containers rely on this, because they start a sequence in two ways.
-/// [`Layers::forward`](crate::modules::Layers::forward) and
-/// [`Layers::step`](crate::modules::Layers::step) start each slot from the
-/// zero cache. [`Layers::prime`](crate::modules::Layers::prime) starts each
-/// slot from no cache. A prime and the steps after it must give what the
-/// forward gives.
-pub fn zero_cache_equals_no_cache<C: BlockConfig>(
-    config: &C,
-    options: <C::Block as Block>::Options,
-    f32_tol: f32,
-) where
-    <C::Block as Block>::Options: Clone,
-{
-    run_contract("zero_cache_equals_no_cache", || {
-        let device = test_device();
-        let tol = dtype_tol(f32_tol);
-        let block = config.init_block(1, &device);
-        let x_bsd = randn(BATCH, SEQUENCE, config.d_model(), &device);
-        let zero = || Some(block.zero_cache(BATCH, &device));
-
-        let (y_none, cache_none) = block.block_forward(x_bsd.clone(), None, options.clone(), None);
-        let (y_zero, cache_zero) = block.block_forward(x_bsd.clone(), zero(), options, None);
-        let what = "the outputs of the forward from the zero cache and from no cache";
-        check(what, max_rel_diff(y_zero, y_none), tol);
-        let what = "the final caches of the forward from the zero cache and from no cache";
-        check(what, cache_diff(cache_zero, cache_none), tol);
-
-        let (y_none, cache_none) = step_unrolled(&block, x_bsd.clone(), None);
-        let (y_zero, cache_zero) = step_unrolled(&block, x_bsd, zero());
-        let what = "the outputs of the step from the zero cache and from no cache";
-        check(what, max_rel_diff(y_zero, y_none), tol);
-        let what = "the final caches of the step from the zero cache and from no cache";
-        check(what, cache_diff(cache_zero, cache_none), tol);
-    });
-}
-
 /// In a right-padded batch, each row gives what it gives alone: the outputs
 /// at its real tokens, and its row of the final cache. The batch runs two
-/// times, from a warm cache and from no cache. Each row alone starts from the
-/// same cache as the batch. An empty row (a row with no real token) has these
-/// final caches:
-///
-/// - from a warm cache, its row of the incoming cache,
-/// - from no cache, its row of the zero cache. [`zero_cache_equals_no_cache`]
-///   states that the zero cache and no cache give the same values.
+/// times, from a warm cache and from the zero cache. Each row alone starts
+/// from its row of the same cache as the batch. In both runs, the final cache
+/// of an empty row (a row with no real token) is its row of the incoming
+/// cache.
 ///
 /// The containers rely on this to run rows of different lengths in one
 /// batch. See the `pad` of [`Block::block_forward`].
@@ -195,7 +156,8 @@ pub fn padded_rows_equal_each_row_alone<C: BlockConfig>(
         let lens = [SEQUENCE, SPLIT, 0];
         let batch = lens.len();
         let x_bsd = randn(batch, SEQUENCE, d_model, &device);
-        let (_, warm) = block.block_forward(randn(batch, WARM, d_model, &device), None, options.clone(), None);
+        let zero = block.zero_cache(batch, &device);
+        let (_, warm) = block.block_forward(randn(batch, WARM, d_model, &device), zero.clone(), options.clone(), None);
         let lens_i64: Vec<i64> = lens.iter().map(|&len| len as i64).collect();
         let lens_bs = Tensor::<1, Int>::from_ints(lens_i64.as_slice(), &device)
             .reshape([batch, 1])
@@ -204,22 +166,15 @@ pub fn padded_rows_equal_each_row_alone<C: BlockConfig>(
             .reshape([1, SEQUENCE])
             .expand([batch, SEQUENCE])
             .greater_equal(lens_bs);
-        let zero = block.zero_cache(batch, &device);
 
-        for (label, incoming) in [("from a warm cache", Some(warm)), ("from no cache", None)] {
+        for (label, incoming) in [("from a warm cache", warm), ("from the zero cache", zero)] {
             let (y_bsd, cache) = block.block_forward(x_bsd.clone(), incoming.clone(), options.clone(), Some(pad_bs.clone()));
             for (b, &len) in lens.iter().enumerate() {
-                let incoming_b = incoming.clone().map(|cache| cache_row(cache, b));
+                let incoming_b = cache_row(incoming.clone(), b);
                 let cache_b = cache_row(cache.clone(), b);
                 if len == 0 {
-                    let (what, want_b) = match incoming_b {
-                        Some(incoming_b) => (format!("{label}, the final and the incoming caches of the empty row {b}"), incoming_b),
-                        None => (
-                            format!("{label}, the final cache of the empty row {b} and its row of the zero cache"),
-                            cache_row(zero.clone(), b),
-                        ),
-                    };
-                    check(&what, cache_diff(cache_b, want_b), tol);
+                    let what = format!("{label}, the final and the incoming caches of the empty row {b}");
+                    check(&what, cache_diff(cache_b, incoming_b), tol);
                     continue;
                 }
                 let row_bsd = x_bsd.clone().narrow(0, b, 1).narrow(1, 0, len);
@@ -235,7 +190,7 @@ pub fn padded_rows_equal_each_row_alone<C: BlockConfig>(
 }
 
 /// Over packed rows, each segment gives the outputs that it gives alone from
-/// no cache. The last segment of a row also gives that row of the final
+/// the zero cache. The last segment of a row also gives that row of the final
 /// cache. The positions before the first reset of a row continue from the
 /// incoming cache.
 ///
@@ -265,20 +220,21 @@ pub fn packed_segments_equal_each_segment_alone<C: BlockConfig>(
         let starts = vec![vec![0, unit, 3 * unit], vec![2 * unit]];
         let reset_bs = Packed::from_starts(&starts, align, 0, sequence, &device).reset_bs;
         let x_bsd = randn(starts.len(), sequence, d_model, &device);
-        let (_, warm) = block.block_forward(randn(starts.len(), WARM, d_model, &device), None, options.clone(), None);
+        let zero = block.zero_cache(starts.len(), &device);
+        let (_, warm) = block.block_forward(randn(starts.len(), WARM, d_model, &device), zero, options.clone(), None);
 
-        let (y_bsd, cache) = block.block_forward_packed(x_bsd.clone(), Some(warm.clone()), options.clone(), reset_bs);
+        let (y_bsd, cache) = block.block_forward_packed(x_bsd.clone(), warm.clone(), options.clone(), reset_bs);
 
         for (b, row) in starts.iter().enumerate() {
             // Each part `[start, end)` of the row, and the cache that it
             // starts from alone: the incoming cache before the first reset,
-            // else none.
+            // else the zero cache.
             let mut parts = Vec::new();
             if row[0] > 0 {
-                parts.push((0, row[0], Some(cache_row(warm.clone(), b))));
+                parts.push((0, row[0], cache_row(warm.clone(), b)));
             }
             for (i, &start) in row.iter().enumerate() {
-                parts.push((start, row.get(i + 1).copied().unwrap_or(sequence), None));
+                parts.push((start, row.get(i + 1).copied().unwrap_or(sequence), block.zero_cache(1, &device)));
             }
             for (start, end, incoming) in parts {
                 let part_bsd = x_bsd.clone().narrow(0, b, 1).narrow(1, start, end - start);
@@ -316,8 +272,9 @@ pub fn record_round_trip_keeps_the_block<C: BlockConfig>(
         let tol = dtype_tol(f32_tol);
         let block = config.init_block(1, &device).map(&mut Jitter);
         let x_bsd = randn(BATCH, SEQUENCE, config.d_model(), &device);
-        let (want_fwd, _) = block.block_forward(x_bsd.clone(), None, options.clone(), None);
-        let (want_step, _) = step_unrolled(&block, x_bsd.clone(), None);
+        let zero_of = |block: &C::Block| block.zero_cache(BATCH, &device);
+        let (want_fwd, _) = block.block_forward(x_bsd.clone(), zero_of(&block), options.clone(), None);
+        let (want_step, _) = step_unrolled(&block, x_bsd.clone(), zero_of(&block));
 
         let bytes = block
             .into_record()
@@ -328,8 +285,8 @@ pub fn record_round_trip_keeps_the_block<C: BlockConfig>(
             .init_block(1, &device)
             .try_load_record(record)
             .unwrap_or_else(|e| panic!("the record does not load into a new block: {e}"));
-        let (got_fwd, _) = loaded.block_forward(x_bsd.clone(), None, options, None);
-        let (got_step, _) = step_unrolled(&loaded, x_bsd, None);
+        let (got_fwd, _) = loaded.block_forward(x_bsd.clone(), zero_of(&loaded), options, None);
+        let (got_step, _) = step_unrolled(&loaded, x_bsd, zero_of(&loaded));
 
         let what = "the outputs of the forward of the block and of its record in a new block";
         check(what, max_rel_diff(got_fwd, want_fwd), tol);
@@ -371,14 +328,15 @@ pub fn json_round_trip_keeps_the_config<C: BlockConfig>(
 
         let block = config.init_block(1, &device).map(&mut Jitter);
         let x_bsd = randn(BATCH, SEQUENCE, config.d_model(), &device);
-        let (want_fwd, _) = block.block_forward(x_bsd.clone(), None, options.clone(), None);
-        let (want_step, _) = step_unrolled(&block, x_bsd.clone(), None);
+        let zero_of = |block: &C::Block| block.zero_cache(BATCH, &device);
+        let (want_fwd, _) = block.block_forward(x_bsd.clone(), zero_of(&block), options.clone(), None);
+        let (want_step, _) = step_unrolled(&block, x_bsd.clone(), zero_of(&block));
         let loaded = parsed
             .init_block(1, &device)
             .try_load_record(block.into_record())
             .unwrap_or_else(|e| panic!("the record of a block of the config does not load into a block of the parsed config: {e}"));
-        let (got_fwd, _) = loaded.block_forward(x_bsd.clone(), None, options, None);
-        let (got_step, _) = step_unrolled(&loaded, x_bsd, None);
+        let (got_fwd, _) = loaded.block_forward(x_bsd.clone(), zero_of(&loaded), options, None);
+        let (got_step, _) = step_unrolled(&loaded, x_bsd, zero_of(&loaded));
 
         let what = "the outputs of the forward of the block of the config and of the block of the parsed config";
         check(what, max_rel_diff(got_fwd, want_fwd), tol);
@@ -417,20 +375,21 @@ pub fn cache_traversal_moves_every_field<C: BlockConfig>(
         let tol = dtype_tol(f32_tol);
         let d_model = config.d_model();
         let block = config.init_block(1, &device);
-        let (_, first) = step_unrolled(&block, randn(BATCH, 1, d_model, &device), None);
-        let (_, second) = step_unrolled(&block, randn(BATCH, 1, d_model, &device), Some(first.clone()));
+        let zero = block.zero_cache(BATCH, &device);
+        let (_, first) = step_unrolled(&block, randn(BATCH, 1, d_model, &device), zero);
+        let (_, second) = step_unrolled(&block, randn(BATCH, 1, d_model, &device), first.clone());
         let moved = first.into_owned_buffers().assign_in_place(second.clone());
         let x_bsd = randn(BATCH, SEQUENCE, d_model, &device);
 
-        let (y_fwd, cache_fwd) = block.block_forward(x_bsd.clone(), Some(second.clone()), options.clone(), None);
-        let (y_got, cache_got) = block.block_forward(x_bsd.clone(), Some(moved.clone()), options.clone(), None);
+        let (y_fwd, cache_fwd) = block.block_forward(x_bsd.clone(), second.clone(), options.clone(), None);
+        let (y_got, cache_got) = block.block_forward(x_bsd.clone(), moved.clone(), options.clone(), None);
         let what = "the outputs of the forward from the moved cache and from its source";
         check(what, max_rel_diff(y_got, y_fwd.clone()), tol);
         let what = "the final caches of the forward from the moved cache and from its source";
         check(what, cache_diff(cache_got, cache_fwd), tol);
 
-        let (y_want, cache_want) = step_unrolled(&block, x_bsd.clone(), Some(second.clone()));
-        let (y_got, cache_got) = step_unrolled(&block, x_bsd.clone(), Some(moved));
+        let (y_want, cache_want) = step_unrolled(&block, x_bsd.clone(), second.clone());
+        let (y_got, cache_got) = step_unrolled(&block, x_bsd.clone(), moved);
         let what = "the outputs of the step from the moved cache and from its source";
         check(what, max_rel_diff(y_got, y_want), tol);
         let what = "the final caches of the step from the moved cache and from its source";
@@ -438,7 +397,7 @@ pub fn cache_traversal_moves_every_field<C: BlockConfig>(
 
         for b in 0..BATCH {
             let row_bsd = x_bsd.clone().narrow(0, b, 1);
-            let (y_row, _) = block.block_forward(row_bsd, Some(cache_row(second.clone(), b)), options.clone(), None);
+            let (y_row, _) = block.block_forward(row_bsd, cache_row(second.clone(), b), options.clone(), None);
             let what = format!("the outputs of row {b} from its row of the cache and in the batch");
             check(&what, max_rel_diff(y_row, y_fwd.clone().narrow(0, b, 1)), tol);
         }
@@ -522,55 +481,6 @@ pub fn untied_stack_equals_the_stack_of_its_application_views<C: BlockConfig + C
     });
 }
 
-/// The caches of a layer stack ([`Block::Caches`]) move every slot. The
-/// stack has 2 real layers, and it applies each real layer once. It gives two
-/// caches: the first after one window, the second after one more window. The
-/// check has these parts:
-///
-/// - the caches hold one slot for each layer,
-/// - [`CacheStack::from_slots`] of the slots of [`CacheStack::into_slots`]
-///   returns each slot to its place,
-/// - [`assign_in_place`](CacheTensors::assign_in_place) on the caches of the
-///   stack writes each slot of the second caches into the first caches.
-///
-/// The check compares each pair of slots through the cache traversal of the
-/// block.
-///
-/// The containers rely on this. A layer stack splits its caches into slots,
-/// and joins the slots again, in each call. The row select of
-/// the H-Net step and the cache write-back of a captured step move the caches
-/// of a stack through their cache traversal. So this contract needs that
-/// traversal (`Block::Caches: CacheTensors`), which [`Block`] does not
-/// require.
-pub fn cache_stack_moves_every_slot<C: BlockConfig + Clone>(
-    config: &C,
-    options: <C::Block as Block>::Options,
-    f32_tol: f32,
-) where
-    <C::Block as Block>::Options: Clone,
-    <C::Block as Block>::Caches: CacheTensors,
-{
-    run_contract("cache_stack_moves_every_slot", || {
-        let device = test_device();
-        let tol = dtype_tol(f32_tol);
-        let d_model = config.d_model();
-        let layers = LayersBuilder::new(STACK_LAYERS, config.clone()).init(&device);
-        let (_, first) = layers.forward(randn(BATCH, SEQUENCE, d_model, &device), None, options.clone(), None, None);
-        let x_bsd = randn(BATCH, SEQUENCE, d_model, &device);
-        let (_, second) = layers.forward(x_bsd, Some(first.clone()), options, None, None);
-        assert!(
-            first.slot_count() == STACK_LAYERS,
-            "the caches of a stack of {STACK_LAYERS} layers have {} slots.",
-            first.slot_count(),
-        );
-
-        let rebuilt = <C::Block as Block>::Caches::from_slots(first.clone().into_slots());
-        check_slots("the caches from the slots and of the caches", rebuilt, first.clone(), tol);
-        let moved = first.into_owned_buffers().assign_in_place(second.clone());
-        check_slots("the moved caches and of their source", moved, second, tol);
-    });
-}
-
 /// A stack with a cut gives the outputs and the final caches of the same
 /// stack with no cut. The stack has 2 real layers. Its gradient horizon is
 /// its last layer, so the cut is before that layer. The stack with no cut has
@@ -596,40 +506,27 @@ pub fn cut_keeps_the_outputs_and_the_caches<C: BlockConfig + Clone>(
     run_contract("cut_keeps_the_outputs_and_the_caches", || {
         let device = test_device().autodiff();
         let tol = dtype_tol(f32_tol);
-        let no_cut = LayersBuilder::new(STACK_LAYERS, config.clone()).init(&device);
-        let cut = Layers { grad_horizon: Some(GradHorizon::last(1, STACK_LAYERS)), ..no_cut.clone() };
+        let no_cut = LayersBuilder::new(CUT_REAL_LAYERS, config.clone()).init(&device);
+        let cut = Layers { grad_horizon: Some(GradHorizon::last(1, CUT_REAL_LAYERS)), ..no_cut.clone() };
         let x_bsd = randn(BATCH, SEQUENCE, config.d_model(), &device);
 
         let (y_want, caches_want) = no_cut.forward(x_bsd.clone(), None, options.clone(), None, None);
         let (y_cut, caches_cut) = cut.forward(x_bsd.clone(), None, options, None, None);
         check("the outputs of the forward with a cut and with no cut", max_rel_diff(y_cut, y_want), tol);
-        check_slots("the final caches of the forward with a cut and with no cut", caches_cut, caches_want, tol);
+        let what = "the final caches of the forward with a cut and with no cut";
+        check(what, cache_diff(caches_cut, caches_want), tol);
 
         let (y_want, caches_want) = layers_step_unrolled(&no_cut, x_bsd.clone());
         let (y_cut, caches_cut) = layers_step_unrolled(&cut, x_bsd);
         check("the outputs of the step with a cut and with no cut", max_rel_diff(y_cut, y_want), tol);
-        check_slots("the final caches of the step with a cut and with no cut", caches_cut, caches_want, tol);
+        let what = "the final caches of the step with a cut and with no cut";
+        check(what, cache_diff(caches_cut, caches_want), tol);
     });
 }
 
-/// The count of real layers of the stack of the stack contract and of the
-/// cut contract. The stack applies each real layer once.
-const STACK_LAYERS: usize = 2;
-
-/// Panic unless each slot of `got` matches its slot of `want`. `what` names
-/// the two caches.
-fn check_slots<S: CacheStack>(what: &str, got: S, want: S, tol: f32) {
-    let (got, want) = (got.into_slots(), want.into_slots());
-    assert!(got.len() == want.len(), "{what} differ in slot count: {} and {}.", got.len(), want.len());
-    for (i, pair) in got.into_iter().zip(want).enumerate() {
-        match pair {
-            (Some(got), Some(want)) => check(&format!("slot {i} of {what}"), cache_diff(got, want), tol),
-            (None, None) => {}
-            (None, Some(_)) => panic!("slot {i} of {what}: the slot is empty in the first only."),
-            (Some(_), None) => panic!("slot {i} of {what}: the slot is empty in the second only."),
-        }
-    }
-}
+/// The count of real layers of the stack of the cut contract. The stack
+/// applies each real layer once.
+const CUT_REAL_LAYERS: usize = 2;
 
 /// The count of real layers of the stack of the untied contract.
 const UNTIED_REAL_LAYERS: usize = 2;
@@ -923,29 +820,26 @@ fn cache_row<T: CacheTensors>(cache: T, b: usize) -> T {
     cache.clone().zip_tensors(cache, &mut Row(b))
 }
 
-/// [`Layers::step`] unrolled over each token of `x_bsd`, from no cache and
-/// with no class cursors: the outputs `[batch, sequence, d_model]` and the
+/// [`Layers::step`] unrolled over each token of `x_bsd`, from the zero caches
+/// and with no class cursors: the outputs `[batch, sequence, d_model]` and the
 /// last caches.
-fn layers_step_unrolled<M: Block>(layers: &Layers<M>, x_bsd: Tensor<3>) -> (Tensor<3>, M::Caches)
+fn layers_step_unrolled<M: Block>(layers: &Layers<M>, x_bsd: Tensor<3>) -> (Tensor<3>, Vec<M::Cache>)
 where
     M::Options: Clone,
 {
-    unrolled(x_bsd, None, |x_bd, caches| layers.step(x_bd, caches, None))
+    let zero = layers.zero_caches(x_bsd.dims()[0], &x_bsd.device());
+    unrolled(x_bsd, zero, |x_bd, caches| layers.step(x_bd, Some(caches), None))
 }
 
 /// `block_step` unrolled over each token of `x_bsd`, from `cache`: the
 /// outputs `[batch, sequence, d_model]` and the last cache.
-fn step_unrolled<M: Block>(block: &M, x_bsd: Tensor<3>, cache: Option<M::Cache>) -> (Tensor<3>, M::Cache) {
+fn step_unrolled<M: Block>(block: &M, x_bsd: Tensor<3>, cache: M::Cache) -> (Tensor<3>, M::Cache) {
     unrolled(x_bsd, cache, |x_bd, cache| block.block_step(x_bd, cache))
 }
 
 /// `step` unrolled over each token of `x_bsd`, from `state`: the outputs
 /// `[batch, sequence, d_model]` and the last state.
-fn unrolled<S>(
-    x_bsd: Tensor<3>,
-    state: Option<S>,
-    step: impl Fn(Tensor<2>, Option<S>) -> (Tensor<2>, S),
-) -> (Tensor<3>, S) {
+fn unrolled<S>(x_bsd: Tensor<3>, state: S, step: impl Fn(Tensor<2>, S) -> (Tensor<2>, S)) -> (Tensor<3>, S) {
     let [_batch, sequence, _d_model] = x_bsd.dims();
     assert!(sequence > 0, "a step needs at least one token");
     let mut state = state;
@@ -953,10 +847,10 @@ fn unrolled<S>(
     for t in 0..sequence {
         let x_bd = x_bsd.clone().narrow(1, t, 1).squeeze_dim(1);
         let (y_bd, next) = step(x_bd, state);
-        state = Some(next);
+        state = next;
         ys.push(y_bd.unsqueeze_dim(1));
     }
-    (Tensor::cat(ys, 1), state.expect("the sequence has at least one token"))
+    (Tensor::cat(ys, 1), state)
 }
 
 #[cfg(all(test, feature = "_dev-test"))]

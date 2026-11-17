@@ -27,20 +27,21 @@ It also has the parts that those need:
 
 ## Plugging a block in
 
-Implement two block traits and two cache traits. `CacheTensors` is the cache
+Implement two block traits and one cache trait. `CacheTensors` is the cache
 traversal: the one list of the tensors of a cache. The backend hop of a cache
-follows from it.
+follows from it. The caches of a layer stack are a `Vec<MyCache>`, one cache
+for each virtual layer. A block always gets a cache: a container starts each
+cache from `zero_cache`.
 
 ```rust
 impl Block for MyBlock {
     type Cache = MyCache;              // the cache of one layer
-    type Caches = MyCaches;            // one slot per virtual layer: CacheStack
     type Options = ();                 // per-call algorithm/chunk selector
 
-    fn block_forward(&self, x: Tensor<3>, cache: Option<MyCache>, options: (),
+    fn block_forward(&self, x: Tensor<3>, cache: MyCache, options: (),
         pad: Option<Tensor<2, Bool>>)  // `true` at right padding
         -> (Tensor<3>, MyCache) { … }  // parallel: training + prefill
-    fn block_step(&self, x: Tensor<2>, cache: Option<MyCache>)
+    fn block_step(&self, x: Tensor<2>, cache: MyCache)
         -> (Tensor<2>, MyCache) { … }  // recurrent: decode
     fn zero_cache(&self, batch: usize, device: &Device) -> MyCache { … }
     fn untied_params(&self) -> Vec<UntiedParam> { … } // empty ⇒ all tied
@@ -55,13 +56,6 @@ impl BlockConfig for MyBlockConfig {
 
 impl CacheTensors for MyCache {        // every tensor, paired with `other`
     fn zip_tensors(self, other: Self, z: &mut impl TensorZip) -> Self { … }
-}
-
-impl CacheStack for MyCaches {
-    type Cache = MyCache;
-    fn slot_count(&self) -> usize { … }
-    fn into_slots(self) -> Vec<Option<MyCache>> { … }
-    fn from_slots(slots: Vec<Option<MyCache>>) -> Self { … }
 }
 ```
 

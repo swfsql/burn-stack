@@ -198,7 +198,7 @@ impl<M: Block> Layer<M> {
     pub fn forward(
         &self,
         x: Tensor<3>,
-        cache: Option<M::Cache>,
+        cache: M::Cache,
         options: M::Options,
         pad: Option<&Padding>,
     ) -> (Tensor<3>, M::Cache) {
@@ -219,7 +219,7 @@ impl<M: Block> Layer<M> {
     pub fn forward_packed(
         &self,
         x: Tensor<3>,
-        cache: Option<M::Cache>,
+        cache: M::Cache,
         options: M::Options,
         packed: &Packed,
     ) -> (Tensor<3>, M::Cache) {
@@ -238,7 +238,7 @@ impl<M: Block> Layer<M> {
     /// [`Layers`] calls it for each token of its stream. An external container
     /// that owns the residual and threads its own state between layers can
     /// also call it.
-    pub fn step(&self, x: Tensor<2>, cache: Option<M::Cache>) -> (Tensor<2>, M::Cache) {
+    pub fn step(&self, x: Tensor<2>, cache: M::Cache) -> (Tensor<2>, M::Cache) {
         let residual = self.mlp_residual(&x);
         let normed = self.norm.forward(x);
         let (h1, cache) = self.block.block_step(normed, cache);

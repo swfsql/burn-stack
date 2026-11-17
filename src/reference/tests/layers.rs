@@ -105,7 +105,8 @@ fn layer_mlp_reproduces_two_separate_residuals() {
 
     // Reference: the two residuals written out.
     let layer = &layers.real_layers[0];
-    let (h1, _) = layer.block.block_forward(layer.norm.forward(x.clone()), None, (), None);
+    let zero = layer.block.zero_cache(2, &device);
+    let (h1, _) = layer.block.block_forward(layer.norm.forward(x.clone()), zero, (), None);
     let residual = x + h1;
     let norm2 = layer.norm2.as_ref().expect("norm2 present with an mlp");
     let mlp = layer.mlp.as_ref().expect("mlp present");
@@ -144,7 +145,8 @@ fn a_layer_without_a_feed_forward_adds_only_its_block() {
 
     let (got, _) = layers.forward(x.clone(), None, (), None, None);
 
-    let (h1, _) = layer.block.block_forward(layer.norm.forward(x.clone()), None, (), None);
+    let zero = layer.block.zero_cache(2, &device);
+    let (h1, _) = layer.block.block_forward(layer.norm.forward(x.clone()), zero, (), None);
     assert!(max_abs_diff(got, x + h1) < dtype_tol(TOL));
 }
 
@@ -198,7 +200,7 @@ fn virtual_layers_share_weights_and_keep_one_cache_each() {
     let x = Tensor::random([2, 4, D_MODEL], Distribution::Normal(0.0, 1.0), &device)
         .require_grad();
     let (y, caches) = layers.forward(x.clone(), None, (), None, None);
-    assert_eq!(caches.slot_count(), 6);
+    assert_eq!(caches.len(), 6);
 
     let grads = y.sum().backward();
     for l in &layers.real_layers {

@@ -485,9 +485,9 @@ pub trait LmModel: Sized {
     /// next window stops at its own first token, *and* the activations of this
     /// window are freed.
     ///
-    /// Implement it with
-    /// [`CacheStack::detach`](crate::modules::CacheStack::detach). A plain
-    /// `Tensor::detach` cuts the gradients but frees nothing (see
+    /// Implement it with [`cache_detach`](crate::modules::cache_detach). One
+    /// call detaches all the caches of the network. A plain `Tensor::detach`
+    /// cuts the gradients but frees nothing (see
     /// [`detach_params`](crate::utils::detach_params)). The peak memory would
     /// then grow with the run length, and the window loop must prevent exactly
     /// that.

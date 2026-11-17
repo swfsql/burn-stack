@@ -7,7 +7,7 @@ use super::chunk::plan;
 use super::smooth::{P_MAX, P_MIN, smooth, smooth_step};
 use super::*;
 use crate::block_contract::cache_diff;
-use crate::modules::{NetworkShape, TensorZip};
+use crate::modules::{CacheTensors, NetworkShape, TensorZip, cache_detach};
 use crate::reference::{RefBlock, RefBlockConfig};
 use crate::utils::test_helpers::{dtype_tol, max_rel_diff, test_device};
 use burn::module::{ModuleVisitor, Param};
@@ -334,8 +334,8 @@ fn param_grads(module: &impl Module, grads: &Gradients) -> Vec<(String, Option<T
     collect.out
 }
 
-/// `HNetCaches::detach` keeps the values of each tensor of the cache and cuts
-/// its graph. Each tensor goes back onto the device of the cache. A plain
+/// `cache_detach` on an `HNetCaches` keeps the values of each tensor of the
+/// cache and cuts its graph. Each tensor goes back onto the device of the cache. A plain
 /// tensor stays plain. An autodiff tensor gets the checkpointing strategy of
 /// the device.
 #[test]
@@ -365,7 +365,7 @@ fn detach_keeps_the_values_and_the_device_of_the_cache() {
         let net = net(&[8], 12, &device);
         let (_, caches, _) = net.forward(randn([2, 5, 8], &device), None, ((), ()), None);
         let mut check = Check { device: &device, visited: 0, tracked_before: 0 };
-        let _ = caches.clone().detach().zip_tensors(caches, &mut check);
+        let _ = cache_detach(caches.clone()).zip_tensors(caches, &mut check);
         // Two layers in each stack, so two block caches each for the encoder,
         // the decoder and the main stack. The router holds two tensors, and
         // the stage holds the smoothed chunk.

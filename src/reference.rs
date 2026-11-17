@@ -4,10 +4,11 @@
 //!
 //! - The test suite of this crate composes it. So the tests exercise the
 //!   containers without a dependency on any real family.
-//! - It is a worked example of the four things that a family must supply: a
-//!   cache with its [`CacheTensors`] traversal, a [`CacheStack`], [`Block`]
-//!   and [`BlockConfig`]. The backend hop of the cache follows from the
-//!   traversal ([`cache_to_inner`](crate::modules::cache_to_inner)).
+//! - It is a worked example of the three things that a family must supply: a
+//!   cache with its [`CacheTensors`] traversal, [`Block`] and
+//!   [`BlockConfig`]. The backend hop of the cache follows from the traversal
+//!   ([`cache_to_inner`](crate::modules::cache_to_inner)). The caches of a
+//!   layer stack are a `Vec<RefCache>`.
 //!
 //! It unties its decay and its gate map on request ([`RefUntied`]), so the
 //! tests exercise the untied path of the containers in the same way.
@@ -30,7 +31,7 @@
 //! The `test-helpers` feature enables it (the tests of this crate also have
 //! it).
 
-use crate::modules::{Block, BlockConfig, CacheStack, CacheTensors, Silu, TensorZip};
+use crate::modules::{Block, BlockConfig, CacheTensors, Silu, TensorZip};
 use crate::utils::untied::{self, UntiedParam};
 use burn::config::Config;
 use burn::module::Param;
@@ -44,38 +45,9 @@ pub struct RefCache {
     pub state_bd: Tensor<2>,
 }
 
-/// The cache stack: one slot per virtual layer.
-#[derive(Module, Debug)]
-pub struct RefCaches {
-    /// Per-layer caches, length = number of virtual layers.
-    pub caches: Vec<RefCache>,
-}
-
-impl CacheStack for RefCaches {
-    type Cache = RefCache;
-
-    fn slot_count(&self) -> usize {
-        self.caches.len()
-    }
-
-    fn into_slots(self) -> Vec<Option<RefCache>> {
-        self.caches.into_iter().map(Some).collect()
-    }
-
-    fn from_slots(slots: Vec<Option<RefCache>>) -> Self {
-        Self { caches: slots.into_iter().map(Option::unwrap).collect() }
-    }
-}
-
 impl CacheTensors for RefCache {
     fn zip_tensors(self, other: Self, z: &mut impl TensorZip) -> Self {
         RefCache { state_bd: z.zip(self.state_bd, other.state_bd) }
-    }
-}
-
-impl CacheTensors for RefCaches {
-    fn zip_tensors(self, other: Self, z: &mut impl TensorZip) -> Self {
-        RefCaches { caches: self.caches.zip_tensors(other.caches, z) }
     }
 }
 
@@ -130,7 +102,6 @@ impl RefBlock {
 
 impl Block for RefBlock {
     type Cache = RefCache;
-    type Caches = RefCaches;
     /// Nothing to select: the block has one algorithm.
     type Options = ();
 
@@ -139,19 +110,15 @@ impl Block for RefBlock {
     fn block_forward(
         &self,
         x_bsd: Tensor<3>,
-        cache: Option<RefCache>,
+        cache: RefCache,
         _options: (),
         pad: Option<Tensor<2, Bool>>,
     ) -> (Tensor<3>, RefCache) {
-        let [batch, sequence, _d_model] = x_bsd.dims();
-        let device = x_bsd.device();
+        let [_batch, sequence, _d_model] = x_bsd.dims();
         if let Some(pad_bs) = pad.as_ref().filter(|_| self.check_padding) {
             assert_right_padded(pad_bs.clone());
         }
-        let mut state_bd = match cache {
-            Some(c) => c.state_bd,
-            None => self.zero_state(batch, &device),
-        };
+        let mut state_bd = cache.state_bd;
         let mut ys = Vec::with_capacity(sequence);
         for t in 0..sequence {
             let x_bd = x_bsd.clone().narrow(1, t, 1).squeeze_dim(1);
@@ -174,16 +141,13 @@ impl Block for RefBlock {
     fn block_forward_packed(
         &self,
         x_bsd: Tensor<3>,
-        cache: Option<RefCache>,
+        cache: RefCache,
         _options: (),
         reset_bs: Tensor<2, Bool>,
     ) -> (Tensor<3>, RefCache) {
         let [batch, sequence, _d_model] = x_bsd.dims();
         let zero_bd = self.zero_state(batch, &x_bsd.device());
-        let mut state_bd = match cache {
-            Some(c) => c.state_bd,
-            None => zero_bd.clone(),
-        };
+        let mut state_bd = cache.state_bd;
         let mut ys = Vec::with_capacity(sequence);
         for t in 0..sequence {
             let reset_bd = reset_bs.clone().narrow(1, t, 1).expand(state_bd.dims());
@@ -196,13 +160,8 @@ impl Block for RefBlock {
         (Tensor::cat(ys, 1), RefCache { state_bd })
     }
 
-    fn block_step(&self, x_bd: Tensor<2>, cache: Option<RefCache>) -> (Tensor<2>, RefCache) {
-        let [batch, _d_model] = x_bd.dims();
-        let prev_bd = match cache {
-            Some(c) => c.state_bd,
-            None => self.zero_state(batch, &x_bd.device()),
-        };
-        let (y_bd, state_bd) = self.recurrence(x_bd, prev_bd);
+    fn block_step(&self, x_bd: Tensor<2>, cache: RefCache) -> (Tensor<2>, RefCache) {
+        let (y_bd, state_bd) = self.recurrence(x_bd, cache.state_bd);
         (y_bd, RefCache { state_bd })
     }
 

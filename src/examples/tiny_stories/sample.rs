@@ -84,11 +84,10 @@ pub fn generate<M: Block>(
     temperature: f64,
     seed: u64,
     capture: bool,
-    prefill: Option<&mut Prefill<'_, M::Caches>>,
+    prefill: Option<&mut Prefill<'_, Vec<M::Cache>>>,
 ) -> String
 where
     M::Options: Clone,
-    M::Caches: CacheTensors,
 {
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
     // One story: the cursors open the sequence here, and go through every call

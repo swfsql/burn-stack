@@ -6,7 +6,6 @@
 //! the panic of a breach comes from that breach.
 
 use super::*;
-use crate::modules::CacheStack;
 use crate::reference::{RefBlock, RefBlockConfig, RefCache, RefUntied};
 use burn::config::Config;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -32,14 +31,8 @@ enum Breach {
     Step,
     /// The forward ignores its incoming cache.
     Window,
-    /// The zero cache holds ones.
-    ZeroCache,
-    /// The step from no cache starts from a state of ones.
-    NoCacheStep,
     /// The forward ignores its padding mask.
     Padding,
-    /// From no cache, the forward starts each empty row from a state of ones.
-    EmptyRowFromNoCache,
     /// The packed forward ignores its resets.
     Packing,
     /// Each new block adds its own constant to each output. The record does
@@ -60,10 +53,6 @@ enum Breach {
     /// [`untied_broken`] still holds one copy of its decay for each
     /// application.
     UntiedList,
-    /// The caches of a stack reverse their slots in `from_slots`.
-    StackSlots,
-    /// The cache traversal of a stack skips its last slot.
-    StackTraversal,
     /// The forward and the step add 1 to each output off the autodiff
     /// backend, so on the inner backend of an untracked layer.
     InnerBackend,
@@ -95,56 +84,6 @@ impl CacheTensors for BrokenCache {
             true => self,
             false => BrokenCache { inner: self.inner.zip_tensors(other.inner, z), ..self },
         }
-    }
-}
-
-/// The cache stack of a [`BrokenBlock`]: one slot for each virtual layer. The
-/// breach of the first slot selects the breach of the stack.
-#[derive(Clone, Debug)]
-struct BrokenCaches(Vec<BrokenCache>);
-
-impl BrokenCaches {
-    fn breaks(&self, breach: Breach) -> bool {
-        self.0.first().is_some_and(|slot| slot.breaks(breach))
-    }
-}
-
-impl CacheStack for BrokenCaches {
-    type Cache = BrokenCache;
-
-    fn slot_count(&self) -> usize {
-        self.0.len()
-    }
-
-    fn into_slots(self) -> Vec<Option<BrokenCache>> {
-        self.0.into_iter().map(Some).collect()
-    }
-
-    fn from_slots(slots: Vec<Option<BrokenCache>>) -> Self {
-        let caches = Self(slots.into_iter().map(Option::unwrap).collect());
-        match caches.breaks(Breach::StackSlots) {
-            true => Self(caches.0.into_iter().rev().collect()),
-            false => caches,
-        }
-    }
-}
-
-impl CacheTensors for BrokenCaches {
-    fn zip_tensors(self, other: Self, z: &mut impl TensorZip) -> Self {
-        assert_eq!(self.0.len(), other.0.len(), "the two stacks differ in slot count");
-        let last = self.0.len() - 1;
-        let skip_last = self.breaks(Breach::StackTraversal);
-        let slots = self
-            .0
-            .into_iter()
-            .zip(other.0)
-            .enumerate()
-            .map(|(i, (a, b))| match skip_last && i == last {
-                true => a,
-                false => a.zip_tensors(b, z),
-            })
-            .collect();
-        Self(slots)
     }
 }
 
@@ -183,28 +122,20 @@ impl BrokenBlock {
 
 impl Block for BrokenBlock {
     type Cache = BrokenCache;
-    type Caches = BrokenCaches;
     type Options = ();
 
     fn block_forward(
         &self,
         x_bsd: Tensor<3>,
-        cache: Option<BrokenCache>,
+        cache: BrokenCache,
         _options: (),
         pad: Option<Tensor<2, Bool>>,
     ) -> (Tensor<3>, BrokenCache) {
         assert!(!self.breaks(Breach::Panics), "the forward of this block panics");
         let offset = self.offset_for(x_bsd.is_autodiff());
-        let cache = cache.filter(|_| !self.breaks(Breach::Window)).map(|c| c.inner);
-        let cache = match (cache, &pad) {
-            (None, Some(pad_bs)) if self.breaks(Breach::EmptyRowFromNoCache) => {
-                let [batch, sequence] = pad_bs.dims();
-                let mut start = self.inner.zero_cache(batch, &x_bsd.device());
-                let empty_b1 = pad_bs.clone().int().sum_dim(1).equal_elem(sequence as i64);
-                start.state_bd = start.state_bd.clone().mask_fill(empty_b1.expand(start.state_bd.dims()), 1.0);
-                Some(start)
-            }
-            (cache, _) => cache,
+        let cache = match self.breaks(Breach::Window) {
+            true => self.inner.zero_cache(x_bsd.dims()[0], &x_bsd.device()),
+            false => cache.inner,
         };
         let pad = pad.filter(|_| !self.breaks(Breach::Padding));
         let (y_bsd, cache) = self.inner.block_forward(x_bsd, cache, (), pad);
@@ -214,12 +145,12 @@ impl Block for BrokenBlock {
     fn block_forward_packed(
         &self,
         x_bsd: Tensor<3>,
-        cache: Option<BrokenCache>,
+        cache: BrokenCache,
         _options: (),
         reset_bs: Tensor<2, Bool>,
     ) -> (Tensor<3>, BrokenCache) {
         assert!(self.takes_packed_rows, "this block takes no packed rows");
-        let cache = cache.map(|c| c.inner);
+        let cache = cache.inner;
         let (y_bsd, cache) = match self.breaks(Breach::Packing) {
             true => self.inner.block_forward(x_bsd, cache, (), None),
             false => self.inner.block_forward_packed(x_bsd, cache, (), reset_bs),
@@ -231,28 +162,15 @@ impl Block for BrokenBlock {
         self.takes_packed_rows.then(|| self.inner.reset_align(&())).flatten()
     }
 
-    fn block_step(&self, x_bd: Tensor<2>, cache: Option<BrokenCache>) -> (Tensor<2>, BrokenCache) {
-        let cache = match cache {
-            None if self.breaks(Breach::NoCacheStep) => {
-                let [batch, _d_model] = x_bd.dims();
-                let mut ones = self.inner.zero_cache(batch, &x_bd.device());
-                ones.state_bd = ones.state_bd.ones_like();
-                Some(ones)
-            }
-            cache => cache.map(|c| c.inner),
-        };
+    fn block_step(&self, x_bd: Tensor<2>, cache: BrokenCache) -> (Tensor<2>, BrokenCache) {
         let offset = self.offset_for(x_bd.is_autodiff());
-        let (y_bd, cache) = self.inner.block_step(x_bd, cache);
+        let (y_bd, cache) = self.inner.block_step(x_bd, cache.inner);
         let step_offset = if self.breaks(Breach::Step) { 1.0 } else { 0.0 };
         (y_bd.add_scalar(offset + step_offset), self.wrap(cache))
     }
 
     fn zero_cache(&self, batch: usize, device: &Device) -> BrokenCache {
-        let mut cache = self.inner.zero_cache(batch, device);
-        if self.breaks(Breach::ZeroCache) {
-            cache.state_bd = cache.state_bd.ones_like();
-        }
-        self.wrap(cache)
+        self.wrap(self.inner.zero_cache(batch, device))
     }
 
     fn untied_params(&self) -> Vec<crate::utils::UntiedParam> {
@@ -330,13 +248,11 @@ fn a_broken_block_without_a_breach_keeps_every_contract() {
     for config in [broken(None), untied_broken(None)] {
         forward_equals_step_unrolled(&config, (), TOL);
         forward_splits_into_windows_through_the_cache(&config, (), TOL);
-        zero_cache_equals_no_cache(&config, (), TOL);
         padded_rows_equal_each_row_alone(&config, (), TOL);
         packed_segments_equal_each_segment_alone(&config, (), TOL);
         record_round_trip_keeps_the_block(&config, (), TOL);
         cache_traversal_moves_every_field(&config, (), TOL);
         untied_stack_equals_the_stack_of_its_application_views(&config, (), TOL);
-        cache_stack_moves_every_slot(&config, (), TOL);
         cut_keeps_the_outputs_and_the_caches(&config, (), TOL);
         json_round_trip_keeps_the_config(&config, (), TOL);
         #[cfg(feature = "optim")]
@@ -392,35 +308,6 @@ fn a_forward_that_ignores_its_cache_breaks_forward_splits_into_windows_through_t
 }
 
 // ---------------------------------------------------------------------------
-// The zero cache equals no cache
-// ---------------------------------------------------------------------------
-
-#[test]
-fn ref_block_keeps_zero_cache_equals_no_cache() {
-    for config in ref_configs() {
-        zero_cache_equals_no_cache(&config, (), TOL);
-    }
-}
-
-#[test]
-#[should_panic(
-    expected = "block contract `zero_cache_equals_no_cache`: the outputs of the forward from the zero cache and from no cache differ"
-)]
-fn a_zero_cache_of_ones_breaks_zero_cache_equals_no_cache() {
-    zero_cache_equals_no_cache(&broken(Some(Breach::ZeroCache)), (), TOL);
-}
-
-/// The forward from no cache stays correct. So only the step half of the
-/// contract can fail.
-#[test]
-#[should_panic(
-    expected = "block contract `zero_cache_equals_no_cache`: the outputs of the step from the zero cache and from no cache differ"
-)]
-fn a_step_from_no_cache_of_ones_breaks_zero_cache_equals_no_cache() {
-    zero_cache_equals_no_cache(&broken(Some(Breach::NoCacheStep)), (), TOL);
-}
-
-// ---------------------------------------------------------------------------
 // Padded rows equal each row alone
 // ---------------------------------------------------------------------------
 
@@ -437,16 +324,6 @@ fn ref_block_keeps_padded_rows_equal_each_row_alone() {
 )]
 fn a_forward_that_ignores_its_padding_breaks_padded_rows_equal_each_row_alone() {
     padded_rows_equal_each_row_alone(&broken(Some(Breach::Padding)), (), TOL);
-}
-
-/// The run from a warm cache stays correct. So only the run from no cache
-/// can fail.
-#[test]
-#[should_panic(
-    expected = "block contract `padded_rows_equal_each_row_alone`: from no cache, the final cache of the empty row 2 and its row of the zero cache differ"
-)]
-fn an_empty_row_from_no_cache_with_a_state_of_ones_breaks_padded_rows_equal_each_row_alone() {
-    padded_rows_equal_each_row_alone(&broken(Some(Breach::EmptyRowFromNoCache)), (), TOL);
 }
 
 // ---------------------------------------------------------------------------
@@ -532,33 +409,6 @@ fn ref_block_keeps_untied_stack_equals_the_stack_of_its_application_views() {
 )]
 fn a_tiled_parameter_that_untied_params_omits_breaks_untied_stack_equals_the_stack_of_its_application_views() {
     untied_stack_equals_the_stack_of_its_application_views(&untied_broken(Some(Breach::UntiedList)), (), TOL);
-}
-
-// ---------------------------------------------------------------------------
-// The caches of a stack move every slot
-// ---------------------------------------------------------------------------
-
-#[test]
-fn ref_block_keeps_cache_stack_moves_every_slot() {
-    for config in ref_configs() {
-        cache_stack_moves_every_slot(&config, (), TOL);
-    }
-}
-
-#[test]
-#[should_panic(
-    expected = "block contract `cache_stack_moves_every_slot`: slot 0 of the caches from the slots and of the caches differ"
-)]
-fn slots_out_of_order_break_cache_stack_moves_every_slot() {
-    cache_stack_moves_every_slot(&broken(Some(Breach::StackSlots)), (), TOL);
-}
-
-#[test]
-#[should_panic(
-    expected = "block contract `cache_stack_moves_every_slot`: slot 1 of the moved caches and of their source differ"
-)]
-fn a_traversal_that_skips_a_slot_breaks_cache_stack_moves_every_slot() {
-    cache_stack_moves_every_slot(&broken(Some(Breach::StackTraversal)), (), TOL);
 }
 
 // ---------------------------------------------------------------------------

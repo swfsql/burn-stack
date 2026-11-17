@@ -2,7 +2,7 @@
 
 burn-stack holds the block-agnostic containers of [Burn](https://github.com/tracel-ai/burn/)
 models: layers, layer stacks, networks, caches and their training helpers. A
-family connects through `Block`, `BlockConfig` and `CacheStack`. burn-mamba is
+family connects through `Block`, `BlockConfig` and `CacheTensors`. burn-mamba is
 its active consumer. burn-deltanet is also a consumer, but it is outdated: a
 change does not need to update it.
 
@@ -143,7 +143,7 @@ src/
 │  ├─ layers.rs        Layers<M>: the layer stack (gradient horizon, its backend hop, packed rows)
 │  ├─ residuals.rs     Residuals: the residual join of each scheme, its straight-through carry
 │  ├─ shape.rs         NetworkShape, …: the block-free half of a config (ADR-0007)
-│  ├─ cache.rs         CacheStack, CacheTensors, the hop and the detach derived from it, lift
+│  ├─ cache.rs         CacheTensors (also of a Vec of caches), the hop and the detach derived from it, lift
 │  ├─ hnet/            H-Net. mod.rs header = the math. One file for each part
 │  ├─ activation/      silu, softplus, log_sigmoid
 │  ├─ norm/            rms_norm, rms_norm_gated, rms_score

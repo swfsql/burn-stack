@@ -3,7 +3,7 @@
 
 use crate::modules::hnet::{HNet, HNetCaches, Routing, StepMode};
 use crate::modules::network::{apply_vocab_heads, embed_pairs};
-use crate::modules::{Block, CacheTensors};
+use crate::modules::Block;
 use burn::module::Param;
 use burn::nn::{Embedding, Linear};
 use burn::prelude::*;
@@ -104,11 +104,7 @@ where
         x: Tensor<2, Int>,
         caches: Option<HNetCaches<E, M>>,
         mode: StepMode,
-    ) -> (Tensor<2>, HNetCaches<E, M>, Vec<Routing>)
-    where
-        E::Caches: CacheTensors,
-        M::Caches: CacheTensors,
-    {
+    ) -> (Tensor<2>, HNetCaches<E, M>, Vec<Routing>) {
         let x = embed_pairs(&self.embedding, &self.flag_embedding, x.unsqueeze_dim(1)).squeeze_dim(1);
         let (y, caches, routing) = self.hnet.step(x, caches, mode);
         (self.heads(y.unsqueeze_dim(1)).squeeze_dim(1), caches, routing)
@@ -118,11 +114,7 @@ where
     /// Returns the logits at the last start embedding (which predict the first
     /// token) and the caches, or `None` when there are no start embeddings.
     /// `prime` then `step` runs what [`Self::forward_opened`] runs.
-    pub fn prime(&self, batch: usize, mode: StepMode) -> Option<(Tensor<2>, HNetCaches<E, M>)>
-    where
-        E::Caches: CacheTensors,
-        M::Caches: CacheTensors,
-    {
+    pub fn prime(&self, batch: usize, mode: StepMode) -> Option<(Tensor<2>, HNetCaches<E, M>)> {
         let emb = self.start_emb.as_ref()?.val();
         let [n, d] = emb.dims();
         let mut caches = None;

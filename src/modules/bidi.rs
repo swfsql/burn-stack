@@ -118,8 +118,8 @@ where
     pub fn forward(
         &self,
         x: Tensor<3>,
-        straight_cache: Option<M::Cache>,
-        reverse_cache: Option<M::Cache>,
+        straight_cache: M::Cache,
+        reverse_cache: M::Cache,
         options: M::Options,
         pad: Option<Tensor<2, Bool>>,
     ) -> (Tensor<3>, M::Cache, M::Cache) {
@@ -157,8 +157,8 @@ fn bidi_pair_forward<M: Block>(
     reverse_block: &M,
     output_merge: &OutputMerge,
     x: Tensor<3>,
-    straight_cache: Option<M::Cache>,
-    reverse_cache: Option<M::Cache>,
+    straight_cache: M::Cache,
+    reverse_cache: M::Cache,
     options: M::Options,
     padding: Option<&Padding>,
 ) -> (Tensor<3>, M::Cache, M::Cache)
@@ -290,11 +290,11 @@ where
     pub fn forward(
         &self,
         x: Tensor<3>,
-        caches: Option<M::Caches>,
+        caches: Option<Vec<M::Cache>>,
         options: M::Options,
         class: Option<&mut ClassCursors>,
         pad: Option<Tensor<2, Bool>>,
-    ) -> (Tensor<3>, M::Caches) {
+    ) -> (Tensor<3>, Vec<M::Cache>) {
         // No cursors ⇒ this one call covers the whole sequence.
         let mut whole = ClassCursors::new(x.dims()[1]);
         let (x, padding) =
@@ -317,13 +317,16 @@ where
         let caches = caches
             .unwrap_or_else(|| zero_caches_for(&self.real_layers[0], n, x.dims()[0], &x.device()));
         assert_eq!(
-            caches.slot_count(),
+            caches.len(),
             n,
             "straight and reverse layers cannot share caches"
         );
         let apps = bidi_applications(&self.n_virtual_layers, self.n_real_layers);
 
-        let mut slots = caches.into_slots();
+        // The caches of pair `i` are those of the virtual layers `2i` and
+        // `2i + 1`, so the pairs take the caches in order.
+        let mut caches = caches.into_iter();
+        let mut advanced = Vec::with_capacity(n);
         let mut value = self.residuals.seed::<3, 4>(x);
         for i in 0..n / 2 {
             let (straight_i, reverse_i) = (i * 2, i * 2 + 1);
@@ -341,8 +344,8 @@ where
             let straight_layer = self.real_layers[straight_idx].application(apps.index[straight_i]);
             let reverse_layer = self.real_layers[reverse_idx].application(apps.index[reverse_i]);
 
-            let straight_cache = slots[straight_i].take().unwrap();
-            let reverse_cache = slots[reverse_i].take().unwrap();
+            let straight_cache = caches.next().expect("one cache per virtual layer");
+            let reverse_cache = caches.next().expect("one cache per virtual layer");
 
             // The MGR unit is the pair: virtual pair `i`, real pair
             // `straight_idx / 2` (the straight index of a pair is even).
@@ -370,19 +373,19 @@ where
                     &reverse_layer.block,
                     &self.outputs_merge[straight_idx / 2],
                     x,
-                    Some(straight_cache),
-                    Some(reverse_cache),
+                    straight_cache,
+                    reverse_cache,
                     options.clone(),
                     padding.as_ref(),
                 );
                 (merged, (sc, rc))
             });
             value = next;
-            slots[straight_i] = Some(sc);
-            slots[reverse_i] = Some(rc);
+            advanced.push(sc);
+            advanced.push(rc);
         }
 
-        (value.into_token(), M::Caches::from_slots(slots))
+        (value.into_token(), advanced)
     }
 }
 

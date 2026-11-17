@@ -1,17 +1,19 @@
-//! The per-network cache collection trait, the cache traversal, and the
-//! backend hop that follows from that traversal.
+//! The cache traversal, and the backend hop that follows from that traversal.
 //!
-//! A family supplies its own `Caches` type. The generic containers need only
-//! indexed access to one cache slot per virtual layer ([`CacheStack`]). Each
-//! slot implements [`CacheTensors`], the cache traversal: every tensor of the
-//! cache, visited pairwise with the matching tensor of another cache. This
-//! traversal is the one hand-written list of the tensors of a cache. These
-//! operations follow from it:
+//! A family supplies the cache of one block ([`Block::Cache`]). The caches of
+//! a layer stack are a `Vec` of these block caches, one for each virtual
+//! layer. Each block cache implements [`CacheTensors`], the cache traversal:
+//! every tensor of the cache, visited pairwise with the matching tensor of
+//! another cache. This traversal is the one hand-written list of the tensors
+//! of a cache. The traversal of a `Vec` visits each cache of the list in
+//! order. So the caches of a layer stack need no traversal of their own.
+//! These operations follow from the traversal:
 //!
 //! - the backend hop of `grad_horizon`: [`cache_to_inner`] and
 //!   [`cache_from_inner`],
 //! - the detach of a cache, the round trip through that hop onto the device
-//!   of the cache: [`cache_detach`] and [`cache_device`],
+//!   of the cache: [`cache_detach`] and [`cache_device`]. One call also
+//!   detaches all the caches of a layer stack,
 //! - the cache write-back of a
 //!   [`CapturedStep`](crate::utils::capture::CapturedStep),
 //! - the per-row select, gather and merge of [`HNet::step`].
@@ -38,39 +40,16 @@ pub fn lift<const D: usize>(tensor: Tensor<D>, device: &Device) -> Tensor<D> {
     tensor
 }
 
-/// The uniform interface of a per-network cache collection for the generic
-/// [`Layers`](crate::modules::Layers) loop: `slot_count`, plus move-in and
-/// move-out of the per-layer slots.
-pub trait CacheStack: Sized {
-    /// The per-layer cache element. Its traversal ([`CacheTensors`]) gives
-    /// the backend hop of [`Self::detach`] and of
-    /// [`Layers::grad_horizon`](crate::modules::Layers::grad_horizon).
-    type Cache: CacheTensors;
-    /// Number of slots: one per virtual layer.
-    fn slot_count(&self) -> usize;
-    /// Move each slot into an `Option`, so the loop can `take` without a clone.
-    fn into_slots(self) -> Vec<Option<Self::Cache>>;
-    /// Inverse of [`Self::into_slots`].
-    fn from_slots(slots: Vec<Option<Self::Cache>>) -> Self;
-
-    /// Detach **every** slot ([`cache_detach`]). The cache keeps its values
-    /// and loses the graph that produced it. So a caller can carry the state
-    /// into the next window without the activations of the previous window.
-    ///
-    /// Each slot goes back onto its own device ([`cache_device`]), with the
-    /// checkpointing strategy of that device. On a device without autodiff,
-    /// this does nothing.
-    fn detach(self) -> Self {
-        let slots = self.into_slots().into_iter().map(|slot| slot.map(cache_detach)).collect();
-        Self::from_slots(slots)
-    }
-}
-
 /// `cache` cut off the autodiff graph: the round trip [`cache_to_inner`],
 /// then [`cache_from_inner`] onto the device of `cache` ([`cache_device`]).
 /// The cache keeps its values and loses the graph that produced it. Each
 /// tensor gets the checkpointing strategy of that device. On a device without
 /// autodiff, the cache stays unchanged.
+///
+/// `cache` is one block cache, the caches of a layer stack (a `Vec`), an
+/// [`HNetCaches`](crate::modules::HNetCaches) or a tuple of caches. So one
+/// call detaches all the caches of a stack. A caller can then carry the state
+/// into the next window without the activations of the previous window.
 ///
 /// `Tensor::detach` alone would cut the gradients but free nothing, because
 /// Burn still registers an untracked op (see
@@ -136,13 +115,14 @@ pub fn cache_from_inner<C: CacheTensors>(cache: C, device: &Device) -> C {
 /// The device of `cache`: the device of its first tensor, with its autodiff
 /// context. [`cache_detach`] lifts the cache back onto it.
 ///
-/// The rule: a per-layer cache ([`CacheStack::Cache`]) holds at least one
+/// The rule: a per-layer cache
+/// ([`Block::Cache`](crate::modules::Block::Cache)) holds at least one
 /// tensor. Each other cache that goes through [`cache_detach`] also holds at
 /// least one tensor.
 ///
 /// # Panics
 ///
-/// If `cache` holds no tensor (for example, `()`).
+/// If `cache` holds no tensor (for example, `()` or an empty `Vec`).
 pub fn cache_device<C: CacheTensors>(cache: &C) -> Device {
     struct First(Option<Device>);
     impl TensorZip for First {
@@ -243,6 +223,9 @@ impl CacheTensors for () {
     fn zip_tensors(self, _other: Self, _z: &mut impl TensorZip) -> Self {}
 }
 
+/// A list of caches, for example the caches of a layer stack: one cache for
+/// each virtual layer. Each cache pairs with the cache at the same index of
+/// the other list.
 impl<C: CacheTensors> CacheTensors for Vec<C> {
     fn zip_tensors(self, other: Self, z: &mut impl TensorZip) -> Self {
         assert_eq!(self.len(), other.len(), "the two caches differ in slot count");

@@ -133,7 +133,7 @@ fn layers_multi_gate_streams_are_distinct() {
     let mut streams = x.clone().unsqueeze_dim::<4>(2);
     let mut h = x.clone();
     for mgr in &mg.layers {
-        let (out, _) = layer.forward(h, None, (), None);
+        let (out, _) = layer.forward(h, layer.block.zero_cache(batch, &device), (), None);
         (h, streams) = match streams.dims()[2] < n_stream {
             true => mgr.accumulate(out, streams),
             false => mgr.forward(out, streams),
@@ -147,7 +147,7 @@ fn layers_multi_gate_streams_are_distinct() {
     // streams stay identical, so the stack is one lerped stream.
     let mut h = x;
     for mgr in &mg.layers {
-        let (out, _) = layer.forward(h.clone(), None, (), None);
+        let (out, _) = layer.forward(h.clone(), layer.block.zero_cache(batch, &device), (), None);
         let copies = h.unsqueeze_dim::<4>(2).expand([batch, sequence, n_stream, D_MODEL]);
         let (new_h, new_streams) = mgr.forward(out, copies);
         let first = new_streams.clone().narrow(2, 0, 1);
@@ -347,7 +347,7 @@ fn latent_network_multi_gate_class_markers_prime_step_matches_forward() {
         assert!(max_abs_diff(y_t, output_at(t + 2)) < dtype_tol(TOL), "the step {t} and the forward differ");
     }
     let caches = caches.expect("the steps give caches");
-    for (i, (f, s)) in c_fwd.caches.into_iter().zip(caches.caches).enumerate() {
+    for (i, (f, s)) in c_fwd.into_iter().zip(caches).enumerate() {
         assert!(max_abs_diff(s.state_bd, f.state_bd) < dtype_tol(TOL), "the caches of layer {i} differ");
     }
 }

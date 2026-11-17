@@ -18,7 +18,7 @@
 use super::{Prefill, generate, sample_token};
 use crate::examples::tiny_stories::dataset::{FIRST_LETTER, UPPER, VOCAB, VOCAB_SIZE, pair, unpair};
 use crate::modules::{LayersBuilder, VocabNetwork, VocabNetworkBuilder};
-use crate::reference::{RefBlock, RefBlockConfig, RefCaches};
+use crate::reference::{RefBlock, RefBlockConfig, RefCache};
 use crate::utils::test_helpers::{dtype_tol, max_abs_diff, max_rel_diff};
 use crate::utils::{ClassCursors, ClassLatent};
 use burn::module::Param;
@@ -234,7 +234,7 @@ fn prefill_of<'a>(
     net: &'a VocabNetwork<RefBlock>,
     device: &Device,
     capture: bool,
-) -> Prefill<'a, RefCaches> {
+) -> Prefill<'a, Vec<RefCache>> {
     // Safety: the forward of a window reads nothing but its arguments and
     // `net`, borrowed.
     unsafe {
@@ -256,7 +256,7 @@ fn prompt(len: usize) -> Vec<u8> {
 }
 
 /// The cache of the opening and the cursors that it leaves.
-fn opening(net: &VocabNetwork<RefBlock>) -> (RefCaches, ClassCursors) {
+fn opening(net: &VocabNetwork<RefBlock>) -> (Vec<RefCache>, ClassCursors) {
     let mut class = ClassCursors::stream();
     let (_, caches) = net.prime(1, None, Some(&mut class));
     (caches.expect("two Start latents leave a cache"), class)
@@ -277,7 +277,7 @@ fn a_prefill_is_the_same_captured_and_eager_and_is_the_prompt_in_one_pass() {
         assert_eq!(captured.is_captured(), expects_recording(&device));
         let d = max_abs_diff(logits_captured, logits.clone());
         assert_eq!(d, 0.0, "length {len}: captured logits differ by {d}");
-        for (a, b) in prefilled_captured.caches.iter().zip(&prefilled.caches) {
+        for (a, b) in prefilled_captured.iter().zip(&prefilled) {
             let d = max_abs_diff(a.state_bd.clone(), b.state_bd.clone());
             assert_eq!(d, 0.0, "length {len}: captured cache differs by {d}");
         }
@@ -289,7 +289,7 @@ fn a_prefill_is_the_same_captured_and_eager_and_is_the_prompt_in_one_pass() {
         let positions = whole.dims()[1];
         let d = max_rel_diff(logits, whole.narrow(1, positions - 1, 1).squeeze_dim(1));
         assert!(d < dtype_tol(1e-4), "length {len}: logits differ from one pass by {d}");
-        for (a, b) in prefilled.caches.iter().zip(&whole_caches.caches) {
+        for (a, b) in prefilled.iter().zip(&whole_caches) {
             let d = max_abs_diff(a.state_bd.clone(), b.state_bd.clone());
             assert!(d < dtype_tol(1e-4), "length {len}: cache differs from one pass by {d}");
         }
@@ -303,7 +303,7 @@ fn a_prompted_story_is_the_same_captured_and_eager() {
     let mut eager = prefill_of(&net, &device, false);
     let mut captured = prefill_of(&net, &device, true);
     for (seed, prompt) in [(0, "Once upon a time"), (1, "A"), (2, "The little dog, Max, ran home.")] {
-        let run = |capture: bool, prefill: &mut Prefill<'_, RefCaches>| {
+        let run = |capture: bool, prefill: &mut Prefill<'_, Vec<RefCache>>| {
             generate(&net, &device, (), Some(prompt), 40, 0.8, seed, capture, Some(prefill))
         };
         assert_eq!(run(true, &mut captured), run(false, &mut eager), "prompt {prompt:?}");

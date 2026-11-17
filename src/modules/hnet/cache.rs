@@ -1,8 +1,10 @@
-//! The caches of an [`HNet`], their detach, and the per-row operations that
-//! its `step` does on the cache of a whole inner H-Net.
+//! The caches of an [`HNet`], and the per-row operations that its `step` does
+//! on the cache of a whole inner H-Net.
 //!
-//! [`HNetCaches::detach`] is [`cache_detach`](crate::modules::cache_detach)
-//! on the whole cache.
+//! The caches of an H-Net have a cache traversal
+//! ([`CacheTensors`](crate::modules::CacheTensors)). So
+//! [`cache_detach`](crate::modules::cache_detach) detaches the whole cache in
+//! one call.
 //!
 //! A `step` runs the inner H-Net only on the rows whose token starts a chunk.
 //! So it needs three things that do not depend on the block family:
@@ -11,63 +13,39 @@
 //! - `gather_rows`: some rows of a cache, as a smaller batch.
 //! - `merge_rows`: a smaller batch written back into the full one.
 //!
-//! All three go through [`CacheTensors`]. They read axis 0 of every cache
-//! tensor as the batch axis, which is a contract of that trait.
+//! All three go through [`CacheTensors`](crate::modules::CacheTensors). They
+//! read axis 0 of every cache tensor as the batch axis, which is a contract
+//! of that trait.
 
-use crate::modules::{Block, CacheTensors, TensorZip, cache_detach};
+use crate::modules::{Block, CacheTensors, TensorZip};
 use crate::modules::hnet::routing::RouterCache;
 use burn::prelude::*;
 
 /// The cache of one H-Net stage.
+#[derive(Clone)]
 pub struct HNetStageCache<E: Block> {
     /// The caches of the encoder stack.
-    pub encoder: E::Caches,
+    pub encoder: Vec<E::Cache>,
     /// The state of the router.
     pub router: RouterCache,
     /// The smoothed chunk `z̄` of the last chunk of each row, `[batch,
     /// d_model]`: the carry of the EMA of the dechunking.
     pub smooth_bd: Tensor<2>,
     /// The caches of the decoder stack.
-    pub decoder: E::Caches,
+    pub decoder: Vec<E::Cache>,
 }
 
 /// The caches of a whole [`HNet`](super::HNet): one [`HNetStageCache`] per
 /// stage (outermost first), and the caches of the main stack.
+#[derive(Clone)]
 pub struct HNetCaches<E: Block, M: Block> {
     /// One cache per stage, outermost first.
     pub stages: Vec<HNetStageCache<E>>,
     /// The caches of the main stack.
-    pub main: M::Caches,
+    pub main: Vec<M::Cache>,
 }
 
-impl<E: Block> Clone for HNetStageCache<E>
-where
-    E::Caches: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            encoder: self.encoder.clone(),
-            router: self.router.clone(),
-            smooth_bd: self.smooth_bd.clone(),
-            decoder: self.decoder.clone(),
-        }
-    }
-}
-
-impl<E: Block, M: Block> Clone for HNetCaches<E, M>
-where
-    E::Caches: Clone,
-    M::Caches: Clone,
-{
-    fn clone(&self) -> Self {
-        Self { stages: self.stages.clone(), main: self.main.clone() }
-    }
-}
-
-impl<E: Block> CacheTensors for HNetStageCache<E>
-where
-    E::Caches: CacheTensors,
-{
+impl<E: Block> CacheTensors for HNetStageCache<E> {
     fn zip_tensors(self, other: Self, z: &mut impl TensorZip) -> Self {
         Self {
             encoder: self.encoder.zip_tensors(other.encoder, z),
@@ -81,11 +59,7 @@ where
     }
 }
 
-impl<E: Block, M: Block> CacheTensors for HNetCaches<E, M>
-where
-    E::Caches: CacheTensors,
-    M::Caches: CacheTensors,
-{
+impl<E: Block, M: Block> CacheTensors for HNetCaches<E, M> {
     fn zip_tensors(self, other: Self, z: &mut impl TensorZip) -> Self {
         assert_eq!(self.stages.len(), other.stages.len(), "the two caches differ in stage count");
         Self {
@@ -97,30 +71,6 @@ where
                 .collect(),
             main: self.main.zip_tensors(other.main, z),
         }
-    }
-}
-
-impl<E: Block, M: Block> HNetCaches<E, M>
-where
-    E::Caches: CacheTensors,
-    M::Caches: CacheTensors,
-{
-    /// The same values, cut off the autodiff graph: [`cache_detach`] on the
-    /// whole cache. So a training loop can carry the state into the next
-    /// window without the activations of this one.
-    ///
-    /// All the tensors of one H-Net cache are on one device. Each tensor goes
-    /// back onto that device
-    /// ([`cache_device`](crate::modules::cache_device)), with the
-    /// checkpointing strategy of that device. On a device without autodiff,
-    /// this does nothing.
-    ///
-    /// # Panics
-    ///
-    /// If the cache holds no tensor: an H-Net with no stage, whose main stack
-    /// has no layer.
-    pub fn detach(self) -> Self {
-        cache_detach(self)
     }
 }
 
