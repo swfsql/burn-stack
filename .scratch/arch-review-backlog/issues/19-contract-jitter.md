@@ -81,6 +81,10 @@ The two Muon contracts read the names and the shapes of the weights. They run no
   - Do not commit in burn-mamba, and turn its `[patch]` off again.
   - If a setting fails, stop. Report the setting, the contract and the difference
     under `## Comments`. Do not change a tolerance in either repo.
+  - A failure of a burn-mamba setting under the noise is a finding about that family.
+    The cause can be a call that ignores a parameter, or a tolerance that holds only at
+    the init values. The maintainer decides what to do. Do not make the contract weaker, and
+    do not leave the setting out.
 - This change does not break the public API. The version does not change.
 - The prose check of `scripts/check.sh` compares the hard violations of each changed
   file with `origin/main`.

@@ -84,6 +84,27 @@ the rows of a stack, but not to its segments. This ticket closes that gap.
     moves here from the glossary of burn-mamba. Burn-mamba ticket 19 removes its copy.
   - The doc of each `forward_packed` above and the module header of `utils::packing`
     name the origin in place of "a zero cache".
+  - The module header of `reference` says that `block_forward_packed` unrolls the
+    recurrence "from a zero state at each reset". It names the origin.
+
+**References:**
+
+- The semantics to copy: the module header of `../burn-mamba/src/packing.rs`, and the
+  doc of `Mamba2::forward_packed` in `../burn-mamba/src/mamba2/mamba2.rs`. A family
+  already takes `cache` and `origin`, with one row of the origin for each row of the
+  batch. Each sequence gives what its own row gives in a batch of plain calls from the
+  origin.
+- The hop: `BackendHop::layer` in `src/modules/layers.rs` takes the cache of one slot,
+  moves it down for an untracked layer, and moves the advanced cache back up. The
+  origin of the slot takes the same move down, and no move up. ADR-0003 gives the
+  reason for the hop.
+- The tests to extend or copy:
+  - `src/reference/tests/packed.rs`: the packed tests of `Layer`, `Layers` and
+    `VocabNetwork`.
+  - `src/reference/tests/grad_horizon.rs`: a stack with a gradient horizon on
+    `test_device().autodiff()`, and its checks of the gradients.
+  - `src/block_contract/tests.rs`: `BrokenBlock` and its `Breach` cases.
+- `docs/agents/testing.md`: the seams and the coverage gate of this repo.
 
 **Constraints:**
 
