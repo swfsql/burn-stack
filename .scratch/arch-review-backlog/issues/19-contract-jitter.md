@@ -52,6 +52,22 @@ The two Muon contracts read the names and the shapes of the weights. They run no
 - `Jitter` keeps its noise: normal, standard deviation 0.1.
 - The signatures of the contracts do not change.
 
+**Burn autodiff rules** (`docs/burn/autodiff-semantics.md`):
+
+- `Jitter` uses `Param::map`. It keeps the `ParamId` and the configured state of each
+  parameter (§9.1). The untied views find a parameter by its id, so `Jitter` must keep
+  the id.
+- `Module::map` does not visit a plain `Tensor` field or a `#[module(skip)]` field
+  (§9.3, trap 4). So the noise does not reach them. The doc of `Jitter` states this
+  limit.
+- `cut_keeps_the_outputs_and_the_caches` runs on `test_device().autodiff()`. There, a
+  jittered value `t + noise` is a derived tensor, not a leaf (§3). No contract of the
+  list reads a gradient, so this has no effect now. If a contract needs leaves, re-root
+  each parameter in `Jitter` and keep its `ParamId`. A new `Param::from_tensor` gives a
+  new id (§9.1), and `require_grad` panics on a plain tensor (trap 10).
+- In the cut contract, apply `Jitter` to `no_cut` before `cut` copies it. A second
+  `Jitter` draws other noise, so the two stacks would differ.
+
 **Constraints:**
 
 - Do not change a tolerance or an expected value.

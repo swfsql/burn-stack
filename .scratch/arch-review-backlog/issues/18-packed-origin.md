@@ -87,6 +87,19 @@ the rows of a stack, but not to its segments. This ticket closes that gap.
 
 **Constraints:**
 
+- Read `docs/burn/autodiff-semantics.md` before you write the hop of the origins and
+  the gradient tests: §1, §3 and §11. ADR-0003 gives the hop.
+  - The origin of an untracked slot goes down with `cache_to_inner`, as its cache does.
+    On a plain origin, this does nothing (rule 3). The origin does not come back up,
+    because the call does not return it.
+  - An origin from the caller follows the rules of a cache. It has the checkpointing
+    strategy of the stack, or an op panics (rule 2, trap 2). An origin that an earlier
+    backward used needs a detach or a round trip first (trap 11). The docs of
+    `Layers::forward_packed` say this.
+  - `test_device()` gives a plain device. The gradient tests run on
+    `test_device().autodiff()`, as the tests of `grad_horizon.rs` do.
+  - A leaf origin is `t.detach().require_grad()` on that device (trap 10). A test reads
+    the gradient of a leaf with `grad`. The leaf of an untracked slot gets no gradient.
 - With the zero cache as the origin, no value changes. Do not change an expected value
   or a tolerance.
 - The `Cargo.toml` version goes to 0.46.0 in the first commit that breaks the public
