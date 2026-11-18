@@ -71,7 +71,10 @@ pub enum LayerUntied {
 
 impl<M: Block> Layer<M> {
     /// A new layer around `block`, for a real layer applied `n_applications`
-    /// times. The pre-norms that `untied` names get one gain per application.
+    /// times. `block` must hold one copy of each parameter (see
+    /// [`BlockConfig::init_block`]). Then one pass tiles each parameter of
+    /// [`Self::untied_params`]: the pre-norms that `untied` names and the
+    /// untied parameters of the block.
     pub(crate) fn init(
         block: M,
         d_model: usize,
@@ -85,23 +88,18 @@ impl<M: Block> Layer<M> {
             "LayerUntied::Norm2 unties the pre-norm of the feed-forward, but this layer has no \
              feed-forward",
         );
-        let norm = |part: LayerUntied| {
-            let RmsNorm { gamma } = RmsNormConfig::new(d_model).init(device);
-            let gamma = match untied.contains(&part) {
-                true => crate::utils::untied::tile(gamma, 0, n_applications),
-                false => gamma,
-            };
-            RmsNorm { gamma }
-        };
-        Layer {
-            norm: norm(LayerUntied::Norm),
+        let norm = || RmsNormConfig::new(d_model).init(device);
+        let layer = Layer {
+            norm: norm(),
             block,
             // `norm2` exists exactly when `mlp` exists. `Layer` relies on this.
-            norm2: mlp.map(|_| norm(LayerUntied::Norm2)),
+            norm2: mlp.map(|_| norm()),
             mlp: mlp.map(|mlp| mlp.init(device)),
             untied: untied.to_vec(),
             n_applications,
-        }
+        };
+        let params = layer.untied_params();
+        crate::utils::untied::tile(layer, &params, n_applications)
     }
 
     /// Every parameter of this layer that is held once per application: its
@@ -147,10 +145,9 @@ impl<M: Block> Layer<M> {
         Cow::Owned(view)
     }
 
-    /// Reset every untied parameter to copies of its first application.
-    /// [`BlockConfig::init_block`] starts from such copies. Use this on a
-    /// layer that something redrew after the build (see
-    /// [`crate::utils::untied::retie`]).
+    /// Reset every untied parameter to copies of its first application. The
+    /// build starts from such copies. Use this on a layer that something
+    /// redrew after the build (see [`crate::utils::untied::retie`]).
     pub fn retie(self) -> Self {
         let params = self.untied_params();
         let n_applications = self.n_applications;

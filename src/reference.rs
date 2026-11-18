@@ -32,7 +32,7 @@
 //! it).
 
 use crate::modules::{Block, BlockConfig, CacheTensors, Silu, TensorZip};
-use crate::utils::untied::{self, UntiedParam};
+use crate::utils::untied::UntiedParam;
 use burn::config::Config;
 use burn::module::Param;
 use burn::nn::{Linear, LinearConfig};
@@ -220,28 +220,16 @@ pub struct RefBlockConfig {
 }
 
 impl RefBlockConfig {
-    /// Allocate the block on `device`, for a single application.
+    /// Allocate the block on `device`. The block holds one copy of each
+    /// parameter. A layer built for several applications tiles each
+    /// [`Self::untied`] parameter.
     pub fn init(&self, device: &Device) -> RefBlock {
-        self.init_applications(1, device)
-    }
-
-    /// Allocate the block on `device` for `n_applications` applications, with
-    /// every [`Self::untied`] parameter tiled that many times.
-    pub fn init_applications(&self, n_applications: usize, device: &Device) -> RefBlock {
         let lin = || LinearConfig::new(self.d_model, self.d_model).with_bias(false).init(device);
-        let mut gate_proj = lin();
-        if self.untied.contains(&RefUntied::GateProj) {
-            gate_proj.weight = untied::tile(gate_proj.weight, 1, n_applications);
-        }
-        let mut decay_raw = Param::from_tensor(Tensor::zeros([self.d_model], device));
-        if self.untied.contains(&RefUntied::Decay) {
-            decay_raw = untied::tile(decay_raw, 0, n_applications);
-        }
         RefBlock {
             in_proj: lin(),
-            gate_proj,
+            gate_proj: lin(),
             out_proj: lin(),
-            decay_raw,
+            decay_raw: Param::from_tensor(Tensor::zeros([self.d_model], device)),
             untied: self.untied.clone(),
             check_padding: self.check_padding,
             reset_align: self.reset_align,
@@ -256,8 +244,8 @@ impl BlockConfig for RefBlockConfig {
         self.d_model
     }
 
-    fn init_block(&self, n_applications: usize, device: &Device) -> RefBlock {
-        self.init_applications(n_applications, device)
+    fn init_block(&self, device: &Device) -> RefBlock {
+        self.init(device)
     }
 
     /// Three plain (unfused) square maps. The gate map is one per application

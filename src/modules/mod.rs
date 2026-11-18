@@ -175,10 +175,12 @@ pub trait Block: Module + burn::module::ModuleDisplay {
     /// each slot in place).
     fn zero_cache(&self, batch: usize, device: &Device) -> Self::Cache;
 
-    /// The parameters that this block stores **once per application** of its
-    /// real layer (not once), each with the axis of its copies. Empty when its
-    /// config unties nothing. The [`BlockConfig`] decides which they are and
-    /// tiles them. The containers run the block only through
+    /// The parameters of this block that its layer holds **once per
+    /// application** of its real layer (not once), each with the axis of its
+    /// copies. Empty when its config unties nothing. The [`BlockConfig`]
+    /// decides which they are, and the layer
+    /// [tiles](crate::utils::untied::tile) them when it is built for several
+    /// applications. The containers run the block only through
     /// [`Layer::application`]. It narrows each one to the copy of the running
     /// application, and the containers also size the zero cache from that
     /// view. See [`crate::utils::untied`].
@@ -192,11 +194,11 @@ pub trait BlockConfig: Config {
     type Block: Block;
     /// Model width, used to size the pre-norm of each layer.
     fn d_model(&self) -> usize;
-    /// Allocate and initialise the block on `device`, for a real layer applied
-    /// `n_applications` times. Every parameter that the config unties is
-    /// [tiled](crate::utils::untied::tile) that many times. Every other
-    /// parameter is built once. A config that unties nothing ignores the count.
-    fn init_block(&self, n_applications: usize, device: &Device) -> Self::Block;
+    /// Allocate and initialise the block on `device`. The block holds one copy
+    /// of each parameter. A layer built for several applications then
+    /// [tiles](crate::utils::untied::tile) each parameter of
+    /// [`Block::untied_params`].
+    fn init_block(&self, device: &Device) -> Self::Block;
 
     /// The 2-D weights of the block that Muon can own, and the sub-projections
     /// of each fused projection. See [`crate::optim`] for what is (and is not)

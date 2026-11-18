@@ -49,10 +49,6 @@ enum Breach {
     /// The Muon projections name the input map by a plain path, so the spec
     /// also selects the `in_proj` of a network.
     MuonOutside,
-    /// [`Block::untied_params`] names no parameter. The block of
-    /// [`untied_broken`] still holds one copy of its decay for each
-    /// application.
-    UntiedList,
     /// The forward and the step add 1 to each output off the autodiff
     /// backend, so on the inner backend of an untracked layer.
     InnerBackend,
@@ -174,10 +170,7 @@ impl Block for BrokenBlock {
     }
 
     fn untied_params(&self) -> Vec<crate::utils::UntiedParam> {
-        match self.breaks(Breach::UntiedList) {
-            true => Vec::new(),
-            false => self.inner.untied_params(),
-        }
+        self.inner.untied_params()
     }
 }
 
@@ -202,13 +195,13 @@ impl BlockConfig for BrokenBlockConfig {
         self.inner.d_model
     }
 
-    fn init_block(&self, n_applications: usize, device: &Device) -> BrokenBlock {
+    fn init_block(&self, device: &Device) -> BrokenBlock {
         let offset = match self.breach {
             Some(Breach::Record) => (RECORD_BREACHES.fetch_add(1, Ordering::Relaxed) + 1) as f32,
             _ => 0.0,
         };
         BrokenBlock {
-            inner: self.inner.init_block(n_applications, device),
+            inner: self.inner.init_block(device),
             breach: self.breach,
             takes_packed_rows: self.takes_packed_rows,
             offset,
@@ -350,7 +343,7 @@ fn a_packed_forward_that_ignores_its_resets_breaks_packed_segments_equal_each_se
 #[test]
 fn packed_segments_equal_each_segment_alone_skips_a_block_without_packed_rows() {
     let config = broken(None).with_takes_packed_rows(false);
-    assert_eq!(config.init_block(1, &test_device()).reset_align(&()), None);
+    assert_eq!(config.init_block(&test_device()).reset_align(&()), None);
     packed_segments_equal_each_segment_alone(&config, (), TOL);
 }
 
@@ -401,14 +394,6 @@ fn ref_block_keeps_untied_stack_equals_the_stack_of_its_application_views() {
     for config in ref_configs() {
         untied_stack_equals_the_stack_of_its_application_views(&config, (), TOL);
     }
-}
-
-#[test]
-#[should_panic(
-    expected = "block contract `untied_stack_equals_the_stack_of_its_application_views`: the parameter `inner.decay_raw` has the shape [24] at 3 applications and [8] at 1 application. `Block::untied_params` does not name it."
-)]
-fn a_tiled_parameter_that_untied_params_omits_breaks_untied_stack_equals_the_stack_of_its_application_views() {
-    untied_stack_equals_the_stack_of_its_application_views(&untied_broken(Some(Breach::UntiedList)), (), TOL);
 }
 
 // ---------------------------------------------------------------------------

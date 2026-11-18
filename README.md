@@ -50,7 +50,7 @@ impl Block for MyBlock {
 impl BlockConfig for MyBlockConfig {
     type Block = MyBlock;
     fn d_model(&self) -> usize { … }
-    fn init_block(&self, n_applications: usize, device: &Device) -> MyBlock { … }
+    fn init_block(&self, device: &Device) -> MyBlock { … } // one application
     fn muon_projections(&self) -> Vec<ProjSpec> { … }   // feature `optim`
 }
 

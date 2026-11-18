@@ -52,7 +52,7 @@ use crate::modules::{Block, BlockConfig, CacheTensors, Layers, LayersBuilder, Te
 use crate::utils::test_helpers::{dtype_tol, max_rel_diff, panic_text, test_device};
 use crate::utils::{GradHorizon, Packed, Schedule};
 use burn::config::config_to_json;
-use burn::module::{ModuleMapper, ModuleVisitor, Param, ParamId};
+use burn::module::{ModuleMapper, Param};
 use burn::prelude::*;
 use burn::store::ModuleRecord;
 use burn::tensor::Distribution;
@@ -82,7 +82,7 @@ pub fn forward_equals_step_unrolled<C: BlockConfig>(
     run_contract("forward_equals_step_unrolled", || {
         let device = test_device();
         let tol = dtype_tol(f32_tol);
-        let block = config.init_block(1, &device);
+        let block = config.init_block(&device);
         let x_bsd = randn(BATCH, SEQUENCE, config.d_model(), &device);
 
         let zero = || block.zero_cache(BATCH, &device);
@@ -113,7 +113,7 @@ pub fn forward_splits_into_windows_through_the_cache<C: BlockConfig>(
     run_contract("forward_splits_into_windows_through_the_cache", || {
         let device = test_device();
         let tol = dtype_tol(f32_tol);
-        let block = config.init_block(1, &device);
+        let block = config.init_block(&device);
         let x_bsd = randn(BATCH, SEQUENCE, config.d_model(), &device);
 
         let zero = || block.zero_cache(BATCH, &device);
@@ -151,7 +151,7 @@ pub fn padded_rows_equal_each_row_alone<C: BlockConfig>(
         let device = test_device();
         let tol = dtype_tol(f32_tol);
         let d_model = config.d_model();
-        let block = config.init_block(1, &device);
+        let block = config.init_block(&device);
         // A full row, a short row, and an empty row.
         let lens = [SEQUENCE, SPLIT, 0];
         let batch = lens.len();
@@ -211,7 +211,7 @@ pub fn packed_segments_equal_each_segment_alone<C: BlockConfig>(
         let device = test_device();
         let tol = dtype_tol(f32_tol);
         let d_model = config.d_model();
-        let block = config.init_block(1, &device);
+        let block = config.init_block(&device);
         let Some(align) = block.reset_align(&options) else {
             return;
         };
@@ -270,7 +270,7 @@ pub fn record_round_trip_keeps_the_block<C: BlockConfig>(
     run_contract("record_round_trip_keeps_the_block", || {
         let device = test_device();
         let tol = dtype_tol(f32_tol);
-        let block = config.init_block(1, &device).map(&mut Jitter);
+        let block = config.init_block(&device).map(&mut Jitter);
         let x_bsd = randn(BATCH, SEQUENCE, config.d_model(), &device);
         let zero_of = |block: &C::Block| block.zero_cache(BATCH, &device);
         let (want_fwd, _) = block.block_forward(x_bsd.clone(), zero_of(&block), options.clone(), None);
@@ -282,7 +282,7 @@ pub fn record_round_trip_keeps_the_block<C: BlockConfig>(
             .unwrap_or_else(|e| panic!("the record does not go to bytes: {e}"));
         let record = ModuleRecord::from_bytes(bytes).unwrap_or_else(|e| panic!("the bytes do not give a record: {e}"));
         let loaded = config
-            .init_block(1, &device)
+            .init_block(&device)
             .try_load_record(record)
             .unwrap_or_else(|e| panic!("the record does not load into a new block: {e}"));
         let (got_fwd, _) = loaded.block_forward(x_bsd.clone(), zero_of(&loaded), options, None);
@@ -326,13 +326,13 @@ pub fn json_round_trip_keeps_the_config<C: BlockConfig>(
              config:\n{json_again}",
         );
 
-        let block = config.init_block(1, &device).map(&mut Jitter);
+        let block = config.init_block(&device).map(&mut Jitter);
         let x_bsd = randn(BATCH, SEQUENCE, config.d_model(), &device);
         let zero_of = |block: &C::Block| block.zero_cache(BATCH, &device);
         let (want_fwd, _) = block.block_forward(x_bsd.clone(), zero_of(&block), options.clone(), None);
         let (want_step, _) = step_unrolled(&block, x_bsd.clone(), zero_of(&block));
         let loaded = parsed
-            .init_block(1, &device)
+            .init_block(&device)
             .try_load_record(block.into_record())
             .unwrap_or_else(|e| panic!("the record of a block of the config does not load into a block of the parsed config: {e}"));
         let (got_fwd, _) = loaded.block_forward(x_bsd.clone(), zero_of(&loaded), options, None);
@@ -374,7 +374,7 @@ pub fn cache_traversal_moves_every_field<C: BlockConfig>(
         let device = test_device();
         let tol = dtype_tol(f32_tol);
         let d_model = config.d_model();
-        let block = config.init_block(1, &device);
+        let block = config.init_block(&device);
         let zero = block.zero_cache(BATCH, &device);
         let (_, first) = step_unrolled(&block, randn(BATCH, 1, d_model, &device), zero);
         let (_, second) = step_unrolled(&block, randn(BATCH, 1, d_model, &device), first.clone());
@@ -412,17 +412,14 @@ pub fn cache_traversal_moves_every_field<C: BlockConfig>(
 /// parameter away from the others. So a read of the wrong copy changes the
 /// outputs. The check has these parts:
 ///
-/// - [`Block::untied_params`] names each tensor that grows with the count of
-///   applications, with the axis along which it grows `n` times for `n`
-///   applications. Each parameter that it names grows in this way.
 /// - The forward of the untied stack equals the forward of the stack of its
 ///   application views.
 /// - The step unrolled of the untied stack equals its forward.
 /// - The untied stack differs from its tied view, which runs application 0
 ///   at each virtual layer. So the copies change the outputs.
 ///
-/// It returns early when the block unties no parameter: no tensor grows with
-/// the count of applications, and [`Block::untied_params`] is empty.
+/// It returns early when the block unties no parameter: the
+/// [`Block::untied_params`] of the block of the config is empty.
 ///
 /// The containers rely on this to give each application its own copy.
 pub fn untied_stack_equals_the_stack_of_its_application_views<C: BlockConfig + Clone>(
@@ -435,7 +432,7 @@ pub fn untied_stack_equals_the_stack_of_its_application_views<C: BlockConfig + C
     run_contract("untied_stack_equals_the_stack_of_its_application_views", || {
         let device = test_device();
         let tol = dtype_tol(f32_tol);
-        if !untied_params_name_each_tiled_tensor(config, &device) {
+        if config.init_block(&device).untied_params().is_empty() {
             return;
         }
 
@@ -532,82 +529,6 @@ const CUT_REAL_LAYERS: usize = 2;
 const UNTIED_REAL_LAYERS: usize = 2;
 /// The count of virtual layers of the stack of the untied contract.
 const UNTIED_VIRTUAL_LAYERS: usize = 5;
-/// The count of applications of the block that the untied contract compares
-/// with a block of 1 application.
-const UNTIED_APPLICATIONS: usize = 3;
-
-/// Panic unless [`Block::untied_params`] names exactly the tensors that grow
-/// with the count of applications, each with the axis along which it grows.
-/// Return whether the block unties a parameter.
-fn untied_params_name_each_tiled_tensor<C: BlockConfig>(config: &C, device: &Device) -> bool {
-    let one = float_shapes(&config.init_block(1, device));
-    let block = config.init_block(UNTIED_APPLICATIONS, device);
-    let many = float_shapes(&block);
-    let listed = block.untied_params();
-    assert!(
-        one.len() == many.len(),
-        "the block has {} float parameters at {UNTIED_APPLICATIONS} applications and {} at 1 application.",
-        many.len(),
-        one.len(),
-    );
-    let mut unties = !listed.is_empty();
-    for (one, many) in one.iter().zip(&many) {
-        let grown: Vec<usize> = (0..many.dims.len()).filter(|&axis| many.dims[axis] != one.dims[axis]).collect();
-        unties |= !grown.is_empty();
-        let shapes = format!(
-            "has the shape {:?} at {UNTIED_APPLICATIONS} applications and {:?} at 1 application",
-            many.dims, one.dims,
-        );
-        match listed.iter().find(|param| param.id == many.id) {
-            None => assert!(
-                grown.is_empty(),
-                "the parameter `{}` {shapes}. `Block::untied_params` does not name it.",
-                many.path,
-            ),
-            Some(param) => {
-                let axis = param.axis;
-                assert!(
-                    grown == [axis] && many.dims[axis] == UNTIED_APPLICATIONS * one.dims[axis],
-                    "`Block::untied_params` names the parameter `{}` with its copies along axis {axis}. The \
-                     parameter {shapes}.",
-                    many.path,
-                );
-            }
-        }
-    }
-    unties
-}
-
-/// One float parameter of a module: its id, its path and its shape.
-struct FloatShape {
-    id: ParamId,
-    path: String,
-    dims: Vec<usize>,
-}
-
-/// Each float parameter of `module`, in the order of the visit.
-fn float_shapes(module: &impl Module) -> Vec<FloatShape> {
-    #[derive(Default)]
-    struct Collect {
-        path: Vec<String>,
-        params: Vec<FloatShape>,
-    }
-    impl ModuleVisitor for Collect {
-        fn enter_module(&mut self, name: &str, _container_type: &str) {
-            self.path.push(name.to_string());
-        }
-        fn exit_module(&mut self, _name: &str, _container_type: &str) {
-            self.path.pop();
-        }
-        fn visit_float<const D: usize>(&mut self, param: &Param<Tensor<D>>) {
-            let dims = param.val().shape().dims::<D>().to_vec();
-            self.params.push(FloatShape { id: param.id, path: self.path.join("."), dims });
-        }
-    }
-    let mut collect = Collect::default();
-    module.visit(&mut collect);
-    collect.params
-}
 
 /// The Muon projections of the config name rank-2 weights that exist. Each
 /// spec of [`BlockConfig::muon_projections`] has these properties:

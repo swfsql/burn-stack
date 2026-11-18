@@ -935,7 +935,7 @@ impl<C: BlockConfig> LayersBuilder<C> {
             .into_iter()
             .map(|n_applications| {
                 Layer::init(
-                    self.block.init_block(n_applications, device),
+                    self.block.init_block(device),
                     d_model,
                     self.mlp.as_ref(),
                     &self.untied,

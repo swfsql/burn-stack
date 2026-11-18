@@ -423,7 +423,7 @@ impl<C: BlockConfig> BidiLayersBuilder<C> {
             .map(|n_applications| {
                 // The bidirectional stack has no feed-forward interleave.
                 Layer::init(
-                    self.block.init_block(n_applications, device),
+                    self.block.init_block(device),
                     d_model,
                     None,
                     &self.untied,
