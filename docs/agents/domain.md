@@ -13,7 +13,7 @@ repo root.
 
 If one of these files does not exist, **continue and say nothing**. Do not
 report that it is missing. Do not suggest that you create it in advance. The
-`/domain-modeling` skill (through `/grill-with-docs` and
+`/mattpocock-skills:domain-modeling` skill (through `/grill-with-docs` and
 `/improve-codebase-architecture`) creates these files only when a term or a
 decision is resolved.
 
@@ -45,7 +45,8 @@ names. Do not use a synonym that the glossary tells you to avoid.
 If the glossary does not have the concept, that is a signal:
 
 - Possibly, you use a term that the project does not use. Think again.
-- Or the glossary has a real gap. Write it down for `/domain-modeling`.
+- Or the glossary has a real gap. Write it down for
+  `/mattpocock-skills:domain-modeling`.
 
 ## Flag ADR conflicts
 

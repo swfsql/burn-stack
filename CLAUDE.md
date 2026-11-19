@@ -98,8 +98,9 @@ Test-device rules:
 - Update the [File Map](#file-map) in the change that adds, deletes or
   renames a directory or a listed file. A new file whose name does not tell
   what it holds also gets a line.
-- A new term goes to `GLOSSARY.md`, through the `/domain-modeling` skill. A
-  new decision with a trade-off goes to an ADR in `docs/adr/`.
+- A new term goes to `GLOSSARY.md`, through the
+  `/mattpocock-skills:domain-modeling` skill. A new decision with a trade-off
+  goes to an ADR in `docs/adr/`.
 - `_Avoid_` applies to our own words. A doc can use a source word in quotes or
   backticks when it cites that source.
 - **Commits**: when a skill or the user asks for a commit, commit to the
@@ -240,5 +241,12 @@ Single-context: one `GLOSSARY.md` + `docs/adr/` at the repo root. See
 
 ### Test seams
 
-The seams to propose for `/to-spec` and `/tdd`, and the coverage gate of a
-ticket. See `docs/agents/testing.md`.
+The seams to propose for `/mattpocock-skills:to-spec` and
+`/mattpocock-skills:tdd`, and the coverage gate of a ticket. See
+`docs/agents/testing.md`.
+
+### Agent briefs
+
+The sections that a brief adds to the template of
+`/mattpocock-skills:triage`, for an implementer who starts cold. One copy serves both repos: see
+`../burn-mamba/docs/agents/agent-brief.md`.
