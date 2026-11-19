@@ -23,7 +23,8 @@
 //!   prime,
 //! - `untied.rs`: the untied copies of a parameter,
 //! - `packed.rs`: packed rows against each segment alone, in the outputs and
-//!   in the gradients, and the checks of their layout,
+//!   in the gradients, the origins and their gradients, and the checks of
+//!   their layout,
 //! - `muon.rs`: the Muon allowlist, the plans of the containers, the module
 //!   optimizer, the report, and the update of an untied projection.
 //!

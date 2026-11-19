@@ -35,6 +35,9 @@ enum Breach {
     Padding,
     /// The packed forward ignores its resets.
     Packing,
+    /// The packed forward ignores its origin. It starts each segment from the
+    /// zero cache.
+    Origin,
     /// Each new block adds its own constant to each output. The record does
     /// not hold the constant.
     Record,
@@ -142,14 +145,19 @@ impl Block for BrokenBlock {
         &self,
         x_bsd: Tensor<3>,
         cache: BrokenCache,
+        origin: BrokenCache,
         _options: (),
         reset_bs: Tensor<2, Bool>,
     ) -> (Tensor<3>, BrokenCache) {
         assert!(self.takes_packed_rows, "this block takes no packed rows");
         let cache = cache.inner;
+        let origin = match self.breaks(Breach::Origin) {
+            true => self.inner.zero_cache(x_bsd.dims()[0], &x_bsd.device()),
+            false => origin.inner,
+        };
         let (y_bsd, cache) = match self.breaks(Breach::Packing) {
             true => self.inner.block_forward(x_bsd, cache, (), None),
-            false => self.inner.block_forward_packed(x_bsd, cache, (), reset_bs),
+            false => self.inner.block_forward_packed(x_bsd, cache, origin, (), reset_bs),
         };
         (y_bsd.add_scalar(self.offset), self.wrap(cache))
     }
@@ -336,6 +344,14 @@ fn ref_block_keeps_packed_segments_equal_each_segment_alone() {
 )]
 fn a_packed_forward_that_ignores_its_resets_breaks_packed_segments_equal_each_segment_alone() {
     packed_segments_equal_each_segment_alone(&broken(Some(Breach::Packing)), (), TOL);
+}
+
+#[test]
+#[should_panic(
+    expected = "block contract `packed_segments_equal_each_segment_alone`: the outputs of row 0 at [0, 3) when packed and alone differ"
+)]
+fn a_packed_forward_that_ignores_its_origin_breaks_packed_segments_equal_each_segment_alone() {
+    packed_segments_equal_each_segment_alone(&broken(Some(Breach::Origin)), (), TOL);
 }
 
 /// The block takes no packed rows, so its packed forward panics. The contract

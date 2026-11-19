@@ -1,7 +1,8 @@
-//! Packed rows: each segment against the segment alone, and the checks of
-//! the layout.
+//! Packed rows: each segment against the segment alone, the origins and their
+//! gradients, and the checks of the layout.
 
 use super::*;
+use crate::block_contract::cache_row;
 
 /// The block gives the reset alignment of its config, which is 1 by default.
 #[test]
@@ -31,7 +32,7 @@ fn a_lead_that_differs_from_the_table_panics() {
     }
     .init(&device);
     let packed = Packed::from_starts(&[vec![0]], 1, 2, 4, &device);
-    let _ = layers.forward_packed(randn3(1, 4, &device), None, (), &packed);
+    let _ = layers.forward_packed(randn3(1, 4, &device), None, None, (), &packed);
 }
 
 /// A stack with no class latents has no table to put into the opening slots.
@@ -41,7 +42,7 @@ fn a_lead_that_differs_from_the_table_panics() {
 fn a_lead_on_a_stack_with_no_class_latents_panics() {
     let device = test_device();
     let packed = Packed::from_starts(&[vec![0]], 1, 1, 4, &device);
-    let _ = layers(1, &device).forward_packed(randn3(1, 4, &device), None, (), &packed);
+    let _ = layers(1, &device).forward_packed(randn3(1, 4, &device), None, None, (), &packed);
 }
 
 /// The packed layout of two rows for `block`, with its starts and the width of
@@ -87,7 +88,8 @@ fn layer_forward_packed_equals_each_segment_alone() {
     let (packed, starts, width) = packed_layout(&layer.block, 0, &device);
     let x = randn3(2, width, &device);
 
-    let (y, cache) = layer.forward_packed(x.clone(), layer.block.zero_cache(2, &device), (), &packed);
+    let zero_rows = || layer.block.zero_cache(2, &device);
+    let (y, cache) = layer.forward_packed(x.clone(), zero_rows(), zero_rows(), (), &packed);
 
     for (b, start, end) in packed_segments(&starts, width) {
         let zero = layer.block.zero_cache(1, &device);
@@ -118,7 +120,7 @@ fn layers_forward_packed_equals_each_segment_alone() {
     let (packed, starts, width) = packed_layout(&layers.real_layers[0].block, lead, &device);
     let x = randn3(2, width, &device);
 
-    let (y, caches) = layers.forward_packed(x.clone(), None, (), &packed);
+    let (y, caches) = layers.forward_packed(x.clone(), None, None, (), &packed);
 
     for (b, start, end) in packed_segments(&starts, width) {
         let tokens = segment_of(x.clone(), b, start + lead, end);
@@ -135,6 +137,88 @@ fn layers_forward_packed_equals_each_segment_alone() {
     let grads = y.sum().backward();
     let emb = layers.class_latents_emb.as_ref().expect("latent table");
     assert!(emb.val().grad(&grads).is_some(), "a class latent trains from its slots");
+}
+
+/// The warm caches of a stack for 2 rows: the final caches of a forward over
+/// random tokens. Each cache is a leaf on the device of the stack.
+fn warm_caches(layers: &Layers<RefBlock>, device: &Device) -> Vec<RefCache> {
+    let (_, warm) = layers.forward(randn3(2, 3, device), None, (), None, None);
+    warm.into_iter().map(|c| RefCache { state_bd: c.state_bd.detach().require_grad() }).collect()
+}
+
+/// The largest magnitude of the gradient of `leaf` in `grads`, or `None` when
+/// the leaf gets no gradient.
+fn grad_peak(leaf: &Tensor<2>, grads: &Gradients) -> Option<f32> {
+    leaf.grad(grads).map(|g| g.abs().max().into_scalar::<f32>())
+}
+
+/// A stack over packed rows starts each segment from its row of the origin of
+/// each virtual layer. So each segment gives the outputs that the stack gives
+/// over the segment alone, with the rows of the origins as its caches. The
+/// last segment of a row gives the caches. Each origin gets a gradient.
+///
+/// The first segment of row 1 starts late. So the first positions of row 1
+/// continue from its incoming caches. The incoming caches and the origins are
+/// two different warm caches, so a stack that mixes them fails.
+#[test]
+fn a_packed_stack_starts_each_segment_from_the_origins() {
+    let device = test_device().autodiff();
+    let align = 3;
+    let layers = LayersBuilder {
+        block: block_config().with_reset_align(align),
+        ..layers_builder(2)
+    }
+    .init(&device);
+    let starts = vec![vec![0, 3 * align, 8 * align], vec![2 * align, 5 * align]];
+    let width = 11 * align;
+    let packed = Packed::from_starts(&starts, align, 0, width, &device);
+    let x = randn3(2, width, &device);
+    let (incoming, origins) = (warm_caches(&layers, &device), warm_caches(&layers, &device));
+
+    let (y, caches) = layers.forward_packed(x.clone(), Some(incoming.clone()), Some(origins.clone()), (), &packed);
+
+    let head = starts[1][0];
+    let (alone, _) = layers.forward(segment_of(x.clone(), 1, 0, head), Some(cache_row(incoming, 1)), (), None, None);
+    assert_same_outputs(alone, segment_of(y.clone(), 1, 0, head), "row 1, before its first reset");
+    for (b, start, end) in packed_segments(&starts, width) {
+        let segment = segment_of(x.clone(), b, start, end);
+        let (alone, alone_caches) = layers.forward(segment, Some(cache_row(origins.clone(), b)), (), None, None);
+        let label = format!("row {b}, the segment at {start}");
+        assert_same_outputs(alone, segment_of(y.clone(), b, start, end), &label);
+        if end == width {
+            assert_same_caches(&alone_caches, &cache_row(caches.clone(), b), &label);
+        }
+    }
+
+    let grads = y.sum().backward();
+    for (i, origin) in origins.iter().enumerate() {
+        let peak = grad_peak(&origin.state_bd, &grads);
+        assert!(peak.is_some_and(|p| p > 0.0), "the origin of virtual layer {i} gets the gradient {peak:?}");
+    }
+}
+
+/// Under a gradient horizon, the origin of an untracked layer moves to the
+/// inner backend with the cache of that layer. So it gets no gradient. The
+/// origin of a tracked layer gets one.
+#[test]
+fn the_origin_of_an_untracked_layer_gets_no_gradient() {
+    let device = test_device().autodiff();
+    let layers = LayersBuilder {
+        block: block_config().with_reset_align(3),
+        grad_horizon: Some(GradHorizon::last(1, 2)),
+        ..layers_builder(2)
+    }
+    .init(&device);
+    let (packed, _, width) = packed_layout(&layers.real_layers[0].block, 0, &device);
+    let origins = warm_caches(&layers, &device);
+
+    let (y, _) = layers.forward_packed(randn3(2, width, &device), None, Some(origins.clone()), (), &packed);
+
+    let grads = y.sum().backward();
+    let peak = grad_peak(&origins[0].state_bd, &grads);
+    assert!(peak.is_none(), "the origin of the untracked layer 0 gets the gradient {peak:?}");
+    let peak = grad_peak(&origins[1].state_bd, &grads);
+    assert!(peak.is_some_and(|p| p > 0.0), "the origin of the tracked layer 1 gets the gradient {peak:?}");
 }
 
 /// A vocab network over packed rows gives each segment the logits that the
@@ -159,7 +243,7 @@ fn vocab_network_forward_packed_equals_each_segment_alone() {
     let pairs: Vec<i64> = (0..2 * width as i64).flat_map(|p| [(p * 7) % VOCAB, p % 2]).collect();
     let x = Tensor::<1, Int>::from_ints(pairs.as_slice(), &device).reshape([2, width, 2]);
 
-    let (logits, _) = net.forward_packed(x.clone(), None, (), &packed);
+    let (logits, _) = net.forward_packed(x.clone(), None, None, (), &packed);
 
     for (b, start, end) in packed_segments(&starts, width) {
         let tokens = x.clone().narrow(0, b, 1).narrow(1, start + lead, end - start - lead);
@@ -248,7 +332,7 @@ fn a_packed_vocab_network_has_the_logits_and_gradients_of_each_segment_alone() {
         }
         .init(&device);
 
-        let (logits, _) = net.forward_packed(ids.clone(), None, (), &packed);
+        let (logits, _) = net.forward_packed(ids.clone(), None, None, (), &packed);
         let mut loss_packed = Tensor::<1>::zeros([1], &device);
         let mut loss_alone = Tensor::<1>::zeros([1], &device);
         for (b, lens) in SEGMENT_LENS.iter().enumerate() {

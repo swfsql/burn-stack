@@ -330,18 +330,34 @@ where
     }
 
     /// [`Self::forward`] over packed rows (see [`crate::utils::packing`]). At
-    /// each reset of `packed`, every layer starts again from a zero cache. The
-    /// positions before the first reset of a row continue from `caches`.
+    /// each reset of `packed` in row `b`, each virtual layer starts again from
+    /// row `b` of its origin. The positions before the first reset of a row
+    /// continue from `caches`. The returned caches are those of the last
+    /// segment of each row.
+    ///
+    /// `origins` holds one origin for each virtual layer, in the order of
+    /// `caches`. `None` gives each virtual layer its zero cache, as for
+    /// `caches`. The call does not return the origins. An origin follows the
+    /// rules of a cache:
+    ///
+    /// - It gets a gradient from each segment that starts from it.
+    /// - Under [`Self::grad_horizon`], the origin of an untracked layer moves
+    ///   to the inner backend with the cache of that layer. It gets no
+    ///   gradient.
+    /// - An origin from the caller has the checkpointing strategy of the
+    ///   stack, or an op panics.
+    /// - An origin that an earlier backward used needs a detach first
+    ///   ([`cache_detach`](crate::modules::cache_detach)).
     ///
     /// The stack puts its class latents into the opening slots of each
     /// segment, in place of the input tokens. So the output has the shape of
     /// `x`. Every class latent of the stack must be a `Start`, and `packed`
-    /// must give each segment one opening slot per class latent. The returned
-    /// caches are those of the last segment of each row.
+    /// must give each segment one opening slot per class latent.
     pub fn forward_packed(
         &self,
         x: Tensor<3>,
         caches: Option<Vec<M::Cache>>,
+        origins: Option<Vec<M::Cache>>,
         options: M::Options,
         packed: &Packed,
     ) -> (Tensor<3>, Vec<M::Cache>) {
@@ -357,7 +373,9 @@ where
                 x
             }
         };
-        self.forward_rows(x, caches, options, None, None, Some(&packed))
+        let origins = origins.unwrap_or_else(|| self.zero_caches(x.dims()[0], &x.device()));
+        assert_eq!(origins.len(), self.n_virtual_count(), "one origin per virtual layer");
+        self.forward_rows(x, caches, options, None, None, Some((&packed, origins)))
     }
 
     /// [`Self::forward`] with the padding already tracked. A container that
@@ -373,18 +391,19 @@ where
         self.forward_rows(x, caches, options, class, padding, None)
     }
 
-    /// One layer of the stack, over a padded batch or over packed rows.
+    /// One layer of the stack, over a padded batch, or over packed rows with
+    /// the origin of the layer.
     fn run_layer(
         layer: &Layer<M>,
         x: Tensor<3>,
         cache: M::Cache,
         options: M::Options,
         padding: Option<&Padding>,
-        packed: Option<&Packed>,
+        packed_origin: Option<(&Packed, M::Cache)>,
     ) -> (Tensor<3>, M::Cache) {
-        match packed {
+        match packed_origin {
             None => layer.forward(x, cache, options, padding),
-            Some(packed) => layer.forward_packed(x, cache, options, packed),
+            Some((packed, origin)) => layer.forward_packed(x, cache, origin, options, packed),
         }
     }
 
@@ -399,8 +418,9 @@ where
     }
 
     /// The loop of [`Self::forward_padded`] and [`Self::forward_packed`]. The
-    /// window is one [`ResidualStreams`]. `packed` rows take no padding, and
-    /// their class latents are already in their opening slots.
+    /// window is one [`ResidualStreams`]. `packed` rows come with one origin
+    /// for each virtual layer. They take no padding, and their class latents
+    /// are already in their opening slots.
     fn forward_rows(
         &self,
         x: Tensor<3>,
@@ -408,7 +428,7 @@ where
         options: M::Options,
         class: Option<&mut ClassCursors>,
         padding: Option<Padding>,
-        packed: Option<&Packed>,
+        packed: Option<(&Packed, Vec<M::Cache>)>,
     ) -> (Tensor<3>, Vec<M::Cache>) {
         let n = self.n_virtual_count();
         // No cursors ⇒ this one call covers the whole sequence.
@@ -424,6 +444,10 @@ where
         };
         let caches = caches.unwrap_or_else(|| self.zero_caches(x.dims()[0], &x.device()));
         assert_eq!(caches.len(), n, "one cache per virtual layer");
+        let (packed, mut origins) = match packed {
+            Some((packed, origins)) => (Some(packed), Some(origins.into_iter())),
+            None => (None, None),
+        };
         let mut hop = BackendHop::new(self, n);
         let mut values = vec![self.residuals.seed::<3, 4>(x)];
         let apps = self.applications();
@@ -432,13 +456,18 @@ where
         // `i` is the virtual-layer index (layer schedule, cut, residual flags).
         for (i, cache) in caches.into_iter().enumerate() {
             let at = self.join_at(i, n);
+            // The origin of this layer, on the backend of the layer.
+            let packed_origin = packed.map(|packed| {
+                let origin = origins.as_mut().and_then(Iterator::next).expect("one origin per virtual layer");
+                (packed, hop.to_layer(i, origin))
+            });
             let (next, cache) = hop.layer(i, values, cache, |stack, mut values, cache| {
                 // The layer as its own application sees it, if the layer
                 // unties anything.
                 let layer = stack.real_layers[at.real_idx].application(apps.index[i]);
                 let value = values.pop().expect("the window is one value");
                 let (value, cache) = stack.residuals.join(value, at, |x| {
-                    Self::run_layer(&layer, x, cache, options.clone(), padding.as_ref(), packed)
+                    Self::run_layer(&layer, x, cache, options.clone(), padding.as_ref(), packed_origin)
                 });
                 (vec![value], cache)
             });
@@ -640,7 +669,8 @@ where
 ///   layer,
 /// - the device of the stack,
 /// - the straight-through carry of each [`ResidualStreams`],
-/// - the hop of the cache of each layer,
+/// - the hop of the cache of each layer, and of its origin in a packed
+///   forward,
 /// - the lift at the top of the stack.
 ///
 /// The loop of `forward` gives it one `ResidualStreams`: the window. The
@@ -723,7 +753,7 @@ where
         ) -> (Vec<ResidualStreams<R, S>>, M::Cache),
     ) -> (Vec<ResidualStreams<R, S>>, M::Cache) {
         let stack = self.stack;
-        let track = self.tracked.as_ref().is_none_or(|t| t[i]);
+        let track = self.tracks(i);
         let values = match (self.carry.take(), track) {
             // The start of an untracked span.
             (None, false) => {
@@ -743,16 +773,31 @@ where
             Some(inner) if !track => inner,
             _ => stack,
         };
-        let cache = match track {
-            true => cache,
-            false => cache_to_inner(cache),
-        };
+        let cache = self.to_layer(i, cache);
         let (values, cache) = run(view, values, cache);
         let cache = match track {
             true => cache,
             false => cache_from_inner(cache, &self.device),
         };
         (values, cache)
+    }
+
+    /// Whether the virtual layer `i` is a tracked layer.
+    fn tracks(&self, i: usize) -> bool {
+        self.tracked.as_ref().is_none_or(|t| t[i])
+    }
+
+    /// `cache` on the backend of the virtual layer `i`. For an untracked
+    /// layer, this moves the cache to the inner backend, because Burn cannot
+    /// mix backends within an op. Off the autodiff backend, the move does
+    /// nothing. [`Self::layer`] moves the cache of the layer. The packed
+    /// forward also moves the origin of the layer. The origin does not move
+    /// back to the autodiff backend.
+    fn to_layer(&self, i: usize, cache: M::Cache) -> M::Cache {
+        match self.tracks(i) {
+            true => cache,
+            false => cache_to_inner(cache),
+        }
     }
 
     /// The cut: [`Residuals::close_span`] on each value, with its

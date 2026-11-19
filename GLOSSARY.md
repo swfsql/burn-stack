@@ -210,6 +210,11 @@ _Avoid_: document, story, episode
 The mark on the first token of a segment.
 _Avoid_: restart
 
+**Origin**:
+The cache that each segment of a packed call starts from. A container gives the
+zero cache when the caller gives none.
+_Avoid_: initial cache
+
 **Reset alignment**:
 The spacing, in tokens, of the positions where a block accepts a reset.
 

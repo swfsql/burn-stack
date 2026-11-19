@@ -3,9 +3,10 @@
 //! A batch of sequences of different lengths wastes the padding of its short
 //! rows. A packed batch fills each row with whole sequences instead. Each
 //! sequence of a packed row is a **segment**, and it starts at a **reset**.
-//! There, every block starts again from a zero cache (see
-//! [`Block::block_forward_packed`]). So each segment gives the outputs that
-//! it gives alone.
+//! There, every block starts again from its **origin**: the cache that each
+//! segment starts from (see [`Block::block_forward_packed`]).
+//! A container gives the zero cache when the caller gives no origin. So each
+//! segment gives the outputs that it gives alone from the origin.
 //!
 //! The class latents of a stack (all `Start`) open every segment, not only
 //! the row. A splice would move every later position of the row. So a packed

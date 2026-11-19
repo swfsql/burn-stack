@@ -357,19 +357,21 @@ where
     }
 
     /// [`Self::forward`] over packed rows: token pairs `[batch, sequence, 2]` →
-    /// logits `[batch, sequence, padded_vocab + 1]`. Every segment of a row
-    /// starts again from a zero cache at its reset (see
-    /// [`Layers::forward_packed`]). The token of an opening slot is not read:
-    /// the stack puts its class latent there.
+    /// logits `[batch, sequence, padded_vocab + 1]`. At each reset in row `b`,
+    /// each virtual layer starts again from row `b` of its origin in
+    /// `origins`. `None` gives each virtual layer its zero cache.
+    /// [`Layers::forward_packed`] gives the rules of an origin. The token of an
+    /// opening slot is not read: the stack puts its class latent there.
     pub fn forward_packed(
         &self,
         x: Tensor<3, Int>,
         caches: Option<Vec<M::Cache>>,
+        origins: Option<Vec<M::Cache>>,
         options: M::Options,
         packed: &Packed,
     ) -> (Tensor<3>, Vec<M::Cache>) {
         let x = self.embed(x);
-        let (x, caches) = self.layers.forward_packed(x, caches, options, packed);
+        let (x, caches) = self.layers.forward_packed(x, caches, origins, options, packed);
         let x = self.norm_f.forward(x);
         (self.apply_heads(x), caches)
     }

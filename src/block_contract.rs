@@ -65,7 +65,7 @@ const SEQUENCE: usize = 7;
 /// The tokens of the first window of a split. It is not a power of two, so
 /// the split is inside a chunk for most chunk lengths.
 const SPLIT: usize = 3;
-/// The tokens that make a warm incoming cache.
+/// The tokens that make a warm cache: an incoming cache, or an origin.
 const WARM: usize = 2;
 
 /// `block_forward` over a window equals `block_step` unrolled over the same
@@ -190,9 +190,13 @@ pub fn padded_rows_equal_each_row_alone<C: BlockConfig>(
 }
 
 /// Over packed rows, each segment gives the outputs that it gives alone from
-/// the zero cache. The last segment of a row also gives that row of the final
-/// cache. The positions before the first reset of a row continue from the
-/// incoming cache.
+/// its row of the origin. The last segment of a row also gives that row of the
+/// final cache. The positions before the first reset of a row continue from
+/// the incoming cache.
+///
+/// The origin and the incoming cache are two different warm caches: the
+/// caches of two forwards over random tokens. So a block that starts a
+/// segment from the zero cache or from the incoming cache fails.
 ///
 /// The rows hold 4 units of positions. A unit is the smallest multiple of
 /// the reset alignment that is at least 3. Row 0 holds three segments. Row 1
@@ -220,21 +224,26 @@ pub fn packed_segments_equal_each_segment_alone<C: BlockConfig>(
         let starts = vec![vec![0, unit, 3 * unit], vec![2 * unit]];
         let reset_bs = Packed::from_starts(&starts, align, 0, sequence, &device).reset_bs;
         let x_bsd = randn(starts.len(), sequence, d_model, &device);
-        let zero = block.zero_cache(starts.len(), &device);
-        let (_, warm) = block.block_forward(randn(starts.len(), WARM, d_model, &device), zero, options.clone(), None);
+        let warm_cache = || {
+            let zero = block.zero_cache(starts.len(), &device);
+            let tokens_bsd = randn(starts.len(), WARM, d_model, &device);
+            block.block_forward(tokens_bsd, zero, options.clone(), None).1
+        };
+        let (warm, origin) = (warm_cache(), warm_cache());
 
-        let (y_bsd, cache) = block.block_forward_packed(x_bsd.clone(), warm.clone(), options.clone(), reset_bs);
+        let (y_bsd, cache) =
+            block.block_forward_packed(x_bsd.clone(), warm.clone(), origin.clone(), options.clone(), reset_bs);
 
         for (b, row) in starts.iter().enumerate() {
             // Each part `[start, end)` of the row, and the cache that it
             // starts from alone: the incoming cache before the first reset,
-            // else the zero cache.
+            // else the origin.
             let mut parts = Vec::new();
             if row[0] > 0 {
                 parts.push((0, row[0], cache_row(warm.clone(), b)));
             }
             for (i, &start) in row.iter().enumerate() {
-                parts.push((start, row.get(i + 1).copied().unwrap_or(sequence), block.zero_cache(1, &device)));
+                parts.push((start, row.get(i + 1).copied().unwrap_or(sequence), cache_row(origin.clone(), b)));
             }
             for (start, end, incoming) in parts {
                 let part_bsd = x_bsd.clone().narrow(0, b, 1).narrow(1, start, end - start);
@@ -730,7 +739,7 @@ pub(crate) fn cache_diff<T: CacheTensors>(a: T, b: T) -> f32 {
 
 /// Row `b` of `cache`, with the batch axis kept. Axis 0 of each tensor of a
 /// cache is the batch (see [`CacheTensors`]).
-fn cache_row<T: CacheTensors>(cache: T, b: usize) -> T {
+pub(crate) fn cache_row<T: CacheTensors>(cache: T, b: usize) -> T {
     struct Row(usize);
     impl TensorZip for Row {
         fn zip<const D: usize>(&mut self, a: Tensor<D>, b: Tensor<D>) -> Tensor<D> {

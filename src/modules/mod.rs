@@ -134,10 +134,15 @@ pub trait Block: Module + burn::module::ModuleDisplay {
     /// segments, one after another (see [`crate::utils::packing`]).
     ///
     /// `reset` (`[batch, sequence]`) is `true` at the first token of each
-    /// segment. At that position, the block starts again from a zero cache.
-    /// The positions before the first reset of a row continue from `cache`.
-    /// The output of each segment is that of the segment run alone from a zero
-    /// cache. The returned cache is that of the last segment of each row.
+    /// segment. At a reset in row `b`, the block starts again from row `b` of
+    /// `origin`, the cache of the start of each segment. The positions before
+    /// the first reset of a row continue from `cache`. The output of each
+    /// segment is that of the segment run alone from its row of `origin`. The
+    /// returned cache is that of the last segment of each row.
+    ///
+    /// The origin gets a gradient from each segment that starts from it. A
+    /// container gives the zero cache as the origin when its caller gives
+    /// none.
     ///
     /// A block accepts a reset only at the multiples of its
     /// [`Self::reset_align`] (for example, at the start of a chunk). The
@@ -149,10 +154,11 @@ pub trait Block: Module + burn::module::ModuleDisplay {
         &self,
         x: Tensor<3>,
         cache: Self::Cache,
+        origin: Self::Cache,
         options: Self::Options,
         reset: Tensor<2, Bool>,
     ) -> (Tensor<3>, Self::Cache) {
-        let _ = (x, cache, options, reset);
+        let _ = (x, cache, origin, options, reset);
         panic!("this block takes no packed rows (it does not implement `block_forward_packed`)");
     }
 

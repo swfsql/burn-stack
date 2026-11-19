@@ -210,13 +210,15 @@ impl<M: Block> Layer<M> {
         (self.add_mlp_delta(residual, h1), cache)
     }
 
-    /// [`Self::forward`] over packed rows (see [`crate::utils::packing`]). The
-    /// block starts again from a zero cache at each reset of `packed`.
-    /// Everything else here is per position.
+    /// [`Self::forward`] over packed rows (see [`crate::utils::packing`]). At
+    /// each reset of `packed` in row `b`, the block starts again from row `b`
+    /// of `origin` (see [`Block::block_forward_packed`]). Everything else here
+    /// is per position.
     pub fn forward_packed(
         &self,
         x: Tensor<3>,
         cache: M::Cache,
+        origin: M::Cache,
         options: M::Options,
         packed: &Packed,
     ) -> (Tensor<3>, M::Cache) {
@@ -224,7 +226,7 @@ impl<M: Block> Layer<M> {
         let normed = self.norm.forward(x);
         let (h1, cache) =
             self.block
-                .block_forward_packed(normed, cache, options, packed.reset_bs.clone());
+                .block_forward_packed(normed, cache, origin, options, packed.reset_bs.clone());
         (self.add_mlp_delta(residual, h1), cache)
     }
 

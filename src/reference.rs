@@ -25,8 +25,9 @@
 //! gradients are not degenerate), and cheap. `block_forward` unrolls the same
 //! recurrence that `block_step` applies. So the forward/step parity that the
 //! containers rely on is exact by construction. `block_forward_packed` unrolls
-//! it too, from a zero state at each reset. So a segment gives exactly what it
-//! gives alone. A real family gets both from a chunkwise algorithm instead.
+//! it too, from the state of the origin at each reset. So a segment gives
+//! exactly what it gives alone from the origin. A real family gets both from a
+//! chunkwise algorithm instead.
 //!
 //! The `test-helpers` feature enables it (the tests of this crate also have
 //! it).
@@ -135,24 +136,26 @@ impl Block for RefBlock {
         (Tensor::cat(ys, 1), RefCache { state_bd })
     }
 
-    /// The state starts again from zero at each reset. The recurrence runs on
-    /// every position. So each segment gives exactly the outputs that it gives
-    /// alone.
+    /// At a reset in row `b`, the state starts again from row `b` of the
+    /// state of `origin`. The recurrence runs on every position. So each
+    /// segment gives exactly the outputs that it gives alone from its row of
+    /// `origin`.
     fn block_forward_packed(
         &self,
         x_bsd: Tensor<3>,
         cache: RefCache,
+        origin: RefCache,
         _options: (),
         reset_bs: Tensor<2, Bool>,
     ) -> (Tensor<3>, RefCache) {
-        let [batch, sequence, _d_model] = x_bsd.dims();
-        let zero_bd = self.zero_state(batch, &x_bsd.device());
+        let [_batch, sequence, _d_model] = x_bsd.dims();
+        let origin_bd = origin.state_bd;
         let mut state_bd = cache.state_bd;
         let mut ys = Vec::with_capacity(sequence);
         for t in 0..sequence {
             let reset_bd = reset_bs.clone().narrow(1, t, 1).expand(state_bd.dims());
             let x_bd = x_bsd.clone().narrow(1, t, 1).squeeze_dim(1);
-            let prev_bd = state_bd.mask_where(reset_bd, zero_bd.clone());
+            let prev_bd = state_bd.mask_where(reset_bd, origin_bd.clone());
             let (y_bd, next_bd) = self.recurrence(x_bd, prev_bd);
             state_bd = next_bd;
             ys.push(y_bd.unsqueeze_dim(1));
