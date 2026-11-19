@@ -15,6 +15,14 @@ A burn-mamba test builds against the pin of burn-stack. To run it against a
 local change, enable the `[patch]` of burn-mamba. The "Changes in both repos"
 section of `issue-tracker.md` gives the rules.
 
+## A test that cannot fail first
+
+A test fails first, before the change that it checks. A change of a signature
+can need the new code before the test compiles, so the test passes at its
+first run. Then break the new code once for each such test, and run the test.
+It must fail. Undo each break. The **Mutation result** under `## Comments` of
+the ticket gives each break and each test that it failed.
+
 ## Outside the seams
 
 - A claim about training quality (for example, "this option learns faster") has
@@ -35,10 +43,20 @@ The coverage is a gate, not a seam. It shows the code that the tests run, not
 the behavior that they check.
 
 A ticket with a coverage gate states `BASE`: a commit, or a report that
-`--save` wrote. After the change, run `scripts/coverage.py --base BASE`. Copy
-its lost items into the **Coverage result** of the ticket. Do not write
-another compare script. When a ticket needs a compare that the script does not
-give, change the script.
+`--save` wrote. Save the report of a commit at the start of the ticket, in the
+background:
 
-A commit base builds in the git worktree `target/coverage-base/`. Its first
-build takes some minutes, so run it in the background.
+```bash
+python3 scripts/coverage.py --revision BASE --save tmp/<ticket>/coverage-base.json
+```
+
+The run builds `BASE` in the git worktree `target/coverage-base/`, so the edits
+of the working tree do not change the report. Its first build takes some
+minutes.
+
+After the change, run
+`./scripts/check.sh --coverage-base tmp/<ticket>/coverage-base.json`. Its
+coverage step compares the working tree with the report. Copy the lost items
+into the **Coverage result** of the ticket. Do not write another compare
+script. When a ticket needs a compare that the script does not give, change the
+script.

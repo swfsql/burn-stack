@@ -2,7 +2,7 @@
 """The line, branch and condition coverage of the `src/` of a crate by its lib tests.
 
 Usage:
-  scripts/coverage.py [CRATE] [--files] [--save FILE] [--base BASE]
+  scripts/coverage.py [CRATE] [--files] [--save FILE] [--base BASE | --revision REV]
   scripts/coverage.py --check-tools
   scripts/coverage.py --selftest
 
@@ -35,6 +35,11 @@ Compare: `--base` takes a git revision or a report that `--save` wrote. For a
 revision, the script runs the lib tests of that revision in a git worktree at
 `target/coverage-base/` of the crate. A revision with a relative path
 dependency does not build there. Save a report of it instead.
+
+Revision: `--revision` measures a git revision in the same worktree, and not
+the working tree. With `--save`, it writes the report of the revision. The
+worktree is separate from the working tree. So the report of a base can build
+while the working tree changes, and a later `--base FILE` reads it.
 
 The compare lists each item that the base covers and the working tree does not
 cover. The `git diff` of the two `src/` trees matches each line of the base to
@@ -474,7 +479,14 @@ def main():
         metavar="BASE",
         help="a git revision, or a report that --save wrote. The script compares the working tree with it",
     )
-    parser.add_argument("--save", metavar="FILE", type=pathlib.Path, help="write the report of the working tree to FILE")
+    parser.add_argument(
+        "--revision",
+        metavar="REV",
+        help=f"measure this git revision in the worktree {BASE_TREE}/ of the crate, not the working tree",
+    )
+    parser.add_argument(
+        "--save", metavar="FILE", type=pathlib.Path, help="write the report of the working tree (or of --revision) to FILE"
+    )
     parser.add_argument("--files", action="store_true", help="without --base, also give the coverage of each file")
     parser.add_argument(
         "--check-tools", action="store_true", help="exit with 1 when the box does not have the coverage tools"
@@ -493,9 +505,12 @@ def main():
     if missing:
         sys.exit(f"error: this box does not have {', '.join(missing)}.")
 
+    if args.revision is not None and args.base is not None:
+        sys.exit("error: give --base or --revision, not both.")
     root = args.crate.resolve()
-    new = measure(root)
+    new = measure(root) if args.revision is None else measure_revision(root, args.revision)
     if args.save is not None:
+        args.save.parent.mkdir(parents=True, exist_ok=True)
         args.save.write_text(json.dumps(to_json(new)), encoding="utf-8")
     if args.base is None:
         print(f"# Coverage of the `src/` of {new['crate']} at {label(new)}\n")

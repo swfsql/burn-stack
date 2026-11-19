@@ -41,7 +41,7 @@ cargo check --all-targets                # + tests
 cargo check --features examples-common   # + the example scaffolding
 cargo test --lib -- --test-threads=1     # run the tests (flex = the CPU default)
 cargo doc --no-deps                      # build the docs
-./scripts/check.sh                       # the lines above + host paths + coverage
+./scripts/check.sh                       # the lines above + host paths + prose + coverage
 ```
 
 Feature flags (`Cargo.toml` has the full list):
@@ -214,9 +214,12 @@ scripts/coverage.py    the coverage of `src/` by the lib tests, and its compare 
 - **Agent size**: a rough estimate only: about 2-3k lines of reads per agent.
   State the batches first.
 - **Temporary work**: create it in the `tmp/` of the repo, because a power loss
-  clears `/tmp`. Save each agent report there. `/tmp` is only for deletion.
+  clears `/tmp`. `/tmp` is only for deletion.
+  - The work files of one ticket go in its ticket directory `tmp/<ticket>/`
+    (for example `tmp/t18/`): its logs, scripts, base reports and agent
+    reports.
   - A tag file `<name>.discard` beside an item of `tmp/` marks it as
-    discardable, and states when.
+    discardable, and states when. A ticket directory has one tag.
   - When a ticket or session ends, move each tagged item whose condition holds,
     with its tag, to `/tmp`. This applies only to items in `tmp/`.
 - **Memory**: ask the user before you write to the auto-memory. Show the
