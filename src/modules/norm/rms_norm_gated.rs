@@ -3,11 +3,10 @@
 //!
 //! `norm_before_gate` selects the order of the two operations:
 //! - `true`: normalise, then gate: `y = (x / rms(x) · γ) · SiLU(z)`
-//! - `false`: gate, then normalise: `y = rms(x · SiLU(z)) · γ` applied to
-//!   `x · SiLU(z)`
+//! - `false`: gate, then normalise: `y = (x · SiLU(z)) / rms(x · SiLU(z)) · γ`
 //!
-//! The epsilon is the `div_eps` of the dtype that the norm computes in, so
-//! there is no configurable epsilon. As in
+//! `rms(v) = √(max(mean(v²), ε))` (ADR-0010). The epsilon is the `div_eps` of
+//! the dtype that the norm computes in, so there is no configurable epsilon. As in
 //! [`RmsNorm`](crate::modules::norm::rms_norm::RmsNorm), an f16 or bf16 input
 //! computes in f32, the gate included, and an f64 input computes in f64.
 
@@ -42,16 +41,17 @@ impl RmsNormGatedConfig {
 
 /// Applies Gated Rms Normalization over an input tensor along the last dimension.
 ///
-/// - If `norm_before_gate=true`: `Y = (X / sqrt(mean(X^2) + eps) * gamma) * SiLU(z)`
-/// - If `norm_before_gate=false`: `Y = (X * SiLU(z)) / sqrt(mean((X * SiLU(z))^2) + eps) * gamma`
+/// - If `norm_before_gate=true`: `Y = (X / rms(X) * gamma) * SiLU(z)`
+/// - If `norm_before_gate=false`: `Y = (X * SiLU(z)) / rms(X * SiLU(z)) * gamma`
 ///
 /// Where:
 /// - `X` is the input tensor
 /// - `Y` is the output tensor
 /// - `z` is the gating tensor
 /// - `gamma` is the learnable weight
-/// - `mean` is the mean operation
-/// - `eps` is a small value to avoid division by zero.
+/// - `rms(V) = sqrt(max(mean(V^2), eps))`, along the last dimension
+/// - `eps` is the floor of `mean(V^2)`: the `div_eps` of the dtype that the
+///   norm computes in (ADR-0010).
 ///
 /// Create it with [`RmsNormGatedConfig`].
 #[derive(Module, Debug)]

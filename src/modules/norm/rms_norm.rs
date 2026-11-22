@@ -1,9 +1,10 @@
 //! Root-mean-square normalisation over the last dimension.
 //!
-//! `RMSNorm(x) = x / rms(x) · γ` where `rms(x) = √(mean(x²))`. Unlike
-//! LayerNorm, there is no mean subtraction and no bias: only a learnable
-//! per-channel scale `γ`. It is the Pre-LN of every residual sub-block, and
-//! also a **QK-Norm** on the key/query-like projections of a block.
+//! `RMSNorm(x) = x / rms(x) · γ` where `rms(x) = √(max(mean(x²), ε))`
+//! (ADR-0010). Unlike LayerNorm, there is no mean subtraction and no bias:
+//! only a learnable per-channel scale `γ`. It is the Pre-LN of every residual
+//! sub-block, and also a **QK-Norm** on the key/query-like projections of a
+//! block.
 //!
 //! An f16 or bf16 input computes in f32, with the `ε` of f32. So an f16, bf16
 //! or f32 input computes the same function. An f64 input computes in f64,
@@ -34,7 +35,7 @@ impl RmsNormConfig {
 }
 
 /// Applies RMS normalisation over an input tensor along the last dimension:
-/// `y = x / √(mean(x²)) · γ`.
+/// `y = x / √(max(mean(x²), ε)) · γ`.
 ///
 /// Create it with [`RmsNormConfig`].
 #[derive(Module, Debug)]

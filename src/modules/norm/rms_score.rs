@@ -33,7 +33,7 @@ pub fn rms_denom<const D: usize>(x: Tensor<D>) -> Tensor<D> {
     downcast(rms(x), half)
 }
 
-/// The RMSNorm-then-dot score `scale · Σ_feat(x · w) / (rms(x)+eps)`, shape
+/// The RMSNorm-then-dot score `scale · Σ_feat(x · w) / rms(x)`, shape
 /// `[‥, 1]`.
 ///
 /// `w` broadcasts against `x` on every axis but the feature one (`D-1`), where

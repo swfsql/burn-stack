@@ -3,11 +3,11 @@ use burn::module::Param;
 use burn::tensor::Distribution;
 use crate::utils::test_helpers::test_device;
 
-/// A half-precision input computes the formula `x / √(mean(x²) + ε)` with the
-/// `ε` of f32, the dtype that it computes in. This holds at each scale of a
-/// row: zero, the subnormals of f16, and up to the top of its range. The
-/// forward and the gradient are finite. Each differs from the f64 formula by at
-/// most two machine epsilons of the dtype, relative to its size.
+/// A half-precision input computes the formula `x / √(max(mean(x²), ε))`
+/// with the `ε` of f32, the dtype that it computes in. This holds at each
+/// scale of a row: zero, the subnormals of f16, and up to the top of its
+/// range. The forward and the gradient are finite. Each differs from the f64
+/// formula by at most two machine epsilons of the dtype, relative to its size.
 ///
 /// A row near zero is the limit case of the backward. Its gradient is about
 /// `|h|/√ε ≈ 3500·|h|`, and f16 holds that for the `|h| ≤ 5` here. The test
@@ -44,8 +44,11 @@ fn a_half_input_computes_the_formula_at_each_scale() {
                 for r in 0..rows {
                     let row = r * width..(r + 1) * width;
                     let (x, h) = (&xs[row.clone()], &hs[row.clone()]);
-                    let rms = (x.iter().map(|v| v * v).sum::<f64>() / width as f64 + eps).sqrt();
-                    let xh: f64 = x.iter().zip(h).map(|(a, b)| a * b).sum();
+                    let mean = x.iter().map(|v| v * v).sum::<f64>() / width as f64;
+                    let rms = mean.max(eps).sqrt();
+                    // Under the clamp, `rms` is constant, so the gradient has
+                    // no second term.
+                    let xh: f64 = if mean < eps { 0.0 } else { x.iter().zip(h).map(|(a, b)| a * b).sum() };
                     for (c, i) in row.enumerate() {
                         let (want_y, want_g) = (x[c] / rms, h[c] / rms - x[c] * xh / (width as f64 * rms.powi(3)));
                         assert!(ys[i].is_finite() && gs[i].is_finite(), "{dtype:?}, scale {scale}, width {width}: not finite");
@@ -92,7 +95,7 @@ fn an_f64_input_computes_in_f64() {
     let ds: Vec<f64> = denom.into_data().try_into_vec_as().unwrap();
     for r in 0..rows {
         let row = &xs[r * width..(r + 1) * width];
-        let rms = (row.iter().map(|v| v * v).sum::<f64>() / width as f64 + eps).sqrt();
+        let rms = (row.iter().map(|v| v * v).sum::<f64>() / width as f64).max(eps).sqrt();
         assert!((ds[r] - rms).abs() <= 1e-12 * rms, "row {r}: rms_denom {} vs {rms}", ds[r]);
         for (c, x) in row.iter().enumerate() {
             let (got, want) = (ys[r * width + c], x / rms);
@@ -103,11 +106,11 @@ fn an_f64_input_computes_in_f64() {
 
 /// The backward of RMSNorm must stay finite when a normalised slice collapses
 /// to zero norm (`mean(x²) = 0`). Examples are a dead token/channel, or a
-/// subnormal flushed to zero on CUDA. The forward guards the *division*
-/// (`rms + div_eps`). But the backward of the `sqrt` node is
-/// `1/(2·√(mean x²))`, singular at zero unless the epsilon is *inside* the
-/// root. Regression guard for a training-run NaN, localised to this op (the
-/// incoming `d_y` of the backward of the block).
+/// subnormal flushed to zero on CUDA. The backward of the `sqrt` node is
+/// `1/(2·√·)`, singular at zero. The clamp of `mean(x²)` at `ε` is before the
+/// root, so the root never sees zero (ADR-0010). Regression guard for a
+/// training-run NaN, localised to this op (the incoming `d_y` of the backward
+/// of the block).
 #[test]
 fn rms_norm_gradient_finite_on_collapsed_slice() {
     let device = test_device();
