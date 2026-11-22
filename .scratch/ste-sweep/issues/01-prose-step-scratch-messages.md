@@ -1,6 +1,6 @@
 # 01: The prose step reads `.scratch/` and the message strings
 
-Status: ready-for-agent
+Status: resolved
 
 Blocked by: none
 
@@ -32,9 +32,68 @@ tickets and the strings of `panic!`, `expect` and `assert!` calls.
 - The new tickets of `.scratch/ste-sweep/` are new files, so the extended step
   reads them. They start at zero hard findings.
 
-- [ ] The prose step reads `.scratch/` and the message strings.
-- [ ] The comments of `scripts/check.sh` and each doc that names the step
+- [x] The prose step reads `.scratch/` and the message strings.
+- [x] The comments of `scripts/check.sh` and each doc that names the step
       describe what it reads.
-- [ ] `./scripts/check.sh` passes. Run it in the background.
+- [x] `./scripts/check.sh` passes. Run it in the background.
 
 ## Comments
+
+### The counts of the prose step
+
+The merge base is `7355f1a`. The step reads these files:
+
+| File | Hard findings before | Hard findings after |
+|---|---|---|
+| The five tickets of `.scratch/ste-sweep/issues/` | new | 0 |
+| `CLAUDE.md` | 2 | 2 |
+| `docs/agents/testing.md` | 1 | 1 |
+
+### The message strings
+
+With `--parts docs,comments,messages`, four `.rs` files get 11 more hard
+findings. All of them are in the message strings. Both sides of the compare
+count them, so an unchanged message does not fail the step.
+
+| File | Without messages | With messages |
+|---|---|---|
+| `src/examples/tiny_stories/lm.rs` | 7 | 9 |
+| `src/optim/report.rs` | 1 | 2 |
+| `src/utils/capture.rs` | 6 | 13 |
+| `src/utils/untied.rs` | 0 | 1 |
+
+The report of a failure also uses `--parts docs,comments,messages`. So it lists
+each finding that the count has.
+
+### The calls that the linter reads
+
+The skill and the spec name `panic!`, `expect` and `assert!`. The linter reads
+more calls. In a probe `.rs` file, the string of each call has a semicolon:
+
+- The linter reads the strings of `panic!`, `expect`, `assert!`,
+  `assert_eq!`, `debug_assert!`, `unreachable!`, `format!`, `println!`,
+  `eprintln!`, `write!`, `bail!` and `log::warn!`.
+- It does not read the strings of `vec!`, a custom macro, a function call,
+  `.context(…)` and `Err(…)`, or a plain string.
+
+So the comment of `check_prose` gives these calls as examples. The section "Out
+of Scope" of the spec says that the linter does not read `format!` errors. The
+probe shows that it reads them, so the sweep batches get these findings too.
+
+### The docs that name the step
+
+- Outside `.scratch/`, `CLAUDE.md:44` is the only doc that names the step. It
+  says "prose" and does not say what the step reads. Every session loads
+  `CLAUDE.md`, so the line stays short and does not change.
+- Line 10 of tickets 02–05 names the step. It agrees with the step.
+- `.scratch/check-script-followups/issues/01-prose-ratchet.md` asks for the
+  same step. It says that the step reads `.scratch/`, and it does not name the
+  message strings. This change and `e3a6c7b` meet each of its criteria. Its
+  `Status:` stays `needs-triage` for the maintainer.
+
+### For the burn-mamba ticket
+
+- The burn-mamba ticket can copy `check_prose` of this change, so the two steps
+  stay equal.
+- `../burn-mamba/docs/agents/code-review.md:8` names the rules of `ste-lint.py`
+  that `scripts/check.sh` covers.
