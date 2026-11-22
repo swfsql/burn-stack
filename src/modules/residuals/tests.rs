@@ -90,7 +90,7 @@ fn multi_gate_join_under_a_suppressed_skip() {
     let (value, _) = residuals.join(value, at(2, false, false), layer);
     let (input, before) = (value.token.clone(), streams(&value));
     let (value, extra) = residuals.join(value, at(3, false, true), layer);
-    assert_eq!(extra, "cache", "the join gives back the extra value of the layer");
+    assert_eq!(extra, "cache", "the join returns the extra value of the layer");
     assert!(max_abs_diff(streams(&value), before) < dtype_tol(1e-6), "the streams do not change");
     assert!(max_abs_diff(value.into_token(), transform(input)) < dtype_tol(1e-6), "the output is `F_l` alone");
 }
@@ -243,7 +243,7 @@ fn standard_join_adds_the_skip_unless_it_is_suppressed() {
     let x = window(&device);
 
     let (value, extra) = residuals.join(residuals.seed::<3, 4>(x.clone()), at(1, false, false), layer);
-    assert_eq!(extra, "cache", "the join gives back the extra value of the layer");
+    assert_eq!(extra, "cache", "the join returns the extra value of the layer");
     assert!(value.streams.is_none(), "the token is the one residual stream of Standard");
     let want = transform(x.clone()) + x.clone();
     assert!(max_abs_diff(value.into_token(), want) < dtype_tol(1e-6), "a middle layer adds the skip");

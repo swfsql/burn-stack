@@ -1,7 +1,7 @@
 //! Mean squared error loss.
 //!
-//! An f16 or bf16 input computes in f32, and the loss goes back to the dtype
-//! of the input. In f16, `(logits − targets)²` overflows at a difference of
+//! An f16 or bf16 input computes in f32, and the loss has the dtype of the
+//! input. In f16, `(logits − targets)²` overflows at a difference of
 //! about 256. f32 and f64 compute in their own dtype.
 
 use crate::utils::{downcast, upcast};

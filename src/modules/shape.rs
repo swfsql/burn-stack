@@ -1,5 +1,5 @@
-//! Serializable **network shapes**: everything about a stack *except* the
-//! block that it is made of.
+//! Serializable **network shapes**: everything about a stack *except* its
+//! block.
 //!
 //! The builders next door ([`LayersBuilder`], [`LatentNetworkBuilder`],
 //! [`VocabNetworkBuilder`], [`BidiLayersBuilder`]) carry the block config `C`.
@@ -101,7 +101,7 @@ pub struct NetworkShape {
     #[config(default = "None")]
     pub mlp: Option<GatedMlpConfig>,
 
-    /// The parameters of the layer itself that are held once per application
+    /// The parameters of the layer itself that it holds once per application
     /// of its real layer, not tied across them. The block config names those
     /// of the block. Only virtual layers give a real layer more than one
     /// application. See [`crate::utils::untied`].
@@ -307,7 +307,7 @@ pub struct BidiShape {
     /// Inter-pair residual scheme.
     #[config(default = "ResidualsConfig::Standard")]
     pub residuals: ResidualsConfig,
-    /// The parameters of the layers that are held once per application, not
+    /// The parameters of the layers that they hold once per application, not
     /// tied (see [`NetworkShape::untied`]).
     #[config(default = "Vec::new()")]
     pub untied: Vec<LayerUntied>,

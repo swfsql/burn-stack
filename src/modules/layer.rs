@@ -7,8 +7,8 @@ use std::borrow::Cow;
 /// A single Pre-LN wrapper around one block. It computes `M(RMSNorm(x))`. It
 /// does **not** apply the residual. The enclosing [`Layers`] owns that
 /// decision: add the input back, suppress it on the first/last layer, or
-/// thread it through the residual streams of MGR. So no input clone or
-/// zero-add is wasted when no residual is wanted.
+/// thread it through the residual streams of MGR. So the layer wastes no input
+/// clone or zero-add when the stack wants no residual.
 ///
 /// With [`Self::mlp`] set, the layer also runs a second Pre-LN sub-block, a
 /// SwiGLU feed-forward (see [`GatedMlp`]). It has a residual of its own,
@@ -28,8 +28,8 @@ use std::borrow::Cow;
 /// sub-block and always applies. Without an `mlp`, the delta is just `h₁`, and
 /// nothing changes for a family that has no feed-forward.
 ///
-/// A layer built for a real layer that is applied several times can **untie**
-/// parameters: its [`LayerUntied`] pre-norms and those of its block
+/// A layer built for a real layer that the stack applies several times can
+/// **untie** parameters: its [`LayerUntied`] pre-norms and those of its block
 /// ([`Block::untied_params`]). It then holds one copy per application. A
 /// container runs application `k` as [`Self::application`]`(k)`, the layer
 /// that this application sees. Every other method acts on the layer that it is
@@ -102,7 +102,7 @@ impl<M: Block> Layer<M> {
         crate::utils::untied::tile(layer, &params, n_applications)
     }
 
-    /// Every parameter of this layer that is held once per application: its
+    /// Every parameter of this layer that it holds once per application: its
     /// untied pre-norms, then those of its block ([`Block::untied_params`]).
     pub fn untied_params(&self) -> Vec<UntiedParam> {
         let own = self.untied.iter().map(|part| match part {
@@ -120,9 +120,9 @@ impl<M: Block> Layer<M> {
         self.n_applications > 1 && !self.untied_params().is_empty()
     }
 
-    /// This layer as its `application`-th application sees it. Each untied
-    /// parameter is narrowed to the copy of that application, and everything
-    /// else is shared (see [`crate::utils::untied`]). The view is a plain tied
+    /// This layer as its `application`-th application sees it. The view narrows
+    /// each untied parameter to the copy of that application, and shares
+    /// everything else (see [`crate::utils::untied`]). The view is a plain tied
     /// layer (`n_applications = 1`).
     ///
     /// When nothing differs between the applications, this borrows the layer

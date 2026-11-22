@@ -1,13 +1,13 @@
 //! Binary cross-entropy loss.
 //!
-//! When `logits = true`, the loss is computed in a numerically stable way from
-//! raw logits, with [`log_sigmoid`](crate::modules::log_sigmoid). Otherwise
+//! When `logits = true`, the loss computes from raw logits in a numerically
+//! stable way, with [`log_sigmoid`](crate::modules::log_sigmoid). Otherwise
 //! the inputs are probabilities, and an epsilon (added *inside* the log)
 //! floors the logs to avoid `−∞`.
 //!
 //! An f16 or bf16 input computes in f32, with the `ε` of f32, and the loss
-//! goes back to the dtype of the input. f32 and f64 compute in their own
-//! dtype, with their own `ε`.
+//! has the dtype of the input. f32 and f64 compute in their own dtype, with
+//! their own `ε`.
 
 use crate::modules::log_sigmoid;
 use crate::utils::{div_eps, downcast, upcast};
@@ -60,11 +60,11 @@ impl BinaryCrossEntropyLoss {
             (targets.neg() + 1.) * logits.clone() - log_sigmoid(logits)
         } else {
             // - (target * log(input) + (1 - target) * log(1 - input))
-            // eps *inside* each log (the `div_eps` of the dtype that the loss
-            // computes in) floors both the value and the `1/x` backward at a
-            // zero-probability class. An outer clamp on the log output does
-            // not: it leaves `1/x` to blow up (a −100 floor gives a `1/x` of
-            // `≈e¹⁰⁰`, which overflows f32).
+            // eps *inside* each log floors both the value and the `1/x`
+            // backward at a zero-probability class. This eps is the `div_eps`
+            // of the dtype that the loss computes in. An outer clamp on the log
+            // output does not: it lets `1/x` grow without bound (a −100 floor
+            // gives a `1/x` of `≈e¹⁰⁰`, which overflows f32).
             let eps = div_eps(logits.dtype());
             (targets.clone() - 1) * (logits.clone().neg() + eps).log1p()
                 - targets * (logits + eps).log()

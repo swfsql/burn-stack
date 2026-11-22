@@ -3,12 +3,12 @@
 //! A lighter form of [`burn::nn::loss::CrossEntropyLoss`]: it takes soft
 //! float targets (one-hot, soft labels, or raw logits) rather than integer
 //! class indices, and drops padding/weights/label-smoothing.  `output_logits`
-//! and `target_logits` control whether each side is normalised (log-softmax /
-//! softmax) before the loss.
+//! and `target_logits` control whether the loss normalises each side
+//! (log-softmax / softmax) first.
 //!
 //! An f16 or bf16 input computes in f32, with the `ε` of f32, and the loss
-//! goes back to the dtype of the input. f32 and f64 compute in their own
-//! dtype, with their own `ε`.
+//! has the dtype of the input. f32 and f64 compute in their own dtype, with
+//! their own `ε`.
 
 use crate::utils::{div_eps, downcast, upcast};
 use burn::module::Module;
@@ -20,13 +20,13 @@ use burn::tensor::activation::{log_softmax, softmax};
 pub struct CrossEntropyLossConfig {
     /// Treat the outputs as logits, applying log-softmax when computing the loss.
     ///
-    /// When `false`, outputs are assumed to be probabilities (e.g. post-softmax).
+    /// When `false`, the loss takes the outputs as probabilities (e.g. post-softmax).
     #[config(default = true)]
     pub output_logits: bool,
 
     /// Treat the targets as logits, applying softmax to normalize them before computing the loss.
     ///
-    /// When `false`, targets are assumed to already be a valid probability distribution
+    /// When `false`, the loss takes the targets as a valid probability distribution already
     /// (e.g. one-hot or soft labels that sum to 1).
     #[config(default = false)]
     pub target_logits: bool,
@@ -46,7 +46,8 @@ impl CrossEntropyLossConfig {
 ///
 /// Unlike the full [`burn::nn::loss::CrossEntropyLoss`], this loss accepts
 /// floating-point targets (e.g. one-hot, soft label distributions, or un-normalized logits)
-/// rather than integer class indices, and omits padding, per-class weights, and label smoothing.
+/// rather than integer class indices. It also omits padding, per-class weights, and label
+/// smoothing.
 ///
 /// Create it with [`CrossEntropyLossConfig`].
 #[derive(Module, Debug)]
@@ -71,10 +72,10 @@ impl CrossEntropyLoss {
             // Numerically stable via log-softmax
             log_softmax(logits, 1)
         } else {
-            // The outputs are probabilities. eps *inside* the log (the
-            // `div_eps` of the dtype that the loss computes in) floors both
+            // The outputs are probabilities. eps *inside* the log floors both
             // the value and the `1/x` backward for a zero-probability class
-            // (as the log(0) of BCE does). In f16, the `div_eps` of f16
+            // (as the log(0) of BCE does). This eps is the `div_eps` of the
+            // dtype that the loss computes in. In f16, the `div_eps` of f16
             // (`7.1e-4`) would floor every probability below it.
             let eps = div_eps(logits.dtype());
             (logits + eps).log()

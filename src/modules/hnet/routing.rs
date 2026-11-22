@@ -6,12 +6,14 @@
 //!
 //! `x̂` is the output of the encoder. A position starts a new chunk (`bₜ = 1`)
 //! when its `x̂` turns away from the `x̂` of the position before it. The first
-//! position of a sequence has no position before it, so `p₀ = 1`. The paper
-//! writes `q` on the current position and `k` on the previous position. The
-//! reference code (and this module) projects the previous position with `W_q`
-//! and the current position with `W_k`. Both maps are learnable and start as
-//! the identity, so the two forms span the same function class. The reference
-//! also decides `p > ½`, not `p ≥ ½`, in both `forward` and `step`.
+//! position of a sequence has no position before it, so `p₀ = 1`.
+//!
+//! The paper writes `q` on the current position and `k` on the previous
+//! position. The reference code (and this module) projects the previous
+//! position with `W_q` and the current position with `W_k`. Both maps are
+//! learnable and start as the identity, so the two forms span the same
+//! function class. The reference also decides `p > ½`, not `p ≥ ½`, in both
+//! `forward` and `step`.
 //!
 //! The router has a state: the `x̂` of the last position, and whether the row
 //! saw a token at all ([`RouterCache`]). So a `forward` of one window and a
@@ -81,8 +83,8 @@ impl Router {
     }
 }
 
-/// `½·(1 − cos(q, k))` along the last axis, clamped to `[0, 1]`. Each
-/// vector is divided by `max(‖v‖, ε)`, as `F.normalize` does. It computes in
+/// `½·(1 − cos(q, k))` along the last axis, clamped to `[0, 1]`. It
+/// divides each vector by `max(‖v‖, ε)`, as `F.normalize` does. It computes in
 /// f32 when the inputs are f16/bf16.
 ///
 /// The clamp is on `‖v‖²`, before the square root. A zero vector (the cached

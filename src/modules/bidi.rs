@@ -272,8 +272,8 @@ where
     /// residual join of [`Self::residuals`] runs, with the pair as its unit
     /// (see [`crate::modules::residuals`]):
     ///
-    /// - [`Residuals::Standard`]: the input skip is added per pair (unless it
-    ///   is suppressed).
+    /// - [`Residuals::Standard`]: the join adds the input skip per pair (unless
+    ///   it is suppressed).
     /// - [`Residuals::MultiGate`]: no skip. Up to `n_stream` residual streams
     ///   carry the residual between pairs, and `x` seeds the first one. Each
     ///   pair reads their attention-pooled aggregate as input. Its merged
@@ -281,8 +281,8 @@ where
     ///   exist) or is gated into every stream (see [`MultiGate`]).
     ///
     /// `pad` (`[batch, sequence]`, `true` at padding, `None` ⇒ no padding)
-    /// marks a right-padded batch. Each row comes out as its own sequence
-    /// would come out alone. Both passes read only its real tokens. The
+    /// marks a right-padded batch. The output of each row equals the output of
+    /// its own sequence alone. Both passes read only its real tokens. The
     /// reversed pass starts from the last real token of the row, not from the
     /// last position of the batch (see [`crate::utils::padding`]).
     ///
@@ -303,13 +303,13 @@ where
             .n_virtual_layers
             .as_ref()
             .map(|(l, _)| {
-                assert!(l.is_multiple_of(2), "Bidi virtual layers are used in pairs");
+                assert!(l.is_multiple_of(2), "Bidi uses its virtual layers in pairs");
                 *l
             })
             .unwrap_or_else(|| {
                 assert!(
                     self.n_real_layers.is_multiple_of(2),
-                    "Bidi layers are used in pairs"
+                    "Bidi uses its layers in pairs"
                 );
                 self.n_real_layers
             });
@@ -407,7 +407,7 @@ pub struct BidiLayersBuilder<C> {
     pub class_latents: Vec<ClassLatent>,
     /// Inter-pair residual scheme (defaults to plain additive).
     pub residuals: ResidualsConfig,
-    /// The parameters of the layers themselves that are held once per
+    /// The parameters of the layers themselves that they hold once per
     /// application, not tied (see [`Layer::application`]). The block config
     /// names those of the block.
     pub untied: Vec<LayerUntied>,

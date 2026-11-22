@@ -17,7 +17,7 @@ fn logits(device: &Device) -> Tensor<3> {
 }
 
 /// The wrapped loss reports the number that it got. The penalty is in the
-/// gradient alone, so a training curve stays comparable to an unpenalised run
+/// gradient alone. So a training curve stays comparable to an unpenalised run
 /// (and to the reference, whose hand-written backward does the same).
 #[test]
 fn the_reported_loss_is_unchanged() {
@@ -89,9 +89,9 @@ fn an_f16_penalty_keeps_the_loss_and_reaches_the_logits() {
     }
 }
 
-/// Only the winning logit is pulled, and by exactly `factor/(B·T) · z_max`:
-/// the derivative of `½·factor·mean(max²)`, which the custom backward of the
-/// reference scatters.
+/// The penalty pulls only the winning logit, and by exactly
+/// `factor/(B·T) · z_max`: the derivative of `½·factor·mean(max²)`, which the
+/// custom backward of the reference scatters.
 #[test]
 fn only_the_max_logit_is_pulled_and_by_the_right_amount() {
     let device = test_device().autodiff();

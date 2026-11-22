@@ -126,7 +126,7 @@ pub fn smooth(
 
 /// The EMA update of the step call: `P·x + (1 − P)·carry` on the rows where
 /// `take_b` is `true`. The other rows keep the carry unchanged (bit for bit).
-/// `p_b` (`[batch]`) is clamped as in [`smooth`]. It computes in f32 when the
+/// It clamps `p_b` (`[batch]`) as [`smooth`] does. It computes in f32 when the
 /// inputs are f16/bf16, as [`smooth`] does.
 pub fn smooth_step(x_bd: Tensor<2>, p_b: Tensor<1>, take_b: Tensor<1, Bool>, carry_bd: Tensor<2>) -> Tensor<2> {
     let [batch, d] = carry_bd.dims();

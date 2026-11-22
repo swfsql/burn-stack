@@ -46,7 +46,7 @@ pub struct Layers<M: Module> {
     /// `n_virtual_layers` is far above `n_real_layers`, the tracking of every
     /// pass is what runs out of memory. Both papers back-propagate only a
     /// suffix: TRM one full recursion, HRM-Text a horizon `K` warmed from 2 to
-    /// 5. The horizon counts **from the top**, so it keeps its meaning when the
+    /// 5. The horizon counts **from the top**. So it keeps its meaning when the
     /// stack depth changes, and a training loop can move it per training step.
     ///
     /// [`GradHorizon::Depth`]`(K)` counts `K` from the top of every **real**
@@ -120,14 +120,16 @@ pub struct Layers<M: Module> {
     ///   of the stack, would get no gradient.
     /// - Under MGR, a module that pools in a tracked layer, but only directly
     ///   below untracked layers. Its pooled token takes no straight-through
-    ///   carry, so its aggregator query `w_alpha` would never train. With no
-    ///   weight sharing, or with one module for each virtual layer, an MGR
-    ///   stack can thus take an untracked span only at the bottom, or directly
-    ///   above a suppressed first skip. Its layer 0 does not pool. Under
-    ///   [`Schedule::Stretched`] with modules for each real layer, `Depth(1)`
-    ///   panics when a run other than the bottom one is longer than one layer.
-    ///   The module of the run below pools only at its tail, directly below
-    ///   the untracked head of that run.
+    ///   carry, so its aggregator query `w_alpha` would never train. Thus, with
+    ///   no weight sharing or with one module for each virtual layer, an MGR
+    ///   stack can take an untracked span at two places only. One is the
+    ///   bottom, and the other is directly above a suppressed first skip.
+    ///   Under a suppressed first skip, layer 0 does not pool.
+    ///
+    ///   Under [`Schedule::Stretched`] with modules for each real layer,
+    ///   `Depth(1)` panics when a run other than the bottom one is longer than
+    ///   one layer. The module of the run below pools only at its tail,
+    ///   directly below the untracked head of that run.
     ///
     /// **Every class embedding trains**, at both marker levels and on both
     /// sides of a cut. The [`ClassToken`]s of a network and the
@@ -162,7 +164,7 @@ where
     }
 
     /// Whether every class latent of the stack is a `Start`. Then, after the
-    /// opening of a sequence has run, no later [`step`](Self::step) emits one.
+    /// opening of a sequence runs, no later [`step`](Self::step) emits one.
     /// So every step runs the same launches (a
     /// [`CapturedStep`](crate::utils::capture::CapturedStep) needs this), and
     /// a step with no cursors equals the step with them.
@@ -226,9 +228,9 @@ where
     }
 
     /// The device of the stack (that of its parameters), with its autodiff
-    /// context. A cut lifts what it took down back onto this device
-    /// ([`lift`](crate::modules::lift)), so the lifted tensors get its
-    /// checkpointing strategy.
+    /// context. A cut lifts the values that its untracked span took to the
+    /// inner backend onto this device ([`lift`](crate::modules::lift)). So the
+    /// lifted tensors get the checkpointing strategy of this device.
     fn stack_device(&self) -> Device {
         self.real_layers[0].norm.gamma.val().device()
     }
@@ -237,10 +239,13 @@ where
     /// [`Self::grad_horizon`]. A `false` layer runs on the inner backend, and a
     /// `true` layer builds the graph. `None` ⇒ no cut anywhere.
     ///
-    /// The mask can turn off and on again any number of times: once for a
-    /// [`Schedule::Cyclic`] stack, once per real layer for a
-    /// [`Schedule::Stretched`] stack, and as often as a [`GradHorizon::Mask`]
-    /// states. The panics below limit where an untracked span can be.
+    /// The mask can have any number of untracked spans:
+    ///
+    /// - one for a [`Schedule::Cyclic`] stack,
+    /// - one per real layer for a [`Schedule::Stretched`] stack,
+    /// - as many as a [`GradHorizon::Mask`] states.
+    ///
+    /// The panics below limit where an untracked span can be.
     ///
     /// Returns `None` off the autodiff backend. A cut there would buy nothing:
     /// `Tensor::inner` and [`lift`](crate::modules::lift) do nothing off it. A
@@ -309,12 +314,12 @@ where
     /// move of any latent (see [`ClassCursors`]).
     ///
     /// `pad` (`[batch, sequence]`, `true` at padding, `None` ⇒ no padding)
-    /// marks a right-padded batch. Every row comes out as its own sequence
-    /// would come out alone: the outputs of its real tokens, and its caches.
-    /// Every class latent is placed against the length of that row (see
-    /// [`crate::utils::padding`]). The positions still come back in the
-    /// batch-wide order, with the class latents where the plan for the padded
-    /// length puts them.
+    /// marks a right-padded batch. The output of every row equals the output
+    /// of its own sequence alone: the outputs of its real tokens, and its
+    /// caches. The stack places every class latent against the length of that
+    /// row (see [`crate::utils::padding`]). The output still has the positions
+    /// in the batch-wide order, with the class latents where the plan for the
+    /// padded length puts them.
     ///
     /// [`MultiGate`]: crate::modules::MultiGate
     /// [`Layer`]: crate::modules::Layer
@@ -490,7 +495,7 @@ where
     /// The step returns the (fully propagated) output of the **last** token of
     /// that stream. This is the user token, unless an `End` latent follows it
     /// (the one kind that closes the sequence, not precedes a token). The
-    /// latents emitted *before* the user token are stepped only for their
+    /// stack steps the latents emitted *before* the user token only for their
     /// effect on the state.
     ///
     /// `None` injects nothing. `Middle`/`End` latents then panic, as they do
@@ -617,7 +622,7 @@ where
     /// generation: `prime` → sample → `step` → sample → … `batch` sizes the
     /// latent rows, which are the only inputs.
     ///
-    /// When nothing ran, the caches come back as they went in (`None`
+    /// When nothing ran, the call returns the caches unchanged (`None`
     /// included). When a latent runs from `None`, the cascade starts from
     /// [`Self::zero_caches`]. `None` cursors inject nothing (`Middle`/`End`
     /// latents then panic, as in `step`).
@@ -642,8 +647,8 @@ where
         let plan = class_prime_plan(&self.class_latents, &mut cursor, "Layers");
         class.stack = cursor.offset;
         if plan.is_empty() {
-            // Not a single latent was due: no state moved, so the caches go
-            // back exactly as they came (`None` included).
+            // Not a single latent was due: no state moved. So the call returns
+            // the caches unchanged (`None` included).
             return (None, caches);
         }
         let emb = self.class_latents_emb.as_ref();
@@ -682,10 +687,12 @@ where
 /// run on the residual scheme of the tracked stack, not on the view.
 ///
 /// An untracked layer must build no graph. In Burn, that means it runs **off
-/// the autodiff backend**. A detach is not sufficient. It cuts the gradient
-/// flow, but Burn still registers the untracked op in the graph. Burn keeps an
-/// `UntrackedOpsStep` per op, so that a memory-bound op can still retrieve an
-/// untracked parent. So the output of the op stays retained (ADR-0003).
+/// the autodiff backend**.
+///
+/// A detach is not sufficient. It cuts the gradient flow, but Burn still
+/// registers the untracked op in the graph. Burn keeps an `UntrackedOpsStep`
+/// per op, so that a memory-bound op can still read an untracked parent. So
+/// the output of the op stays retained (ADR-0003).
 /// `grad_horizon_memory_probe` in `src/reference/tests/grad_horizon.rs`
 /// measures the peak memory of a detach and of the inner backend.
 ///
@@ -695,13 +702,12 @@ where
 /// [`lift`](crate::modules::lift) onto the device of the stack, never through
 /// a bare `Tensor::from_inner`. `from_inner` would enable autodiff also on a
 /// plain tensor, and would reset the checkpointing strategy. `Module::valid`
-/// also turns off the training flags (dropout, …) of a block that has them. So
+/// also disables the training flags (dropout, …) of a block that has them. So
 /// an untracked span runs such a block in eval mode.
 ///
-/// The mask can turn off and on again any number of times: once per real
-/// layer under `Schedule::Stretched`, and as often as a `GradHorizon::Mask`
-/// states. Each end of an untracked span is a full hop of everything that
-/// crosses it.
+/// The mask can have any number of untracked spans: one per real layer under
+/// `Schedule::Stretched`, and as many as a `GradHorizon::Mask` states. Each
+/// end of an untracked span is a full hop of everything that crosses it.
 struct BackendHop<'a, M: Block, const R: usize, const S: usize> {
     /// The stack. Its residual scheme takes and adds back the
     /// straight-through carry.
@@ -735,12 +741,14 @@ where
     /// `run` gets the view of the stack for this layer, the values and the
     /// cache of the layer, all on the backend of the layer. It returns the
     /// values for the next layer and the advanced cache. This call returns
-    /// them too, with the cache back on the device of the stack. A tracked
-    /// layer runs on the stack, and an untracked one on its `Module::valid`
-    /// copy. This holds for the weights of the layer and for the MGR gates.
-    /// The cache makes the same hop as its layer. A tracked cache goes down
-    /// with an untracked layer, because Burn cannot mix backends within an
-    /// op. It goes back up after the layer.
+    /// them too, with the cache back on the device of the stack.
+    ///
+    /// A tracked layer runs on the stack, and an untracked one on its
+    /// `Module::valid` copy. This holds for the weights of the layer and for
+    /// the MGR gates. The cache makes the same hop as its layer. A tracked
+    /// cache moves to the inner backend with an untracked layer, because Burn
+    /// cannot mix backends within an op. It returns to the device of the stack
+    /// after the layer.
     fn layer(
         &mut self,
         i: usize,
@@ -891,7 +899,7 @@ pub struct LayersBuilder<C> {
     /// The gradient horizon: back-propagate only some of the virtual layers
     /// (see [`Layers::grad_horizon`]). `None` ⇒ track the whole stack.
     pub grad_horizon: Option<GradHorizon>,
-    /// The parameters of the layer itself that are held once per application,
+    /// The parameters of the layer itself that it holds once per application,
     /// not tied (see [`Layer::application`]). The block config names those of
     /// the block.
     pub untied: Vec<LayerUntied>,

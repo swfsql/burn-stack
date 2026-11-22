@@ -27,13 +27,99 @@ that does not change, its kept findings and its rules for messages and copies.
   ADR-0009 permits a quoted source word.
 - Prior art: `.scratch/glossary-followups/issues/02-prose-sweep.md`.
 
-- [ ] `## Comments` gives the count of hard findings before and after.
-- [ ] The linter finds zero hard findings in the scope, except the kept
+- [x] `## Comments` gives the count of hard findings before and after.
+- [x] The linter finds zero hard findings in the scope, except the kept
       findings that `## Comments` lists.
-- [ ] Each substring of a changed message that a test of either repo matches
+- [x] Each substring of a changed message that a test of either repo matches
       stays.
 - [ ] `## Comments` lists each doc that disagrees with the code, with its
       evidence. The user decides each one.
-- [ ] `./scripts/check.sh` passes. Run it in the background.
+- [x] `./scripts/check.sh` passes. Run it in the background.
 
 ## Comments
+
+### The counts
+
+The linter runs with `--enable history --parts docs,comments,messages` on the
+48 tracked `.rs` files of `src/modules/`. The scope has no `.md` file.
+
+| Findings | Before | After |
+|---|---|---|
+| Hard | 46 | 0 |
+| Advisory | 79 | 31 |
+
+The scope has no kept finding.
+
+### The messages
+
+Three message strings change. Each one had an advisory finding (a passive or
+a technical phrasal verb). A search of the tests of both repos finds no match
+for a part of these strings.
+
+| Location | Old string | New string |
+|---|---|---|
+| `src/modules/bidi.rs:306` | `Bidi virtual layers are used in pairs` | `Bidi uses its virtual layers in pairs` |
+| `src/modules/bidi.rs:312` | `Bidi layers are used in pairs` | `Bidi uses its layers in pairs` |
+| `src/modules/residuals/tests.rs:93`, `:246` | `the join gives back the extra value of the layer` | `the join returns the extra value of the layer` |
+
+### The copies
+
+These paragraphs have near-copies in the scope. Each set changes together:
+
+- The docs of the untied parameters: `layer.rs`, `layers.rs`, `bidi.rs` and
+  two in `shape.rs`. All five use the active voice.
+- The note on the dtype of the loss in `bce.rs`, `cross_entropy.rs` and
+  `mse.rs`.
+- The comment on `eps` inside the log in `bce.rs` and `cross_entropy.rs`.
+- The docs of `a_small_probability_keeps_its_loss` in `bce/tests.rs` and
+  `cross_entropy/tests.rs`.
+- The sentence on the output of each row of a right-padded batch, in the
+  `forward` docs of `Layers` and `BidiLayers`.
+- The two paragraphs on the untracked spans of the mask in `layers.rs`.
+
+The rest of burn-stack and all of burn-mamba have no copy of a changed
+paragraph.
+
+### Docs that disagree with the code
+
+The sweep changes neither side. The user decides each one.
+
+1. `src/modules/norm/rms_norm/tests.rs:106`: the doc of
+   `rms_norm_gradient_finite_on_collapsed_slice` says "The forward guards the
+   *division* (`rms + div_eps`)". The forward computes `x / rms(x)`
+   (`src/modules/norm/rms_norm.rs:59`). `rms` puts `ε` inside the root:
+   `((x.clone() * x).mean_dim(D - 1) + eps).sqrt()`
+   (`src/modules/norm/mod.rs:30`). So the code has no `rms + div_eps` term.
+   The header of `src/modules/norm/rms_norm.rs:3` also gives
+   `rms(x) = √(mean(x²))`, with no `ε`.
+
+   The first sentence of the test doc had a hard finding (26 words). The sweep splits that sentence and rewraps the
+   paragraph, but the words of the disputed sentence stay.
+2. `src/modules/mod.rs:8` says "Everything here is parameterised by the block
+   `M: `[`Block`]". The shared pieces of the module have no block parameter.
+   Examples are `Silu`, `RmsNorm`, `GatedMlp` and `MseLoss`. Only the
+   composition types are generic over `M`.
+
+### A term
+
+`src/modules/norm/mod.rs` and `src/modules/norm/rms_norm/tests.rs` use "row"
+for one slice along the last axis, for example "a zero row". The glossary
+gives **Row** as one sequence of a batch. The term map of
+`.scratch/glossary-followups/issues/02-prose-sweep.md` keeps "row" for a row
+of a matrix, and these slices are the rows of the matrix view. So the sweep
+keeps the word.
+
+### For ticket 04
+
+`src/reference/tests/grad_horizon.rs:1031` uses the same phrasal verb as the
+old text of `src/modules/layers.rs:229`. In `layers.rs`, the sweep writes "a
+cut lifts the values that its untracked span took to the inner backend". The
+two sentences are not copies, so this ticket does not change the test doc.
+
+### For the linter
+
+- The linter does not flag "blow up" in `src/modules/loss/bce.rs`. The sweep
+  changes it to "grow without bound".
+- In `src/modules/loss/bce.rs`, the linter reads a formula comment and the
+  next sentence as one sentence. The split of that sentence is enough, so the
+  formula line stays as it is.

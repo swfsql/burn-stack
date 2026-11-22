@@ -9,9 +9,9 @@
 //!   ½ · c · mean over positions of (max over the vocabulary of z)²
 //! ```
 //!
-//! Nothing else in the distribution is touched. So the model can keep the
-//! *margins* that it has learned, while its absolute scale stays bounded. This
-//! keeps the softmax accurate when logits are stored in bf16, which is the
+//! The penalty touches nothing else in the distribution. So the model can keep
+//! the *margins* that it has learned, while its absolute scale stays bounded.
+//! This keeps the softmax accurate when the logits are in bf16, which is the
 //! reason for the trick.
 //!
 //! The returned value is the **unmodified** loss. The penalty enters through
@@ -23,12 +23,14 @@
 //! same gradient.
 //!
 //! For f16 or bf16 logits, the penalty computes in f32, as the norms do. f32
-//! and f64 compute in their own dtype. In f16, `z_max²` overflows above 256,
-//! and the backward chain (`c/2`, then `/(B·T)`) underflows to 0 for any real
-//! batch. The gradient that reaches f16 logits, `c/(B·T) · z_max`, is still
-//! subnormal (about `10⁻⁷` at `B·T = 8192`). So it keeps only 1–2 bits, and it
-//! is 0 for a small `z_max`. In f16, the penalty needs loss scaling to have an
-//! effect. bf16 has the range of f32, so it has neither problem.
+//! and f64 compute in their own dtype.
+//!
+//! In f16, `z_max²` overflows above 256, and the backward chain (`c/2`, then
+//! `/(B·T)`) underflows to 0 for any real batch. The gradient that reaches f16
+//! logits, `c/(B·T) · z_max`, is still subnormal (about `10⁻⁷` at
+//! `B·T = 8192`). So it keeps only 1–2 bits, and it is 0 for a small `z_max`.
+//! In f16, the penalty needs loss scaling to have an effect. bf16 has the
+//! range of f32, so it has neither problem.
 
 use crate::utils::upcast;
 use burn::prelude::*;
@@ -42,7 +44,7 @@ pub const DEFAULT_L2_PENALTY: f64 = 1e-4;
 /// The result has the dtype of `loss`.
 ///
 /// # Shapes
-/// - `logits`: `[..., vocab]` — the last dimension is reduced over.
+/// - `logits`: `[..., vocab]`, reduced over the last dimension.
 /// - `loss`: `[1]`, the already-reduced loss to wrap.
 pub fn l2_warp<const D: usize>(loss: Tensor<1>, logits: Tensor<D>, factor: f64) -> Tensor<1> {
     let dtype = loss.dtype();

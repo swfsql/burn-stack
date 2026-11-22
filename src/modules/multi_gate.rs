@@ -24,9 +24,9 @@
 //!    layer: `αᵢ = softmax_i( (w⁽ᵅ⁾ · RMSNorm(sᵢ'))/√d )`, `h = Σᵢ αᵢ·sᵢ'`.
 //!
 //! Both `w` vectors are learnable in `ℝ^d` (init zero), the RMSNorm has no
-//! parameters, and `b⁽ᵝ⁾` is a per-stream learnable bias. Only the
-//! **independent** (sigmoid) gate is implemented. The competitive (softmax)
-//! gate of the paper is omitted.
+//! parameters, and `b⁽ᵝ⁾` is a per-stream learnable bias. This file
+//! implements only the **independent** (sigmoid) gate. It omits the
+//! competitive (softmax) gate of the paper.
 //!
 //! This file holds the math of MGR. The residual join of
 //! [`Residuals::MultiGate`] runs it at each layer of a stack (see
@@ -54,7 +54,7 @@
 //! `init_bias` biases the gates towards *carry* (small updates) at the start
 //! of training. The paper scales it with the number of *mixing* layers `L`
 //! (total layers minus the `n−1` accumulating ones), see
-//! [`MultiGateResidualConfig::depth_init_bias`]. `init_bias` is taken
+//! [`MultiGateResidualConfig::depth_init_bias`]. The config takes `init_bias`
 //! directly, so the caller applies that formula (or picks its own). Default
 //! `0` (gates open at `σ(0)=0.5`).
 //!
@@ -71,11 +71,12 @@
 //! `O(1)`, where a plain additive skip grows it with depth (`x + Σ F_l`),
 //! measured at ~15× larger for a 16-layer stack. Neither scale is wrong for
 //! what follows. But a head initialised for one scale sees the other far off
-//! its range, and to close that gap by training `out_proj` alone takes many
-//! training steps. A norm before the head removes the problem.
-//! [`VocabNetwork`] always has one. On a [`LatentNetwork`], it is the opt-in
-//! [`final_norm`]. Prefer to enable it when you pair MGR with a latent head,
-//! or expect a slow start.
+//! its range. Training `out_proj` alone takes many training steps to close
+//! that gap.
+//!
+//! A norm before the head removes the problem. [`VocabNetwork`] always has
+//! one. On a [`LatentNetwork`], it is the opt-in [`final_norm`]. Prefer to
+//! enable it when you pair MGR with a latent head, or expect a slow start.
 //!
 //! [`VocabNetwork`]: crate::modules::network::VocabNetwork
 //! [`LatentNetwork`]: crate::modules::network::LatentNetwork
@@ -305,7 +306,7 @@ impl MultiGateResidualConfig {
     /// It keeps the total per-layer increment `O(1)` (`σ(b) ∝ 1/√L`), so the
     /// gates start biased towards *carry*, as in Highway Networks. Panics when
     /// the stack is too shallow for the stream count (`√(L/21)·(e³+1) ≤ n`,
-    /// that is, no carry budget is left to distribute).
+    /// that is, no carry budget remains to distribute).
     pub fn depth_init_bias(n_mixing_layers: usize, n_stream: usize) -> f64 {
         const L_BASE: f64 = 21.0;
         const B_BASE: f64 = -3.0;

@@ -137,10 +137,10 @@ fn init_bias_offset_ramps_the_gates() {
     assert!((betas[n - 1] - 0.5).abs() < dtype_tol(1e-4), "last stream is σ(0) = 0.5");
 }
 
-/// A vector in each stream comes out of the pool unchanged. All streams then
-/// score alike, so `α` is uniform and the convex pool gives the vector. So a
-/// class latent in the streams gives the layer above the same embedding that
-/// a plain additive skip gives it.
+/// When each stream holds the same vector, the pool gives that vector
+/// unchanged. All streams then score alike, so `α` is uniform and the convex
+/// pool gives the vector. So a class latent in the streams gives the layer
+/// above the same embedding that a plain additive skip gives it.
 #[test]
 fn attn_pool_reproduces_a_vector_present_in_every_stream() {
     let device = test_device();

@@ -21,11 +21,11 @@ fn hidden_rounds_up_to_multiple_of() {
     }
 }
 
-/// The value half of `fc1` comes first and the gate half second: the order
-/// that `y.chunk(2, dim=-1)` produces in the reference `GatedMLP`, so also the
-/// storage layout of the fused `fc1` of the checkpoint. A swap of the two
-/// halves is silent (the shapes are identical), so compare against the split
-/// done by hand.
+/// The value half of `fc1` comes first and the gate half second. This is the
+/// order that `y.chunk(2, dim=-1)` produces in the reference `GatedMLP`, so
+/// also the storage layout of the fused `fc1` of the checkpoint. A swap of the
+/// two halves is silent (the shapes are identical), so compare against the
+/// split done by hand.
 #[test]
 fn value_half_precedes_gate_half() {
     let device = test_device();

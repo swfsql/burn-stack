@@ -123,12 +123,15 @@ where
     /// As in `forward`, the class tokens of the network are part of the
     /// sequence that enters the layers. So each one runs through a full network
     /// pass. The pass carries the inner cursor, so the stack places its latents
-    /// around it exactly as in `forward`. The call returns the output
-    /// of the **last** token that the step emitted. This is the user token,
-    /// unless an `End` marker (at either level) follows it. That marker is then
-    /// the true last token of the sequence. `None` injects nothing anywhere.
-    /// `Middle`/`End` markers then panic, as they do without a
-    /// [`ClassCursors::full_len`] hint.
+    /// around it exactly as in `forward`.
+    ///
+    /// The call returns the output of the **last** token that the step
+    /// emitted. This is the user token, unless an `End` marker (at either
+    /// level) follows it. That marker is then the true last token of the
+    /// sequence.
+    ///
+    /// `None` injects nothing anywhere. `Middle`/`End` markers then panic, as
+    /// they do without a [`ClassCursors::full_len`] hint.
     pub fn step(
         &self,
         x: Tensor<2>,
@@ -175,12 +178,14 @@ where
     /// `step`. After them, the call flushes what the stack still has waiting
     /// for its next token ([`Layers::prime`]). So a `prime` followed by a
     /// `step` runs the same sequence that the `step` alone would run. `prime`
-    /// → sample → `step` → sample → … is the seedless-generation loop. `End`
-    /// markers are never primed. They close the sequence, so they belong to
-    /// the step that carries its last user token.
+    /// → sample → `step` → sample → … is the seedless-generation loop.
+    ///
+    /// `End` markers are never primed. They close the sequence, so they belong
+    /// to the step that carries its last user token.
     ///
     /// Returns the output of the **last** marker emitted, or `None` when none
-    /// were waiting (the caches then come back untouched, `None` included).
+    /// were waiting (the call then returns the caches unchanged, `None`
+    /// included).
     /// `batch` sizes the marker rows, which are the only inputs.
     pub fn prime(
         &self,
@@ -297,17 +302,17 @@ impl<C: BlockConfig> LatentNetworkBuilder<C> {
 /// `Embedding (vocab → d_model) → Layers<M> → norm_f → LM head (d_model →
 /// vocab)`.
 ///
-/// This is the token-LM counterpart of [`LatentNetwork`]. Both are built on
-/// the shared layer stack ([`Layers`]). They differ in three things:
+/// This is the token-LM counterpart of [`LatentNetwork`]. Both use the shared
+/// layer stack ([`Layers`]). They differ in three things:
 ///
 /// - the input and output maps: a token `Embedding` and a vocab logit head,
 ///   not two latent `Linear`s,
 /// - the final pre-head [`RmsNorm`]: always present here, optional there,
 /// - the class tokens: only [`LatentNetwork`] has network-level ones.
 ///
-/// The LM head is **tied** (`lm_head = None`, the transposed embedding weight
-/// is reused) or **untied** (a dedicated `Linear`). The vocabulary is rounded
-/// up to a multiple for GPU alignment (see [`VocabNetworkBuilder`]).
+/// The LM head is **tied** (`lm_head = None`, the head reuses the transposed
+/// embedding weight) or **untied** (a dedicated `Linear`). The vocabulary is
+/// rounded up to a multiple for GPU alignment (see [`VocabNetworkBuilder`]).
 ///
 /// **The flag channel.** A token is a pair `(id, flag)`: a vocab id and a
 /// binary flag (the letter case, in the text examples). So the token inputs

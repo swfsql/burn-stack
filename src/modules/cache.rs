@@ -7,6 +7,7 @@
 //! another cache. This traversal is the one hand-written list of the tensors
 //! of a cache. The traversal of a `Vec` visits each cache of the list in
 //! order. So the caches of a layer stack need no traversal of their own.
+//!
 //! These operations follow from the traversal:
 //!
 //! - the backend hop of `grad_horizon`: [`cache_to_inner`] and
@@ -178,7 +179,7 @@ pub trait TensorZip {
 /// **Axis 0 of every tensor is the batch.** A container that runs a network on
 /// some rows only (the `step` of [`HNet`](crate::modules::HNet)) selects,
 /// gathers and merges the rows of a cache through this traversal. So a cache
-/// must hold no tensor that is shared by the rows of a batch. The two caches
+/// must hold no tensor that the rows of a batch share. The two caches
 /// that a traversal pairs can then also differ in batch size.
 pub trait CacheTensors: Clone {
     /// Pair every tensor of `self` with the matching one of `other` through

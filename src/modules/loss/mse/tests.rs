@@ -47,11 +47,11 @@ fn the_loss_and_its_gradient_are_exact() {
 }
 
 /// Each row (sample) keeps the precision of its gradient, relative to the
-/// residuals of that row, beside a row with a large residual: 900 beside rows
-/// of ≈ 1e-3, and 1000 beside rows of ≈ 1e-4. A scale that all rows share
-/// (the largest residual) would make `d/s` subnormal in f16 for the small
-/// rows: `≈ 10⁻⁷` in the second case, which puts about 10% of error into
-/// their gradient.
+/// residuals of that row, beside a row with a large residual. The cases are
+/// 900 beside rows of ≈ 1e-3, and 1000 beside rows of ≈ 1e-4. A scale that all
+/// rows share (the largest residual) would make `d/s` subnormal in f16 for the
+/// small rows. In the second case, `d/s` is `≈ 10⁻⁷`, which puts about 10% of
+/// error into the gradient of the small rows.
 #[test]
 fn each_row_keeps_its_own_precision() {
     for (big, small) in [(900.0f32, 1e-3f32), (1000.0, 1e-4)] {

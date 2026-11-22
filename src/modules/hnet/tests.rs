@@ -335,9 +335,9 @@ fn param_grads(module: &impl Module, grads: &Gradients) -> Vec<(String, Option<T
 }
 
 /// `cache_detach` on an `HNetCaches` keeps the values of each tensor of the
-/// cache and cuts its graph. Each tensor goes back onto the device of the cache. A plain
-/// tensor stays plain. An autodiff tensor gets the checkpointing strategy of
-/// the device.
+/// cache and cuts its graph. Each tensor returns to the device of the cache. A
+/// plain tensor stays plain. An autodiff tensor gets the checkpointing strategy
+/// of the device.
 #[test]
 fn detach_keeps_the_values_and_the_device_of_the_cache() {
     struct Check<'a> {

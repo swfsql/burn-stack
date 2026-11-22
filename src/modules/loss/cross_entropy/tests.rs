@@ -5,10 +5,10 @@ use crate::utils::test_helpers::test_device;
 use burn::tensor::{DType, FloatDType};
 
 /// On probabilities, the loss of a target class with `p = 10⁻⁴` is
-/// `−ln(p + ε)`, with the `ε` of the dtype that the loss computes in: f32 for
-/// an f16 or bf16 input, and f64 for an f64 input. The loss has the dtype of
-/// the input, and its relative error is at most two machine epsilons of that
-/// dtype. The `ε` of f16 (`7.1·10⁻⁴`) would give `7.1`, not `9.2`.
+/// `−ln(p + ε)`. Here `ε` is the `ε` of the dtype that the loss computes in:
+/// f32 for an f16 or bf16 input, and f64 for an f64 input. The loss has the
+/// dtype of the input, and its relative error is at most two machine epsilons
+/// of that dtype. The `ε` of f16 (`7.1·10⁻⁴`) would give `7.1`, not `9.2`.
 #[test]
 fn a_small_probability_keeps_its_loss() {
     let device = test_device();

@@ -31,8 +31,9 @@ use burn::prelude::*;
 ///   segsum(x)[i, j] = cumsum(x)[i] - cumsum(x)[j]
 /// ```
 ///
-/// The upper triangle is masked to -∞ so that `exp(segsum(...))` gives 0
-/// for non-causal positions (the strict upper triangle of L must be zero).
+/// The function masks the upper triangle to -∞, so that `exp(segsum(...))`
+/// gives 0 for non-causal positions (the strict upper triangle of L must be
+/// zero).
 pub fn segsum<const D: usize, const D2: usize>(x: Tensor<D>) -> Tensor<D2> {
     assert_eq!(D + 1, D2);
 

@@ -37,10 +37,11 @@
 //! memory.
 //!
 //! **Straight-through carry.** The backend hop of the gradient horizon (see
-//! [`Layers::grad_horizon`]) moves the token and the residual streams. They
-//! go down where an untracked span starts, and up at its cut. The scheme takes the
-//! straight-through carry before the move down, and adds it after the move up.
-//! The straight-through carry follows the carry path of the scheme across the
+//! [`Layers::grad_horizon`]) moves the token and the residual streams. They go
+//! to the inner backend where an untracked span starts, and back to the
+//! autodiff backend at its cut. The scheme takes the straight-through carry
+//! before the move to the inner backend, and adds it after the move back. The
+//! straight-through carry follows the carry path of the scheme across the
 //! span. The rule holds the transforms and the scores of the gates constant:
 //!
 //! - Standard: the carry path has gain 1. The token gets the straight-through
@@ -57,10 +58,14 @@
 //!   `Σᵢ αᵢ · gᵢ · carryᵢ`. `αᵢ` is the aggregator weight of stream `i` in
 //!   the last pool of the span. A stream that the span appended gets nothing.
 //!
-//! The same rule applies at each cut: a cut at the bottom, a cut inside the
-//! stack, and a cut of a span in which the accumulation phase ends. With one
-//! MGR module for each virtual layer, each join of the span reads the gate of
-//! its own virtual layer. `forward`, `step` and `prime` take the same
+//! The same rule applies at each cut:
+//!
+//! - a cut at the bottom,
+//! - a cut inside the stack,
+//! - a cut of a span in which the accumulation phase ends.
+//!
+//! With one MGR module for each virtual layer, each join of the span reads the
+//! gate of its own virtual layer. `forward`, `step` and `prime` take the same
 //! straight-through carry.
 //!
 //! The values do not change. The rule is exact when each transform of the

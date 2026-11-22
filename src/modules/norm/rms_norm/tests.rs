@@ -4,15 +4,15 @@ use burn::tensor::Distribution;
 use crate::utils::test_helpers::test_device;
 
 /// A half-precision input computes the formula `x / √(mean(x²) + ε)` with the
-/// `ε` of f32, the dtype that it computes in, at each scale of a row: zero,
-/// the subnormals of f16, and up to the top of its range. The forward and the
-/// gradient are finite. Each differs from the f64 formula by at most two
-/// machine epsilons of the dtype, relative to its size.
+/// `ε` of f32, the dtype that it computes in. This holds at each scale of a
+/// row: zero, the subnormals of f16, and up to the top of its range. The
+/// forward and the gradient are finite. Each differs from the f64 formula by at
+/// most two machine epsilons of the dtype, relative to its size.
 ///
 /// A row near zero is the limit case of the backward. Its gradient is about
-/// `|h|/√ε ≈ 3500·|h|`, and f16 holds that for the `|h| ≤ 5` here. The gradient
-/// is compared with the size of its two terms (`|h|/rms`), because at width 1
-/// the terms cancel.
+/// `|h|/√ε ≈ 3500·|h|`, and f16 holds that for the `|h| ≤ 5` here. The test
+/// compares the gradient with the size of its two terms (`|h|/rms`), because
+/// at width 1 the terms cancel.
 #[test]
 #[cfg_attr(
     not(feature = "dev-f16"),
@@ -102,12 +102,12 @@ fn an_f64_input_computes_in_f64() {
 }
 
 /// The backward of RMSNorm must stay finite when a normalised slice collapses
-/// to zero norm (`mean(x²) = 0`): a dead token/channel, or a subnormal flushed
-/// to zero on CUDA. The forward guards the *division* (`rms + div_eps`). But
-/// the backward of the `sqrt` node is `1/(2·√(mean x²))`, singular at zero
-/// unless the epsilon is *inside* the root. Regression guard for a
-/// training-run NaN, localised to this op (the incoming `d_y` of the backward
-/// of the block).
+/// to zero norm (`mean(x²) = 0`). Examples are a dead token/channel, or a
+/// subnormal flushed to zero on CUDA. The forward guards the *division*
+/// (`rms + div_eps`). But the backward of the `sqrt` node is
+/// `1/(2·√(mean x²))`, singular at zero unless the epsilon is *inside* the
+/// root. Regression guard for a training-run NaN, localised to this op (the
+/// incoming `d_y` of the backward of the block).
 #[test]
 fn rms_norm_gradient_finite_on_collapsed_slice() {
     let device = test_device();

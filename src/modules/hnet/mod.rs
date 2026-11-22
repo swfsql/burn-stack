@@ -106,7 +106,7 @@ use smooth::{smooth, smooth_step};
 pub enum StepMode {
     /// Step the inner H-Net on every row, then keep the old inner cache on
     /// the rows whose token starts no chunk. Every step runs the same
-    /// launches, so a captured step can replay it. No compute is saved.
+    /// launches, so a captured step can replay it. This mode saves no compute.
     #[default]
     Masked,
     /// Read the decisions to the host, and step the inner H-Net only on the

@@ -2,7 +2,7 @@
 //!
 //! The block-generic composition types ([`Layer`], [`Layers`],
 //! [`LatentNetwork`]/[`VocabNetwork`], [`BidiLayers`], [`Residuals`]) plus the
-//! shared neural pieces they are built from (activations, norms, losses, small
+//! shared neural pieces that they use (activations, norms, losses, small
 //! tensor helpers).
 //!
 //! Everything here is parameterised by the block `M: `[`Block`]. A family
@@ -119,9 +119,10 @@ pub trait Block: Module + burn::module::ModuleDisplay {
     /// **right** padding: in every row, it follows all of the real tokens. A
     /// padded position is absent. The outputs of the real tokens and the
     /// returned cache are exactly those of the real tokens of the row run
-    /// alone, which is `step` unrolled over them. The output of a padded
-    /// position is unspecified. The containers keep the mask right-padded,
-    /// whatever class markers they splice (see [`crate::utils::padding`]).
+    /// alone. That run equals `step` unrolled over them. The output of a
+    /// padded position is unspecified. The containers keep the mask
+    /// right-padded, whatever class markers they splice (see
+    /// [`crate::utils::padding`]).
     fn block_forward(
         &self,
         x: Tensor<3>,
