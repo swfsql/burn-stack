@@ -1,6 +1,6 @@
 # 02: Sweep: the modules
 
-Status: ready-for-agent
+Status: resolved
 
 Blocked by: 01
 
@@ -32,7 +32,7 @@ that does not change, its kept findings and its rules for messages and copies.
       findings that `## Comments` lists.
 - [x] Each substring of a changed message that a test of either repo matches
       stays.
-- [ ] `## Comments` lists each doc that disagrees with the code, with its
+- [x] `## Comments` lists each doc that disagrees with the code, with its
       evidence. The user decides each one.
 - [x] `./scripts/check.sh` passes. Run it in the background.
 
@@ -93,12 +93,25 @@ The sweep changes neither side. The user decides each one.
    The header of `src/modules/norm/rms_norm.rs:3` also gives
    `rms(x) = √(mean(x²))`, with no `ε`.
 
-   The first sentence of the test doc had a hard finding (26 words). The sweep splits that sentence and rewraps the
-   paragraph, but the words of the disputed sentence stay.
+   The first sentence of the test doc had a hard finding (26 words). The sweep
+   splits that sentence and rewraps the paragraph, but the words of the
+   disputed sentence stay.
 2. `src/modules/mod.rs:8` says "Everything here is parameterised by the block
    `M: `[`Block`]". The shared pieces of the module have no block parameter.
    Examples are `Silu`, `RmsNorm`, `GatedMlp` and `MseLoss`. Only the
    composition types are generic over `M`.
+
+### The decisions of the user
+
+1. The user asks for tests of the guard of `rms` at its breakage points. A
+   probe finds no NaN at zero, and the user then selects a clamp before the
+   root in place of the additive `ε`.
+   `.scratch/rms-guard/issues/01-clamp-before-the-root.md` makes that change.
+   It also makes the docs of item 1 describe the clamp.
+2. The sentence names only the types that take the block. This ticket
+   changes `src/modules/mod.rs:8` to "The layer, the layer stacks and the
+   networks take the block `M: `[`Block`] as a type parameter". `Residuals`
+   has no block parameter, so the sentence does not name it.
 
 ### A term
 

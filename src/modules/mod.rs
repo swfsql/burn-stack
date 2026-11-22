@@ -5,8 +5,8 @@
 //! shared neural pieces that they use (activations, norms, losses, small
 //! tensor helpers).
 //!
-//! Everything here is parameterised by the block `M: `[`Block`]. A family
-//! implements this trait to join the crate.
+//! The layer, the layer stacks and the networks take the block `M: `[`Block`]
+//! as a type parameter. A family implements this trait to join the crate.
 //!
 //! The [`shape`] types are their *serializable* counterparts
 //! ([`NetworkShape`]/[`LatentShape`]/[`VocabShape`]/[`BidiShape`]): the same
