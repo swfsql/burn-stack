@@ -51,3 +51,9 @@ follows the `asd-ste100` skill.
 - [ ] `./scripts/check.sh` passes. Run it in the background.
 
 ## Comments
+
+### The push
+
+At the end of this ticket, push `main` to `origin`. The push also takes the
+commits of tickets 01–04 and the two commits before them (`e3a6c7b` and
+`dcbaf82`). This is the answer of the maintainer on ticket 01.

@@ -72,13 +72,14 @@ more calls. In a probe `.rs` file, the string of each call has a semicolon:
 
 - The linter reads the strings of `panic!`, `expect`, `assert!`,
   `assert_eq!`, `debug_assert!`, `unreachable!`, `format!`, `println!`,
-  `eprintln!`, `write!`, `bail!` and `log::warn!`.
+  `eprintln!`, `write!`, `bail!`, `anyhow!` and `log::warn!`.
 - It does not read the strings of `vec!`, a custom macro, a function call,
-  `.context(…)` and `Err(…)`, or a plain string.
+  `.context(…)`, `Err(…)` and a `help = "…"` attribute, or a plain string.
 
-So the comment of `check_prose` gives these calls as examples. The section "Out
-of Scope" of the spec says that the linter does not read `format!` errors. The
-probe shows that it reads them, so the sweep batches get these findings too.
+So the comment of `check_prose` gives these calls as examples. The maintainer
+keeps the strings of all these calls in the sweep and in the step. The section
+"Scope" of the spec gives these calls. Its section "Out of Scope" gives the
+strings that the linter does not read.
 
 ### The docs that name the step
 
@@ -97,3 +98,5 @@ probe shows that it reads them, so the sweep batches get these findings too.
   stay equal.
 - `../burn-mamba/docs/agents/code-review.md:8` names the rules of `ste-lint.py`
   that `scripts/check.sh` covers.
+- `../burn-mamba/.scratch/check-script-followups/issues/01-prose-ratchet-reads-scratch.md`
+  asks for the same step in burn-mamba.

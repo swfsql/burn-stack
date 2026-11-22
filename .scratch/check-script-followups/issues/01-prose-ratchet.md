@@ -1,6 +1,6 @@
 # 01: The prose ratchet in `scripts/check.sh`
 
-Status: needs-triage
+Status: resolved
 
 Blocked by: None (can start immediately)
 
@@ -17,12 +17,12 @@ session. The burn-mamba tracker has a ticket for its own copy:
 
 ## Acceptance criteria
 
-- [ ] `scripts/check.sh` has the prose step, and the step reads `.scratch/`.
-- [ ] The step skips when `CI` is set. On a box without `ste-lint.py`, the step
+- [x] `scripts/check.sh` has the prose step, and the step reads `.scratch/`.
+- [x] The step skips when `CI` is set. On a box without `ste-lint.py`, the step
       gives a note and stops.
-- [ ] `scripts/check.sh` passes. A file that fails gets a fix of its prose, or
+- [x] `scripts/check.sh` passes. A file that fails gets a fix of its prose, or
       a comment in its ticket.
-- [ ] The `CLAUDE.md` line of `./scripts/check.sh` names the prose step.
+- [x] The `CLAUDE.md` line of `./scripts/check.sh` names the prose step.
 
 ## Notes
 
@@ -34,3 +34,8 @@ session. The burn-mamba tracker has a ticket for its own copy:
   span around the name stops the violation.
 
 ## Comments
+
+`scripts/check.sh` has this step as `check_prose` (`e3a6c7b`). The ticket
+`.scratch/ste-sweep/issues/01-prose-step-scratch-messages.md` makes the step
+read `.scratch/` and the message strings, and it gives the counts. No file
+fails the step. `CLAUDE.md:44` names the step ("+ prose").
