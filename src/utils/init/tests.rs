@@ -42,10 +42,10 @@ fn std_of(values: &[f32]) -> f32 {
     (values.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / values.len() as f32).sqrt()
 }
 
-/// Every 2-D `weight` is redrawn at the `std` of the policy, and every `bias`
-/// is zeroed. The default of Burn is Kaiming-uniform from `fan_in`. So a
-/// change of width would otherwise change the initial scale, which is what a
-/// global rule fixes.
+/// The policy redraws every 2-D `weight` at the `std` of the policy, and it
+/// zeroes every `bias`. The default of Burn is Kaiming-uniform from `fan_in`.
+/// So a change of width would otherwise change the initial scale, which is
+/// what a global rule fixes.
 #[test]
 fn weights_are_redrawn_and_biases_zeroed() {
     let device = test_device();
@@ -90,7 +90,7 @@ fn residual_weights_are_rescaled_by_depth() {
     // The *input* projection of the block is not on the residual path, so it
     // keeps `std`.
     let entry = std_of(&values(&layer.block.in_proj.weight));
-    assert!(entry > expected * 1.5, "in_proj was rescaled too: {entry}");
+    assert!(entry > expected * 1.5, "the policy rescaled in_proj too: {entry}");
 }
 
 /// The parameters of a block mean something (a decay, a spread of timescales,
@@ -113,7 +113,7 @@ fn bespoke_parameters_are_left_alone() {
 }
 
 /// The redraw replaces values, not parameters: the state of an optimizer and a
-/// saved record are keyed by ids.
+/// saved record use the ids as keys.
 #[test]
 fn parameter_ids_survive_the_redraw() {
     #[derive(Default)]

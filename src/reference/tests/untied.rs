@@ -4,8 +4,8 @@
 use super::*;
 
 /// Two real layers over five virtual ones (`Cyclic`: three applications and
-/// two). Everything untiable is untied: both pre-norms and both untiable
-/// tensors of `RefBlock`.
+/// two). The builder unties everything untiable: both pre-norms and both
+/// untiable tensors of `RefBlock`.
 fn untied_builder() -> LayersBuilder<RefBlockConfig> {
     LayersBuilder {
         n_virtual_layers: Some((5, Schedule::Cyclic)),
@@ -193,8 +193,8 @@ fn untied_copies_stay_plain_on_a_plain_device() {
 }
 
 /// Both directions of a bidirectional pair are applications of the real layer
-/// that they index. Every copy that an untied bidi stack holds is read, and
-/// trains.
+/// that they index. An untied bidi stack reads every copy that it holds, and
+/// each copy trains.
 #[test]
 fn bidi_untied_copies_each_train() {
     let device = test_device().autodiff();

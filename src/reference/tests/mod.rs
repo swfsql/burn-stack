@@ -12,8 +12,8 @@
 //!   threading, virtual-layer weight sharing, the ignored residuals and the
 //!   record of a network,
 //! - `grad_horizon.rs`: gradient reachability across a `grad_horizon` cut,
-//!   the gradients of a cut stack against one window and against the step,
-//!   and a probe of the memory that a cut saves,
+//!   and the gradients of a cut stack against one window and against the
+//!   step. It also holds a probe of the memory that a cut saves,
 //! - `cache.rs`: the detach and the cache traversal of the caches of a layer
 //!   stack,
 //! - `multi_gate.rs`: Multi-Gate Residuals in `Layers` and in a bidirectional

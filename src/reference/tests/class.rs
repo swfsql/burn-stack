@@ -59,7 +59,7 @@ fn class_token_placement_is_the_same_for_forward_and_step() {
     assert_eq!(
         y_fwd.dims(),
         [1, sequence + 1, 2],
-        "the Start token is emitted before the first user token",
+        "the network emits the Start token before the first user token",
     );
 
     let mut cursors = ClassCursors::new(sequence);
@@ -70,8 +70,8 @@ fn class_token_placement_is_the_same_for_forward_and_step() {
         caches = Some(c);
         ys.push(y_t.unsqueeze_dim::<3>(1));
     }
-    // `step` returns the last token that it emitted. So the marker is folded
-    // into the state of the first step, and does not come out as an extra
+    // `step` returns the last token that it emitted. So the first step folds
+    // the marker into its state. The marker does not appear as an extra
     // output position.
     assert_eq!(Tensor::cat(ys, 1).dims(), [1, sequence, 2]);
 }

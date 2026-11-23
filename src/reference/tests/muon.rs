@@ -246,8 +246,8 @@ fn build_assembles_groups_without_panicking() {
 }
 
 /// The module optimizer makes a round trip through its bytes. On the reload,
-/// each parameter goes back to its group, and each sub-projection gets the
-/// state of its own optimizer back. So the training continues as it does
+/// each parameter returns to its group, and each sub-projection receives the
+/// state of its own optimizer again. So the training continues as it does
 /// without the round trip.
 #[test]
 fn module_optimizer_state_round_trips_through_a_record() {

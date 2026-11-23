@@ -10,8 +10,8 @@
 /// this crate supports, with the default body of the trait.
 ///
 /// The matching `backend-*` / `cubecl` / `fusion` feature gates each impl.
-/// The `cfg`s are evaluated in the crate that expands the macro, so that crate
-/// must declare the same features.
+/// The `cfg`s apply in the crate that expands the macro, so that crate must
+/// declare the same features.
 #[macro_export]
 macro_rules! impl_backend_ext_for_burn_backends {
     ($trait_name:path) => {

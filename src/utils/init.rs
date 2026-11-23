@@ -18,13 +18,19 @@
 //!
 //! **What it leaves alone, on purpose.** It touches only a parameter whose own
 //! field is `weight` (and is a matrix) or `bias`. Consider the bespoke
-//! parameters: a log-decay, the bias of a discretisation step size, the `γ`
-//! of a norm, the 3-D kernel of a depthwise convolution, a class marker table.
+//! parameters:
+//!
+//! - a log-decay,
+//! - the bias of a discretisation step size,
+//! - the `γ` of a norm,
+//! - the 3-D kernel of a depthwise convolution,
+//! - a class marker table.
+//!
 //! Their initialisations *mean* something (a spread of timescales, a decay
 //! that cannot amplify). A global rule would silently erase them.
 //!
 //! **The residual rescale** ([`InitPolicy::residual_paths`]) is the GPT-2
-//! scheme: a weight that writes into the residual stream is divided by
+//! scheme. It divides each weight that writes into the residual stream by
 //! `√(residual branches in the stack)`, so the variance of the stream does
 //! not grow with depth. The reference exposes it as
 //! `prenorm_residual_strategy='rescale'` and ships it **off**. It is also off
@@ -64,8 +70,9 @@ pub struct InitPolicy {
 
 impl InitPolicy {
     /// The weights that write into the residual stream in the containers of
-    /// this crate: the output projection of a block, and the down-projection
-    /// of the feed-forward (the `o_proj` and `down_proj` of the reference).
+    /// this crate. These are the output projection of a block and the
+    /// down-projection of the feed-forward (the `o_proj` and `down_proj` of
+    /// the reference).
     pub fn default_residual_paths() -> Vec<String> {
         vec!["out_proj.weight".to_string(), "mlp.fc2.weight".to_string()]
     }
@@ -84,7 +91,7 @@ impl InitPolicy {
         }
         let depth = self
             .residual_depth
-            .expect("InitPolicy::residual_paths is set but residual_depth is not");
+            .expect("InitPolicy has residual_paths but no residual_depth");
         self.std / (depth as f64).sqrt()
     }
 

@@ -162,7 +162,7 @@ fn captured_forward_is_the_eager_forward() {
         .map(|_| Tensor::random([BATCH, LEN, D_MODEL], Distribution::Normal(0.0, 1.0), &device))
         .collect();
 
-    // Captured cold, before any eager call has compiled the forward's kernels.
+    // Captured cold, before any eager call compiles the kernels of the forward.
     // Safety: the forward reads nothing but its argument and `layers`, borrowed.
     let mut captured =
         unsafe { CapturedStep::capture(&device, xs[0].clone(), (), |x, ()| (forward(x), ())) };

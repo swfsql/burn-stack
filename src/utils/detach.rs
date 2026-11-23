@@ -25,7 +25,7 @@
 //!
 //! An untracked op is still **registered in the graph**. Burn keeps an
 //! `UntrackedOpsStep` per op, so that a memory-bound op with an untracked
-//! parent can still retrieve it. So its output stays retained.
+//! parent can still read it. So its output stays retained.
 //! `grad_horizon_memory_probe` (`src/reference/tests/grad_horizon.rs`)
 //! measures it on 64 virtual layers with a 2-layer gradient horizon. The peak
 //! RSS is 545 MB with a detached prefix, 42 MB with an inner-backend prefix
@@ -37,8 +37,8 @@
 //! [`Module::map`](burn::module::Module::map) is a **no-op on plain `Tensor`
 //! fields**: Burn implements `Module for Tensor` as a constant (`map` returns
 //! `self`). So only [`Param`](burn::module::Param)-wrapped tensors go through
-//! the mapper. Weights are `Param`s and are covered. Bare tensors (notably the
-//! caches) are not.
+//! the mapper. The mapper covers the weights, which are `Param`s. It does not
+//! cover the bare tensors (notably the caches).
 
 use burn::module::{Module, ModuleMapper, Param};
 use burn::prelude::*;
@@ -49,11 +49,12 @@ struct DetachParams;
 impl ModuleMapper for DetachParams {
     fn map_float<const D: usize>(&mut self, param: Param<Tensor<D>>) -> Param<Tensor<D>> {
         let (id, tensor, mapper) = param.consume();
-        // `set_require_grad` fixes the *leaf* requirement (and, through
-        // `Param::from_mapped_value`, the `require_grad` flag of the param,
-        // which is read again from the tensor). `detach` also re-roots the
-        // tensor, so nothing upstream of it is reachable. Both are documented
-        // no-ops off the autodiff backend, so this is safe on every backend.
+        // `set_require_grad` fixes the *leaf* requirement. Through
+        // `Param::from_mapped_value`, it also fixes the `require_grad` flag of
+        // the param, because that call reads the flag again from the tensor.
+        // `detach` also re-roots the tensor, so nothing upstream of it is
+        // reachable. Burn documents both as no-ops off the autodiff backend,
+        // so this is safe on every backend.
         Param::from_mapped_value(id, tensor.set_require_grad(false).detach(), mapper)
     }
 }

@@ -71,8 +71,8 @@ impl Schedule {
     }
 }
 
-/// Which **application** of its real layer each virtual layer is: the
-/// virtual→real map read the other way, which counts how often the virtual
+/// Which **application** of its real layer each virtual layer is. This is the
+/// virtual→real map read the other way: it counts how often the virtual
 /// layers below already ran the same real layer. It indexes an untied
 /// parameter (see [`crate::utils::untied`]). [`GradHorizon::Depth`] counts
 /// the same thing from the top.

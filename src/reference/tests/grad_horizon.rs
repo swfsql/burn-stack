@@ -941,7 +941,7 @@ fn grad_horizon_stretched_trains_every_real_layer() {
     for (a, b) in caches_uncut.into_iter().zip(caches_cut) {
         assert!(
             max_abs_diff(a.state_bd, b.state_bd) < dtype_tol(TOL),
-            "nor the caches it hands back",
+            "nor the caches that it returns",
         );
     }
 
@@ -1028,12 +1028,12 @@ fn grad_horizon_mask_alternates_and_keeps_forward_step_parity() {
     }
 }
 
-/// On a device with gradient checkpointing, a cut lifts what it took down
-/// with the strategy of the device ([`lift`](crate::modules::lift)). A bare
-/// `Tensor::from_inner` sets the `Disabled` strategy, and the next op that
-/// mixes the lifted tensor with a tensor of the device panics. The mask ends
-/// untracked, so the in-loop lift and the lift at the top both run, in
-/// `forward` and in `step`.
+/// On a device with gradient checkpointing, a cut lifts the values that its
+/// untracked span took to the inner backend. The lift uses the strategy of
+/// the device ([`lift`](crate::modules::lift)). A bare `Tensor::from_inner`
+/// sets the `Disabled` strategy, and the next op that mixes the lifted tensor
+/// with a tensor of the device panics. The mask ends untracked, so the
+/// in-loop lift and the lift at the top both run, in `forward` and in `step`.
 #[test]
 fn grad_horizon_keeps_the_checkpointing_strategy() {
     let device = test_device().autodiff().gradient_checkpointing();
@@ -1085,8 +1085,8 @@ fn grad_horizon_keeps_a_class_latent_of_the_stack_training() {
 /// not the baseline of the process.
 ///
 /// ADR-0003 gives the mechanism. A layer with detached parameters still
-/// registers a step in the graph for each of its ops, and the graph keeps
-/// these steps until a backward reaches them. A layer on the inner backend
+/// registers a step in the graph for each of its ops. The graph keeps these
+/// steps until a backward reaches them. A layer on the inner backend
 /// registers nothing.
 ///
 /// The peak RSS is for the whole process. So each configuration runs in its

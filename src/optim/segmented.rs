@@ -6,8 +6,9 @@
 //! unrelated maps (a gate, the values, the keys and queries, the per-head
 //! scalars, …). [`Segmented`] slices the weight and its gradient along the
 //! fused axis, updates each sub-projection with its own optimizer, and
-//! concatenates the results. So each sub-projection is orthogonalised (and
-//! shape-LR-adjusted) on its own, exactly as if it were a separate `Linear`.
+//! concatenates the results. So Muon orthogonalises each sub-projection that
+//! it owns (and adjusts its LR to its shape) on its own, exactly as if it were
+//! a separate `Linear`.
 //!
 //! The *model* does not change: the forward pass keeps one fused GEMM.
 //!

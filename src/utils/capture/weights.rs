@@ -10,8 +10,8 @@ use std::collections::VecDeque;
 /// [`CapturedStep`](super::CapturedStep): what a captured *training* step
 /// advances. Int and bool parameters stay as they are.
 ///
-/// The closure receives the module, runs one training step on it, and gives
-/// back the updated module. `CapturedStep` then writes those values into the
+/// The closure receives the module, runs one training step on it, and returns
+/// the updated module. `CapturedStep` then writes those values into the
 /// parameters that it holds (in place, so a replay advances them), and undoes
 /// the training steps that `capture` ran. The optimizer inside must be one
 /// that a replay can advance: stateless, with its learning rate as an input
@@ -24,8 +24,8 @@ use std::collections::VecDeque;
 /// - The flattening lets one rank-1 zip serve every rank (the reshape of a
 ///   contiguous parameter is a view of the same buffer).
 ///
-/// After the zip, each parameter gets back its autodiff association, its
-/// checkpointing strategy and its `require_grad`.
+/// After the zip, each parameter has its autodiff association, its
+/// checkpointing strategy and its `require_grad` again.
 ///
 /// [`SgdConfig::update`]: crate::optim::SgdConfig::update
 #[derive(Clone, Debug)]

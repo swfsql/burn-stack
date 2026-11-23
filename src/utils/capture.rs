@@ -16,25 +16,26 @@
 //!   refreshes the caches itself. It ends with
 //!   [`CacheTensors::assign_in_place`](crate::modules::CacheTensors::assign_in_place),
 //!   so that every replay advances the state.
-//! - The closure *runs* before it is recorded: the warm-ups of
+//! - The closure *runs* before the backend records it: the warm-ups of
 //!   [`capture`](burn::tensor::capture) (and on a backend that cannot record,
-//!   also the recorded run). So the caches are saved first and restored
-//!   after. The first [`step`](CapturedStep::step) continues from the caches
-//!   that it was given.
+//!   also the recorded run). So [`CapturedStep::capture`] saves the caches
+//!   first and restores them after. The first [`step`](CapturedStep::step)
+//!   continues from the `caches` argument of the capture.
 //! - A replay is correct only if every write landed in place. The capture
 //!   checks this once, with a comparison of buffer ids across the capture.
-//!   Where the capture cannot confirm this, [`CapturedStep`] drops the
+//!   Where the capture cannot check this, [`CapturedStep`] drops the
 //!   recording and runs each step call eagerly: the same results, without
 //!   the speed-up.
 //!   This occurs on a backend with no hardware recording (flex, ndarray, …),
 //!   and with a primitive that the check cannot see into (fusion).
 //!   [`is_captured`](CapturedStep::is_captured) says which.
 //!
-//! Shapes and the launch sequence are frozen at capture: one batch size, and a
-//! step whose host-side control flow does not change between calls (e.g. no
-//! class marker left to land). Compile and autotune the kernels before the
-//! capture (see [`WARMUP_STEPS`](crate::utils::capture::WARMUP_STEPS)). A step
-//! also must not read back to the host. On CUDA, the read fails inside the
+//! The capture freezes the shapes and the launch sequence. So the step must
+//! keep one batch size, and its host-side control flow must not change
+//! between calls (e.g. no class marker left to land). Compile and autotune
+//! the kernels before the capture (see
+//! [`WARMUP_STEPS`](crate::utils::capture::WARMUP_STEPS)). A step also must
+//! not read back to the host. On CUDA, the read fails inside the
 //! recording and leaves the stream in capture mode, so every later read in
 //! the process fails too.
 //!
@@ -48,9 +49,10 @@
 //! - A stateless call (a fixed-shape `forward`) takes the caches `()`:
 //!   `|x, ()| (f(x), ())`.
 //! - A training step takes the parameters of the model as its state,
-//!   [`Weights`]: forward, backward, and an optimizer whose update a replay
-//!   can advance ([`SgdConfig::update`](crate::optim::SgdConfig::update), with
-//!   the learning rate as an input).
+//!   [`Weights`]. It runs the forward, the backward and an optimizer whose
+//!   update a replay can advance
+//!   ([`SgdConfig::update`](crate::optim::SgdConfig::update), with the
+//!   learning rate as an input).
 
 #[cfg(test)]
 mod tests;
@@ -69,7 +71,7 @@ use std::rc::Rc;
 /// Eager steps to run before [`CapturedStep::capture`], in addition to the
 /// runs that it makes itself (the 3 warm-ups of
 /// [`capture`](burn::tensor::capture), all rolled back). These are real steps,
-/// and their outputs are used like any other.
+/// and the caller uses their outputs like any other.
 ///
 /// By default, none are necessary. Fusion and autotune get one more warm-up.
 /// Their first runs build the fused kernels and tune the kernels, which is a
@@ -124,8 +126,9 @@ fn buffer_id<const D: usize, K: InputKind>(t: &Tensor<D, K>) -> Option<usize> {
 }
 
 /// What a [`CapturedStep`] takes as its input: one tensor, or a tuple of them
-/// (for example a batch, its targets and a learning rate). Each tensor is held
-/// in a stable buffer and refreshed in place before every call.
+/// (for example a batch, its targets and a learning rate). The captured step
+/// holds each tensor in a stable buffer and refreshes it in place before
+/// every call.
 pub trait StepInput: Clone {
     /// The same values, each tensor in a new buffer of its own.
     fn into_owned(self) -> Self;
@@ -269,13 +272,13 @@ impl<'a, I: StepInput + 'a, Y: 'a, C: CacheTensors + 'a> CapturedStep<'a, I, Y, 
     ///
     /// # Safety
     ///
-    /// Every tensor that `step` reads other than through its two arguments
-    /// (typically the weights of the model) must stay the same device buffer
-    /// while the returned value lives. A replay reads the buffers that the
-    /// capture saw, and nothing tracks them. A model that `step` borrows for
-    /// `'a` satisfies this, because it can be neither dropped nor mutated in
-    /// that time. State behind interior mutability that `step` replaces does
-    /// not satisfy it.
+    /// Consider every tensor that `step` reads other than through its two
+    /// arguments (typically the weights of the model). Each such tensor must
+    /// stay the same device buffer while the returned value lives. A replay
+    /// reads the buffers that the capture saw, and nothing tracks them. A
+    /// model that `step` borrows for `'a` satisfies this, because it can be
+    /// neither dropped nor mutated in that time. State behind interior
+    /// mutability that `step` replaces does not satisfy it.
     pub unsafe fn capture(
         device: &Device,
         input: I,
@@ -293,7 +296,7 @@ impl<'a, I: StepInput + 'a, Y: 'a, C: CacheTensors + 'a> CapturedStep<'a, I, Y, 
         let run: Box<dyn FnMut() -> Y + 'a> = {
             let (step, input, caches) = (step.clone(), input.clone(), caches.clone());
             Box::new(move || {
-                let stable = caches.borrow_mut().take().expect("caches are always put back");
+                let stable = caches.borrow_mut().take().expect("the caches are always present");
                 let x = input.borrow().as_ref().expect("the input is always present").clone();
                 let (y, new) = (&mut *step.borrow_mut())(x, stable.clone());
                 *caches.borrow_mut() = Some(stable.assign_in_place(new));
@@ -302,17 +305,17 @@ impl<'a, I: StepInput + 'a, Y: 'a, C: CacheTensors + 'a> CapturedStep<'a, I, Y, 
         };
         let recording = burn::tensor::capture(device, run);
 
-        // The closure ran: put back the caches that it was given.
+        // The closure ran: restore the caches from before the capture.
         {
             let mut slot = caches.borrow_mut();
-            let stable = slot.take().expect("caches are always put back");
+            let stable = slot.take().expect("the caches are always present");
             *slot = Some(stable.assign_in_place(snapshot));
         }
         let kept = ids.is_some()
             && ids
                 == stable_ids(
                     input.borrow().as_ref().expect("the input is always present"),
-                    caches.borrow().as_ref().expect("caches are always put back"),
+                    caches.borrow().as_ref().expect("the caches are always present"),
                 );
         Self {
             recording: (recording.is_hardware() && kept).then_some(recording),
@@ -361,7 +364,7 @@ impl<'a, I: StepInput + 'a, Y: 'a, C: CacheTensors + 'a> CapturedStep<'a, I, Y, 
         self.caches
             .borrow()
             .as_ref()
-            .expect("caches are always put back")
+            .expect("the caches are always present")
             .clone()
             .into_owned_buffers()
     }
@@ -370,7 +373,7 @@ impl<'a, I: StepInput + 'a, Y: 'a, C: CacheTensors + 'a> CapturedStep<'a, I, Y, 
     /// place.
     pub fn set_caches(&mut self, caches: C) {
         let mut slot = self.caches.borrow_mut();
-        let stable = slot.take().expect("caches are always put back");
+        let stable = slot.take().expect("the caches are always present");
         let input = self.input.borrow();
         let input = input.as_ref().expect("the input is always present");
         let before = self.recording.as_ref().and(stable_ids(input, &stable));
@@ -381,14 +384,14 @@ impl<'a, I: StepInput + 'a, Y: 'a, C: CacheTensors + 'a> CapturedStep<'a, I, Y, 
         *slot = Some(stable);
     }
 
-    /// Drop the recording, and give back the current caches.
+    /// Drop the recording, and return the current caches.
     pub fn into_caches(mut self) -> C {
         self.recording = None;
-        self.caches.borrow_mut().take().expect("caches are always put back")
+        self.caches.borrow_mut().take().expect("the caches are always present")
     }
 
     fn eager(&mut self, x: I) -> &Y {
-        let caches = self.caches.borrow_mut().take().expect("caches are always put back");
+        let caches = self.caches.borrow_mut().take().expect("the caches are always present");
         let (y, caches) = (&mut *self.step.borrow_mut())(x, caches);
         *self.caches.borrow_mut() = Some(caches);
         self.output.insert(y)
@@ -398,10 +401,10 @@ impl<'a, I: StepInput + 'a, Y: 'a, C: CacheTensors + 'a> CapturedStep<'a, I, Y, 
         let recording = self.recording.as_mut().expect("replay needs a recording");
         // Safety: the recording touches three sets of buffers:
         // - the stable input and caches, held by `self` and by the closure
-        //   that the recording owns, and only written in place (checked at
-        //   capture and at every refresh),
+        //   that the recording owns. Each write to them lands in place
+        //   (checked at capture and at every refresh).
         // - the buffers that `step` borrows for `'a` (the contract of
-        //   `capture`),
+        //   `capture`).
         // - the buffers that the recording retains itself.
         // `self` is not `Send`, so every refresh, replay and read comes from
         // this thread, on the stream of the capture.

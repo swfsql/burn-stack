@@ -1,5 +1,5 @@
 //! The sub-projections of a fused projection: the data that the Muon
-//! parameter groups are built from.
+//! parameter groups come from.
 //!
 //! Every family fuses several independent linear maps (the sub-projections)
 //! into one `Linear`, a fused projection. So its weight is a *concatenation*
@@ -26,11 +26,11 @@ pub const BLOCK_CONTAINERS: [&str; 3] = ["block.", "straight_block.", "reverse_b
 /// Where in the module tree the path of a [`ProjSpec`] is anchored.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProjScope {
-    /// A weight of the block: the path is matched under each of
+    /// A weight of the block: the spec matches the path under each of
     /// [`BLOCK_CONTAINERS`].
     Block,
-    /// Any other weight: the path is matched as a plain substring of the
-    /// parameter path (the layer MLP, a bidirectional merge, …).
+    /// Any other weight: the spec matches the path as a plain substring of
+    /// the parameter path (the layer MLP, a bidirectional merge, …).
     Path,
 }
 

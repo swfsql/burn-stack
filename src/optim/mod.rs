@@ -4,7 +4,7 @@
 //!
 //! [Muon](burn::optim::Muon) replaces the momentum update of a 2-D weight with
 //! the nearest orthogonal matrix (Newton–Schulz). That makes sense only for a
-//! parameter that *is* one linear map. This rules out three things in this
+//! parameter that *is* one linear map. This excludes three things in this
 //! crate:
 //!
 //! 1. **Rank ≠ 2.** The `Muon::step` of Burn asserts `D == 2`. So biases, norm
@@ -34,19 +34,21 @@
 //!
 //! A `[heads, r, dim]` tensor looks like a stack of matrices that a
 //! stack-aware Muon could take one slice at a time. In practice, it almost
-//! never is one. The shapes at rank 3 in a block are per-head *diagonals* (a
-//! learnable gain vector broadcast over the output of a projection), a bias,
-//! an initial condition, or a depthwise filter. To orthogonalise any of them
-//! would constrain a set of gains, not a linear map. The part of a block that
-//! really is an R-fold matrix expansion lives in a fused 2-D projection. A
-//! sub-projection of a [`ProjSpec`] reaches it. So the rule stays simple:
-//! rank 2, named explicitly, or the fallback.
+//! never is one. The shapes at rank 3 in a block are per-head *diagonals*, a
+//! bias, an initial condition, or a depthwise filter. A per-head diagonal is
+//! a learnable gain vector, broadcast over the output of a projection. To
+//! orthogonalise any of these shapes would constrain a set of gains, not a
+//! linear map.
+//!
+//! The part of a block that really is an R-fold matrix expansion lives in a
+//! fused 2-D projection. A sub-projection of a [`ProjSpec`] reaches it. So the
+//! rule stays simple: rank 2, named explicitly, or the fallback.
 //!
 //! So the seams of a [`ProjSpec`] are **per named sub-projection**, not per
 //! head or group. These are the same seams as the `split_into` of the
-//! forward, and the usual Muon convention (the `W_q` of a transformer goes to
-//! Muon with all heads fused). A caller who wants to test a finer split can
-//! give [`ProjSpec::block`] more sub-projections.
+//! forward. They also follow the usual Muon convention: the `W_q` of a
+//! transformer goes to Muon with all heads fused. A caller who wants to test
+//! a finer split can give [`ProjSpec::block`] more sub-projections.
 //!
 //! ## Usage
 //!
@@ -160,12 +162,17 @@ impl From<Sgd> for Fallback {
 /// Which weights Muon owns in a model, and the sub-projections of each fused
 /// projection.
 ///
-/// It is built from a *block* config (through
-/// [`BlockConfig::muon_projections`]), so it is independent of the network
-/// topology. The specs match as path substrings, so they cover a plain stack,
-/// a virtual-layer stack, and a bidirectional stack alike.
+/// It holds the specs of a *block* config
+/// ([`BlockConfig::muon_projections`]). The `muon_plan` of a shape also adds
+/// the specs of the shape: the feed-forward ([`NetworkShape::muon_plan`],
+/// through [`Self::with_mlp`]) and a `CatLinear` output merge
+/// ([`BidiShape::muon_plan`]). The specs match as path substrings, so the plan
+/// is independent of the network topology. They cover a plain stack, a
+/// virtual-layer stack, and a bidirectional stack alike.
 ///
 /// [`BlockConfig::muon_projections`]: crate::modules::BlockConfig::muon_projections
+/// [`NetworkShape::muon_plan`]: crate::modules::NetworkShape::muon_plan
+/// [`BidiShape::muon_plan`]: crate::modules::BidiShape::muon_plan
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MuonPlan {
     /// The fused projections (and the plain weights) that Muon can update.
@@ -238,8 +245,8 @@ impl MuonPlan {
     /// planned weights.
     ///
     /// The group of the fallback must match everything. So any parameter that
-    /// the plan does not name (every 1-D and 3-D tensor included) keeps it,
-    /// and so does every sub-projection that Muon does not own. The gradient
+    /// the plan does not name keeps it, every 1-D and 3-D tensor included.
+    /// Every sub-projection that Muon does not own also keeps it. The gradient
     /// clipping of the fallback applies to every group.
     pub fn build(&self, fallback: &FallbackConfig, muon: &MuonConfig) -> ModuleOptimizer {
         let mut optim = fallback.init();

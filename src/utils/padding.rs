@@ -1,12 +1,12 @@
 //! Right-padded batches of sequences of different lengths.
 //!
 //! A caller that batches sequences of different lengths pads each one on the
-//! **right** to a common length, and says where the padding is: a
+//! **right** to a common length. It also says where the padding is: a
 //! `[batch, sequence]` mask, `true` at padding. A padded position is
 //! **absent**. Every container and [`Block`](crate::modules::Block) keeps this
-//! contract: to run a padded batch is to run the sequence of each row alone,
-//! on the outputs of its real tokens and on the final cache. The output at a
-//! padded position is unspecified.
+//! contract: to run a padded batch is to run the sequence of each row alone.
+//! The two runs agree on the outputs of the real tokens and on the final
+//! cache. The output at a padded position is unspecified.
 //!
 //! A block only ever sees a right-padded mask, and this module keeps it
 //! right-padded. This is necessary because one plan splices the class markers
@@ -16,23 +16,23 @@
 //!
 //! - `Start` and `Custom(k)` precede a user token, so they sit where every
 //!   row would put them. Each takes the padding of the token that it
-//!   precedes. So a `Custom(k)` past the end of a short row is spliced, and
-//!   absent there, exactly as the `step` of that row never emits it. The mask
-//!   stays right-padded.
-//! - `Middle` and `End` sit at `len / 2` and `len` of each row. They are
-//!   spliced at their batch-wide position like the rest, and [`Padding`]
+//!   precedes. So the plan splices a `Custom(k)` past the end of a short row.
+//!   The marker is absent there, exactly as the `step` of that row never
+//!   emits it. The mask stays right-padded.
+//! - `Middle` and `End` sit at `len / 2` and `len` of each row. The plan
+//!   splices them at their batch-wide position like the rest, and [`Padding`]
 //!   records where each position sits in the sequence of its own row. A block
 //!   then runs on the positions gathered into that order
-//!   ([`Padding::in_row_order`]), right-padded again, and its output is
-//!   scattered back.
+//!   ([`Padding::in_row_order`]), right-padded again. A second gather returns
+//!   its output to the batch-wide order.
 //! - `End` also works across windows. It lands in the closing window, after
 //!   the rows that ended earlier carried their state through padding
 //!   untouched. `Middle` needs the whole sequence in one call: its position is
 //!   half of the full length of each row, which no single window knows.
 //!
-//! Everything is computed on the device from the mask, at fixed shapes. So a
-//! padded forward stays capturable, and its launch shapes do not change with
-//! the lengths of the rows.
+//! [`Padding`] computes everything on the device from the mask, at fixed
+//! shapes. So a padded forward stays capturable, and its launch shapes do not
+//! change with the lengths of the rows.
 
 use crate::utils::class::ClassMarker;
 use burn::prelude::*;
@@ -43,9 +43,9 @@ use burn::tensor::IndexingUpdateOp;
 /// one of them, it also records where every position sits in the sequence of
 /// its own row.
 ///
-/// It is built from a right-padded mask ([`Self::new`]). The containers
-/// advance it through every class-marker splice ([`Self::splice`]), and run
-/// each block through [`Self::in_row_order`]. Its tensors live on the inner
+/// [`Self::new`] builds it from a right-padded mask. The containers advance
+/// it through every class-marker splice ([`Self::splice`]), and run each
+/// block through [`Self::in_row_order`]. Its tensors live on the inner
 /// backend: no gradient ever flows through them.
 #[derive(Clone, Debug)]
 pub struct Padding {
@@ -121,7 +121,7 @@ impl Padding {
         // lands there at all. `Start`/`Custom` precede the position that the
         // plan put them before. `Middle`/`End` follow the length of the row.
         // `End` always lands: it closes the sequence, however early the real
-        // tokens of a row ran out.
+        // tokens of a row ended.
         let (p_bk, real_bk): (Vec<Tensor<2, Int>>, Vec<Tensor<2, Bool>>) = plan
             .iter()
             .map(|&(at, i)| {
@@ -144,8 +144,8 @@ impl Padding {
         let moves = plan.iter().any(|&(_, i)| markers[i].needs_full_len());
         let Some(local_bs) = self.local_bs.clone().or_else(|| moves.then(|| self.arange_bs())) else {
             // Every position is already where its row puts it. A marker
-            // precedes the position that it is spliced before, and takes the
-            // padding of that position.
+            // precedes the position that the plan splices it before, and
+            // takes the padding of that position.
             return Self {
                 pad_bs: spliced_pad,
                 local_bs: None,
@@ -250,9 +250,9 @@ impl Padding {
         (y_bsd, c)
     }
 
-    /// The same positions, read right to left in each row (its real tokens
-    /// reversed, its padding still last), as the reversed pass of a
-    /// bidirectional pair reads them (see
+    /// The same positions, read right to left in each row: its real tokens
+    /// reversed, its padding still last. The reversed pass of a bidirectional
+    /// pair reads them in this order (see
     /// [`BidiLayers`](crate::modules::BidiLayers)).
     ///
     /// Its batch-wide order does not change. Only the place of each position

@@ -8,8 +8,9 @@
 use crate::{DENY_INF, DENY_NAN};
 use burn::prelude::*;
 
-/// Panics if `t` contains a `NaN` (when [`crate::DENY_NAN`] is set) or an `Inf`
-/// (when [`crate::DENY_INF`] is set).  A no-op when both flags are `false`.
+/// Panics if `t` contains a `NaN` (when [`crate::DENY_NAN`] is `true`) or an
+/// `Inf` (when [`crate::DENY_INF`] is `true`). A no-op when both flags are
+/// `false`.
 pub fn sanity<const D: usize>(t: &Tensor<D>) {
     if !crate::DENY_NAN && !crate::DENY_INF {
         return;

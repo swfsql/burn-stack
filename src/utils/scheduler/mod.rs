@@ -110,9 +110,9 @@ impl Lr {
 
     /// Multiply every count of training steps of the LR schedule by
     /// `num / den` (integer division). A cosine annealing outside a chain
-    /// keeps its warmup unless `warmup` is set. A chain scales as a whole: the
-    /// start of each of its schedules and every length in them, the warmups
-    /// too.
+    /// keeps its warmup unless `warmup` is `true`. A chain scales as a whole:
+    /// the start of each of its schedules and every length in them, the
+    /// warmups too.
     pub fn scale_training_steps(&mut self, num: usize, den: usize, warmup: bool) {
         let scale = |training_steps: &mut usize| *training_steps = *training_steps * num / den;
         match self {

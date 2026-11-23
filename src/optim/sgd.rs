@@ -78,8 +78,8 @@ impl ModuleMapper for OptimizerUpdate {
         let Some(grad) = self.grads.remove::<D>(id) else {
             return Param::from_mapped_value(id, tensor, mapper);
         };
-        // What `ModuleOptimizer` does around `Sgd::step`: the update runs on the
-        // inner backend, and the autodiff state is put back after it.
+        // What `ModuleOptimizer` does around `Sgd::step`: it runs the update on
+        // the inner backend, and then it restores the autodiff state.
         let autodiff = tensor.is_autodiff();
         let strategy = tensor.gradient_checkpointing_strategy();
         let require_grad = tensor.is_require_grad();

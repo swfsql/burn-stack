@@ -1,8 +1,8 @@
 //! A padded batch is each of its rows run alone. A row owns its user tokens
 //! and the class markers placed against its own length. Each of these
-//! positions comes out as the forward of that row alone gives it, with the
-//! same caches and gradients. The tests compose [`RefBlock`], so they pin the
-//! half of the contract that belongs to the containers.
+//! positions has the output that the forward of that row alone gives it, with
+//! the same caches and gradients. The tests compose [`RefBlock`], so they pin
+//! the half of the contract that belongs to the containers.
 
 use crate::modules::bidi::{BidiLayersBuilder, OutputMergeConfig};
 use crate::modules::{LatentNetworkBuilder, Layers, LayersBuilder, ResidualsConfig};
@@ -128,7 +128,7 @@ fn assert_grads_match(padded: Vec<Option<Tensor<1>>>, solo: Vec<Option<Tensor<1>
 /// Run `forward` on the padded batch and on each row alone. Compare every
 /// position that each row owns, every cache slot, and the gradient of every
 /// parameter for a loss over those positions. `positions(len)` names the
-/// positions that a `len`-token input comes out as.
+/// positions of the output of a `len`-token input.
 fn check_each_row_alone<M: Module>(
     module: &M,
     lens: &[usize],

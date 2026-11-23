@@ -12,8 +12,7 @@
 //! ([`Block::untied_params`](crate::modules::Block::untied_params)). Its
 //! config builds the block for one application
 //! ([`BlockConfig::init_block`](crate::modules::BlockConfig::init_block)).
-//! The layer tiles the untied parameters when it is built for several
-//! applications.
+//! A layer built for several applications tiles its untied parameters.
 //! [`Layer::application`](crate::modules::Layer::application) builds the view
 //! that the containers run.
 //!
@@ -49,7 +48,7 @@ use burn::prelude::*;
 pub struct UntiedParam {
     /// The parameter.
     pub id: ParamId,
-    /// The axis along which its per-application copies are concatenated.
+    /// The axis along which [`tile`] concatenates its per-application copies.
     pub axis: usize,
 }
 
@@ -69,7 +68,7 @@ impl UntiedParam {
 /// Each parameter keeps its [`ParamId`], its `require_grad` flag and its
 /// `is_active` flag.
 pub fn tile<M: Module>(module: M, params: &[UntiedParam], n_applications: usize) -> M {
-    assert!(n_applications >= 1, "a real layer is built for at least one application");
+    assert!(n_applications >= 1, "a real layer needs at least one application");
     if n_applications == 1 || params.is_empty() {
         return module;
     }
@@ -80,8 +79,8 @@ pub fn tile<M: Module>(module: M, params: &[UntiedParam], n_applications: usize)
     })
 }
 
-/// `module` as its `application`-th application sees it: a clone whose
-/// `params` are narrowed to the copy of that application, with everything else
+/// `module` as its `application`-th application sees it: a clone with
+/// `params` narrowed to the copy of that application, and everything else
 /// shared.
 ///
 /// A copy is *read*, not detached, so the gradient of each application lands
@@ -94,8 +93,8 @@ pub fn view<M: Module>(
 ) -> M {
     assert!(
         application < n_applications,
-        "application {application} of a real layer built for {n_applications}: an untied \
-         parameter has no copy for an application added after the stack was built",
+        "application {application} of a real layer built for {n_applications}. An untied \
+         parameter has no copy for an application added after the build of the stack.",
     );
     module.clone().map(&mut Narrow {
         params,

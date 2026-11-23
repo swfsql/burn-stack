@@ -10,10 +10,11 @@
 //!
 //! The class latents of a stack (all `Start`) open every segment, not only
 //! the row. A splice would move every later position of the row. So a packed
-//! row **reserves** the opening positions instead. The first `lead` positions
-//! of each segment are slots. The stack puts its latent `k` into slot `k`, in
-//! place of the input at that position. The reset is at the first slot. The
-//! shapes stay fixed.
+//! row **reserves** the opening positions instead.
+//!
+//! The first `lead` positions of each segment are slots. The stack puts its
+//! latent `k` into slot `k`, in place of the input at that position. The reset
+//! is at the first slot. The shapes stay fixed.
 //!
 //! A block accepts a reset only at the multiples of its **reset alignment**
 //! ([`Block::reset_align`]), for example at the start of a chunk. The caller

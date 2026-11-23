@@ -1,10 +1,15 @@
 //! # burn-stack: block-generic layer/network composition on Burn
 //!
-//! Everything *around* a sequence-mixing block: the Pre-LN
-//! [`Layer`](modules::Layer), the layer stack [`Layers`](modules::Layers),
-//! bidirectional pairs, latent/vocabulary networks, multi-stream gated
-//! residuals, class markers, layer schedules, and the Muon plan over fused
-//! projections.
+//! Everything *around* a sequence-mixing block:
+//!
+//! - the Pre-LN [`Layer`](modules::Layer),
+//! - the layer stack [`Layers`](modules::Layers),
+//! - bidirectional pairs,
+//! - latent/vocabulary networks,
+//! - multi-stream gated residuals,
+//! - class markers,
+//! - layer schedules,
+//! - the Muon plan over fused projections.
 //!
 //! The crate knows nothing about any particular family. A family joins it with
 //! two traits:
@@ -95,7 +100,7 @@ pub mod prelude {
 /// When `true`, [`modules::sanity`] panics if it observes a `NaN`.
 ///
 /// Compiled-in guard (off by default) to debug numerical issues. When it is
-/// `false`, the check is compiled out.
+/// `false`, the compiler removes the check.
 #[cfg(feature = "check-nan")]
 pub const DENY_NAN: bool = true;
 /// When `true`, [`modules::sanity`] panics if it observes a `NaN`.

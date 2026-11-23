@@ -36,8 +36,7 @@ pub mod init;
 /// reset, with reserved opening slots for the class latents.
 pub mod packing;
 /// Right-padded batches: which positions are padding, and the place of each
-/// position in the sequence of its own row after the class markers are
-/// spliced.
+/// position in the sequence of its own row after each class-marker splice.
 pub mod padding;
 /// The recompute node: one autodiff node for a custom backward with two
 /// outputs.
@@ -72,14 +71,17 @@ pub use scheduler::{ConstantLr, CosineAnnealingLr, LinearLr, Lr, LrLink};
 /// A small `dtype`-specific epsilon for safe division (`x / (y + eps)`),
 /// returned as `f32`.
 ///
-/// The value is chosen per float format as the geometric mean (average in
-/// log10 space) of two reference magnitudes: a scaled function of the minimum
-/// exponent of the format, and its machine epsilon. For each of
-/// f64/f32/f16/bf16, this places `eps` well above the denormal/underflow
-/// floor, and keeps it negligible relative to typical activations. The
-/// comments in the code note the resulting constants. `dtype` is the runtime
-/// float dtype of the tensor to divide (e.g. `x.dtype()`). Panics on non-float
-/// dtypes.
+/// The value of each float format is the geometric mean (average in log10
+/// space) of two reference magnitudes:
+///
+/// - a scaled function of the minimum exponent of the format,
+/// - the machine epsilon of the format.
+///
+/// For each of f64/f32/f16/bf16, this places `eps` well above the
+/// denormal/underflow floor, and keeps it negligible relative to typical
+/// activations. The comments in the code note the resulting constants.
+/// `dtype` is the runtime float dtype of the tensor to divide (e.g.
+/// `x.dtype()`). Panics on non-float dtypes.
 pub fn div_eps(dtype: DType) -> f32 {
     match dtype {
         // 4.0693917e-16
@@ -128,8 +130,8 @@ pub fn div_eps(dtype: DType) -> f32 {
 }
 
 /// `x` in the dtype that a precision-sensitive computation (a norm, a loss,
-/// the sampler) runs in, and the dtype of `x` if the result must go back to
-/// it.
+/// the sampler) runs in. The second output is the dtype of `x`, if the result
+/// must have that dtype again.
 ///
 /// f16 and bf16 go to f32. f32 and f64 stay as they are. The `ε` of such a
 /// computation is the [`div_eps`] of the dtype that it runs in. So an f16,

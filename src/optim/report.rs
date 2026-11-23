@@ -57,7 +57,7 @@ impl MuonPlan {
     /// left on the fallback. The report ends with the share of parameters on
     /// Muon.
     ///
-    /// Purely diagnostic: print it once to confirm that the plan matches the
+    /// Purely diagnostic: print it once to check that the plan matches the
     /// model that you built.
     pub fn describe(&self, module: &impl Module) -> String {
         let mut out = String::new();
@@ -112,7 +112,7 @@ impl MuonPlan {
         };
         let _ = writeln!(
             out,
-            "total params: {total}; on muon: {on_muon} ({share:.1}%)  (* = sub-projection left on the fallback)"
+            "total params: {total}, on muon: {on_muon} ({share:.1}%)  (* = sub-projection left on the fallback)"
         );
         out
     }

@@ -6,8 +6,8 @@
 //! [`Tensor`] method API that the gradient math of a
 //! recompute backward uses.
 //!
-//! Why it exists: in Burn 0.22, the high-level `Tensor` is pinned to the
-//! global `Dispatch` backend. So it cannot be built from the primitive of an
+//! Why it exists: Burn 0.22 pins the high-level `Tensor` to the global
+//! `Dispatch` backend. So it cannot be built from the primitive of an
 //! arbitrary backend `B`. A custom
 //! [`Backward`](burn::backend::autodiff::ops::Backward) node runs with a
 //! *generic* `B`, so its gradient math must operate directly on the primitives
@@ -249,8 +249,8 @@ impl<B: Backend, const D: usize> F<B, D> {
         F(B::float_clamp_max(self.0, Scalar::from(max)))
     }
 
-    /// Mask that is `true` wherever `self >= value` — exactly where
-    /// [`Self::clamp_max`] at `value` binds, so that clamp's gradient is
+    /// Mask that is `true` wherever `self >= value`. This is exactly where
+    /// [`Self::clamp_max`] at `value` binds, so the gradient of that clamp is
     /// `d.mask_fill(x.ge_elem(value), 0.0)`.
     pub fn ge_elem(&self, value: f64) -> Mask<B> {
         let device = self.0.device();
@@ -406,10 +406,10 @@ fn tri_bool<B: Backend>(
 
 /// Primitive analogue of [`crate::modules::sanity`] for [`F`].
 ///
-/// Panics if `t` contains a `NaN` (when [`crate::DENY_NAN`] is set) or an `Inf`
-/// (when [`crate::DENY_INF`] is set).  A no-op — with no device read — when both
-/// flags are `false` (the default), so it can be sprinkled through the backward
-/// math at no release-build cost.
+/// Panics if `t` contains a `NaN` (when [`crate::DENY_NAN`] is `true`) or an
+/// `Inf` (when [`crate::DENY_INF`] is `true`). When both flags are `false`
+/// (the default), it is a no-op with no device read. So the backward math can
+/// call it anywhere at no release-build cost.
 pub fn san<B: Backend, const D: usize>(t: &F<B, D>) {
     if !crate::DENY_NAN && !crate::DENY_INF {
         return;

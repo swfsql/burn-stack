@@ -80,15 +80,15 @@ fn grad_horizon_depth_keeps_every_real_layer() {
             .collect::<String>()
     };
 
-    // Cyclic (0 1 2 0 1 2 0 1) spreads the applications of each real layer, so
-    // the last `k` of each are a single top suffix.
+    // Cyclic (0 1 2 0 1 2 0 1) spreads the applications of each real layer.
+    // So the last `k` of each are a single top suffix.
     assert_eq!(t(Some(&Schedule::Cyclic), 0), "........");
     assert_eq!(t(Some(&Schedule::Cyclic), 1), ".....TTT");
     assert_eq!(t(Some(&Schedule::Cyclic), 2), "..TTTTTT");
     assert_eq!(t(Some(&Schedule::Cyclic), 3), "TTTTTTTT");
 
-    // Stretched (0 0 0 1 1 1 2 2) runs each real layer in one contiguous run,
-    // so the tail of *every* run is tracked: one cut per real layer.
+    // Stretched (0 0 0 1 1 1 2 2) runs each real layer in one contiguous run.
+    // So the mask tracks the tail of *every* run: one cut per real layer.
     assert_eq!(t(Some(&Schedule::Stretched), 1), "..T..T.T");
     assert_eq!(t(Some(&Schedule::Stretched), 2), ".TT.TTTT");
     assert_eq!(t(Some(&Schedule::Stretched), 3), "TTTTTTTT");
@@ -114,7 +114,7 @@ fn grad_horizon_last_is_a_plain_suffix() {
     assert_eq!(mask(GradHorizon::last(0, 3)), vec![false, false, false]);
     assert_eq!(mask(GradHorizon::last(2, 3)), vec![false, true, true]);
     assert_eq!(mask(GradHorizon::last(9, 3)), vec![true, true, true]);
-    // A mask is taken as given, whatever the layer schedule.
+    // `tracked` takes a mask as given, whatever the layer schedule.
     let m = vec![true, false, true, false, false, true, false, true];
     assert_eq!(
         GradHorizon::Mask(m.clone()).tracked(Some(&Schedule::Stretched), 8, 3),

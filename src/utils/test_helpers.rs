@@ -5,8 +5,8 @@
 //! readable one, a fast one, a recompute-backward one). They must agree on
 //! both the forward outputs and the input gradients. The tests follow the same
 //! pattern: pick a baseline, run two alternatives, and compare per field. The
-//! per-input gradient struct differs per family, so only the small generic
-//! primitives are shared here.
+//! per-input gradient struct differs per family, so this module shares only
+//! the small generic primitives.
 //!
 //! Every test takes its device from
 //! [`test_device`](crate::utils::test_helpers::test_device), so `dev-f16` runs

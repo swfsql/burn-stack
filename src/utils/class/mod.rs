@@ -14,15 +14,15 @@
 //! # Placement
 //!
 //! Each marker names an index into the *original* sequence of length `L`:
-//! `Start` 0, `Middle` `L/2`, `End` `L`, `Custom(k)` `k`. The markers are
-//! inserted in the order of that index. At a shared index, the kind breaks
+//! `Start` 0, `Middle` `L/2`, `End` `L`, `Custom(k)` `k`. A container inserts
+//! the markers in the order of that index. At a shared index, the kind breaks
 //! the tie (`Start` < `Middle` < `End` < `Custom`), then the `Vec` order.
 //!
-//! One rule places three of the four kinds: the marker is emitted immediately
-//! **before** the user token at its index. `Start` (0) opens the sequence,
-//! `Middle` (`L/2`) splits it, and `Custom(k)` precedes token `k`. `End` is
-//! the only exception, because it has no token to precede. It **closes** the
-//! sequence, after the last user token.
+//! One rule places three of the four kinds: the container emits the marker
+//! immediately **before** the user token at its index. `Start` (0) opens the
+//! sequence, `Middle` (`L/2`) splits it, and `Custom(k)` precedes token `k`.
+//! `End` is the only exception, because it has no token to precede. It
+//! **closes** the sequence, after the last user token.
 //!
 //! `Custom` is uniform in `k`, so a `Custom(k ≥ L)` never lands: there is no
 //! token `k` to precede. If the caller feeds tokens past the announced `L`,
@@ -40,10 +40,11 @@
 //! data. It returns the last of them (`None` when none were waiting). `prime`
 //! is exactly the opening half of `step`. So `prime` followed by `step` emits
 //! what that `step` alone would emit, in the same order. Seedless generation
-//! is `prime` → sample → `step` → sample → … `End` is never primed. It
-//! *closes* the sequence, so it belongs to the call that carries the last
-//! user token. This is why it is the one marker that `step` (and `forward`)
-//! already returns.
+//! is `prime` → sample → `step` → sample → …
+//!
+//! `prime` never emits `End`. `End` *closes* the sequence, so it belongs to
+//! the call that carries the last user token. This is why it is the one
+//! marker that `step` (and `forward`) already returns.
 //!
 //! # Streamed placement
 //!
@@ -54,16 +55,15 @@
 //! output sequence of *that* level the earlier calls already emitted. From
 //! those:
 //!
-//! - A marker whose output position is behind the cursor was emitted by an
-//!   earlier call, and is skipped. So `Start` fires only while the cursor is
-//!   still at 0, and a resumed stream does not insert it again.
+//! - An earlier call emitted each marker whose output position is behind the
+//!   cursor, and the current call skips it. So `Start` fires only while the
+//!   cursor is still at 0, and a resumed stream does not insert it again.
 //! - `Middle`/`End` resolve only against the whole sequence, so they
 //!   **panic** without a `full_len` hint. `Start`/`Custom` do not depend on
 //!   the length, and work on an open-ended stream.
-//! - A marker that lands exactly at the end of a window is emitted by that
-//!   window only if the window *closes* the sequence. Otherwise it opens the
-//!   next window. So a split of a sequence at any point leaves the placement
-//!   unchanged.
+//! - A window emits a marker that lands exactly at its end only if the window
+//!   *closes* the sequence. Otherwise the marker opens the next window. So a
+//!   split of a sequence at any point leaves the placement unchanged.
 //!
 //! Without cursors (`None`), `forward` treats its argument as the whole
 //! sequence (`full_len` = its length, cursors at 0), and `step` injects
@@ -164,8 +164,9 @@ impl_class_marker!(ClassToken);
 impl_class_marker!(ClassLatent);
 
 /// Placement state of **one** marker level (one container that inserts class
-/// markers): how far into the *output* sequence of that level the previous
-/// calls got, and the length that positions are measured against.
+/// markers). It holds how far into the *output* sequence of that level the
+/// previous calls got. It also holds the length that the placement measures
+/// each position against.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ClassCursor {
     /// Output-sequence position reached so far: user tokens *and* already
@@ -200,10 +201,10 @@ impl ClassCursor {
 }
 
 /// Everything that a `forward` (a window) or `step` (a single token) call
-/// needs to place the class tokens and class latents of a whole network: one
-/// length hint, plus one cursor per marker level. Pass the **same** value to
-/// every call of a sequence. Each call advances the cursors that it uses, so
-/// the next call resumes exactly where this one stopped.
+/// needs to place the class tokens and class latents of a whole network. It
+/// holds one length hint, plus one cursor per marker level. Pass the
+/// **same** value to every call of a sequence. Each call advances the cursors
+/// that it uses, so the next call resumes exactly where this one stopped.
 ///
 /// The levels nest. Each cursor counts the sequence that *its* level sees,
 /// which already includes the markers that the levels below it spliced in:
@@ -281,9 +282,9 @@ pub fn landing_count<M: ClassMarker>(markers: &[M], len: usize) -> usize {
         .count()
 }
 
-/// Panic if the position of a marker needs the whole sequence length and none
-/// is known. `Middle`/`End` cannot be placed from a window (or a single
-/// token).
+/// Panic if the position of a marker needs the whole sequence length and
+/// `full_len` is `None`. `Middle`/`End` cannot be placed from a window (or a
+/// single token).
 pub fn assert_full_len_known<M: ClassMarker>(
     markers: &[M],
     full_len: Option<usize>,
@@ -299,8 +300,8 @@ pub fn assert_full_len_known<M: ClassMarker>(
 ///
 /// Returns `(at, marker)` pairs in output order: insert `markers[marker]`
 /// *before* the `at`-th token of the window (`at == window_len` ⇒ after the
-/// last one). `cursor` is advanced past the whole window, its insertions
-/// included.
+/// last one). The call advances `cursor` past the whole window, its
+/// insertions included.
 pub fn class_window_plan<M: ClassMarker>(
     markers: &[M],
     window_len: usize,
@@ -313,7 +314,7 @@ pub fn class_window_plan<M: ClassMarker>(
 /// [`class_window_plan`] for a **prime**. The call carries no user token. One
 /// more user token is still to come.
 ///
-/// So the markers that wait for that next token are emitted now (they precede
+/// So this call emits the markers that wait for that next token (they precede
 /// it either way). `End` trails the last token, not precedes one, so the call
 /// that carries that token emits it. A cursor already at the announced end has
 /// no next token, so the plan is then empty.
@@ -341,9 +342,10 @@ fn class_plan<M: ClassMarker>(
     let positions = class_marker_output_indices(markers, cursor.full_len.unwrap_or(usize::MAX));
 
     // User tokens consumed after this call: the output positions behind the
-    // cursor, minus the markers among them, plus the tokens of this call. More
-    // tokens than an announced `full_len` are allowed. Every marker inside that
-    // length is already placed by then, so the extra tokens stream through.
+    // cursor, minus the markers among them, plus the tokens of this call. A
+    // call can feed more tokens than an announced `full_len`. Every marker
+    // inside that length is already placed by then, so the extra tokens
+    // stream through.
     let start = cursor.offset;
     let consumed = start - positions.iter().filter(|&&p| p < start).count() + window_len;
     // Whether this call reaches the announced end, that is, carries the last
@@ -371,7 +373,7 @@ fn class_plan<M: ClassMarker>(
             break; // the token that it precedes is in a later call, and so is the marker
         }
         if at + need == window_len {
-            // Nothing is left in this call to precede. Only two cases belong
+            // This call has no token left to precede. Only two cases belong
             // here: a closing `End` on the call that ends the sequence, or, on
             // a prime, the markers due before the next token. A `Custom` waits
             // for its token (for one at or past the end, forever).
