@@ -66,9 +66,9 @@ each one, or it has a different meaning from the _Avoid_ entry:
   a time".
   Also the identifiers `progress.step`, the key `"step"` of `metrics.jsonl`,
   `SgdConfig::step` and the `InferenceStep::step` of Burn.
-- **graph**: the autodiff graph ("cut off the graph", "drop the graph that
-  produced them", `lm.rs`). The `--no-graph` and `graphs` names are
-  identifiers (see below).
+- **graph**: the autodiff graph (for example "drop the graph that produced
+  them", `lm.rs`). The git history of this ticket gives one more quote. The
+  `--no-graph` and `graphs` names are identifiers (see below).
 - **chunk**: a chunk of a chunked scan ("its chunk starts",
   `PackLayout::align`), and the `chunks` method of slices (`mnist/dataset.rs`,
   `bucket_batches`, `decode`). The code spans `[1, chunk, 2]` and "windows of
@@ -202,8 +202,9 @@ burn-mamba). These copies still use the old words:
 - **Boundary.** "No separator character stands in for its boundary" is now
   "marks its start or its end". "Gradients never cross a window boundary" is
   now "never pass from one window to the next".
-- **Real rows.** `Prefill` said "as its real rows alone would come out" and
-  "the last real row". These are now "real tokens" and "the last real token".
+- **Real rows.** `Prefill` said "real rows" and "the last real row". These are
+  now "real tokens" and "the last real token". The git history of this ticket
+  gives the full quote.
 - **Carry.** The noun "the carry" of the frontier gate is now "the carried
   state". "With no carry" is now "with no carried state".
 - **Layer.** "The composition layer" (`examples/mod.rs`) is now "the
@@ -217,10 +218,10 @@ burn-mamba). These copies still use the old words:
   - `vram::check`: "… MiB. The process stops." (no semicolon).
   - The two `expect`s of `Trainer`: "a training step leaves its state
     behind".
-  - `AppArgs::resumed_progress` and `save_progress`: "training step". "Starting
-    over at step 0 (saved at step {}; --resume continues it)" is now "Starting
-    again at training step 0. The saved progress is at training step {}, and
-    --resume continues it."
+  - `AppArgs::resumed_progress` and `save_progress`: "training step". The
+    message of a new start is now "Starting again at training step 0. The
+    saved progress is at training step {}, and --resume continues it." The
+    git history of this ticket gives the old message.
   - `bucket_batches`: "the buckets must ascend strictly", "a story is longer
     than the longest bucket". `BucketedStoriesDataset::new`: "at least one
     bucket". `parse_slots`: "the bucket {s:?} is not a positive integer".

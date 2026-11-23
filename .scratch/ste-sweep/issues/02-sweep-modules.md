@@ -131,8 +131,9 @@ two sentences are not copies, so this ticket does not change the test doc.
 
 ### For the linter
 
-- The linter does not flag `blow up` in `src/modules/loss/bce.rs`. The sweep
-  changes it to "grow without bound".
+- The linter does not flag a phrasal verb in `src/modules/loss/bce.rs`. The
+  sweep changes it to "grow without bound". The git history of this ticket
+  gives the phrasal verb.
 - In `src/modules/loss/bce.rs`, the linter reads a formula comment and the
   next sentence as one sentence. The split of that sentence is enough, so the
   formula line stays as it is.
@@ -156,10 +157,12 @@ the same counts at `ff44142`, the commit that resolves this ticket.
 
 The two hard findings come from ticket 01 of `ste-lint-misses`:
 
-- `src/modules/cache.rs:44`, the summary of `cache_detach`: `cut off` changes
-  to `detached from`, the verb of the name. The paragraph rewraps.
-- `src/modules/layers.rs:47`, the doc of `Layers::grad_horizon`:
-  `is what runs out of memory` changes to `is what fills the memory`.
+- `src/modules/cache.rs:44`, the summary of `cache_detach`: a phrasal verb
+  changes to `detached from`, the verb of the name. The paragraph rewraps.
+- `src/modules/layers.rs:47`, the doc of `Layers::grad_horizon`: a phrasal
+  verb changes to `is what fills the memory`.
+
+The git history of this ticket gives the two phrasal verbs.
 
 Ticket 02 of `ste-lint-misses` gives eight passives in the scope. Three
 change to the active voice, because each one has a relevant actor:
@@ -188,10 +191,10 @@ code, and the review finds one: see
 
 The prose step of `scripts/check.sh` fails on two ticket files. Each file is
 new at the merge base with `origin/main`, so the step starts it at zero. The
-new linter flags the quoted `blow up` of [For the linter](#for-the-linter) and
-the two quoted `run out` of ticket 03. A quoted word is a kept finding, but the
-step cannot accept one. So the recount puts the three words in code spans, as
-ticket 01 of `ste-lint-misses` does.
+new linter flags three quoted phrasal verbs: one of
+[For the linter](#for-the-linter) and two of ticket 03. A quoted word is a kept
+finding, but the step cannot accept one. Ticket 05 removes the three quotes,
+and the git history of this ticket gives them.
 
 ### The detach of a cache
 
@@ -228,5 +231,5 @@ detaches: the `require_grad` of a leaf and the device of each tensor. The
 README is in burn-mamba, so its change is a commit of that repo.
 
 In `lm.rs`, the rewrite also removes two hard findings of ticket 01 of
-`ste-lint-misses`: `cut off` (line 49) and `Cut a carried cache off` (line
-490). The `runs out` of line 708 stays for ticket 06.
+`ste-lint-misses`, on lines 49 and 490. The hard finding of line 708 stays for
+ticket 06. The git history of this ticket gives the three phrasal verbs.

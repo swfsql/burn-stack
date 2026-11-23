@@ -78,7 +78,7 @@ relevant, or an adjective after `is`:
 
 ### The messages
 
-The hard findings in messages are seven `put back` in
+The hard findings in messages are seven phrasal verbs in
 `src/utils/capture.rs`, a semicolon in `src/optim/report.rs` and a long
 sentence in `src/utils/untied.rs`. Five other messages change, each for an
 advisory finding. A search of the tests of both repos finds a match for one
@@ -88,8 +88,8 @@ test also counts the lines of the report, and the line count stays.
 
 | Location | Old string | New string |
 |---|---|---|
-| `src/utils/capture.rs`, 7 calls | `caches are always put back` | `the caches are always present` |
-| `src/optim/report.rs:115` | `total params: {total}; on muon: …` | `total params: {total}, on muon: …` |
+| `src/utils/capture.rs`, 7 calls | In the git history of this ticket | `the caches are always present` |
+| `src/optim/report.rs:115` | In the git history of this ticket | `total params: {total}, on muon: …` |
 | `src/utils/untied.rs:96` | `… built for {n_applications}: an untied parameter has no copy for an application added after the stack was built` | `… built for {n_applications}. An untied parameter has no copy for an application added after the build of the stack.` |
 | `src/utils/untied.rs:71` | `a real layer is built for at least one application` | `a real layer needs at least one application` |
 | `src/utils/init.rs:94` | `InitPolicy::residual_paths is set but residual_depth is not` | `InitPolicy has residual_paths but no residual_depth` |
@@ -163,19 +163,20 @@ No other doc of either repo makes these claims.
 
 ### Choices of the sweep
 
-- **Check.** `src/optim/report.rs` and `src/utils/capture.rs` used
-  `confirm` and `check` for one action. Both use `check`, the verb of the
-  module header of `report.rs`.
-- **Read.** The linter takes `retrieve` and `gets` of `src/utils/detach.rs`
-  for one action. They are two actions: `gets the gradient` (`:20`) means
-  "receives", and `retrieve it` (`:28`) means "fetch". So `retrieve` becomes
-  `read`, and `gets` stays.
+- **Check.** `src/optim/report.rs` and `src/utils/capture.rs` used two
+  verbs for one action. Both use `check`, the verb of the module header of
+  `report.rs`. The git history of this ticket gives the other verb.
+- **Read.** The linter takes `gets` of `src/utils/detach.rs` and the old verb
+  of `:28` for one action. They are two actions: `gets the gradient` (`:20`)
+  means "receives". So only the old verb of `:28` changes, to `read`. The
+  git history of this ticket gives the old verb and its meaning.
 - **Return.** `give back`, `gives back` and `hands back` become `return` or
-  `returns`. In `src/utils/capture/weights.rs`, `each parameter gets back`
-  becomes "each parameter has … again", so that the doc names no new actor.
+  `returns`. In `src/utils/capture/weights.rs`, a phrasal verb becomes "each
+  parameter has … again", so that the doc names no new actor.
 - **Restore.** The comments of `CapturedStep::capture` and of the mapper
-  `OptimizerUpdate` (`src/optim/sgd.rs`) use `restore` for `put back`. The
-  module header of `capture.rs` uses the same verb.
+  `OptimizerUpdate` (`src/optim/sgd.rs`) use `restore` for a phrasal verb.
+  The module header of `capture.rs` uses the same verb. The git history of
+  this ticket gives the phrasal verbs of this item and of the item before it.
 - **Lift.** The doc of `grad_horizon_keeps_the_checkpointing_strategy` uses
   the words of `src/modules/layers.rs:231`: "a cut lifts the values that its
   untracked span took to the inner backend". Ticket 02 names this phrasal
@@ -230,7 +231,7 @@ sweep fixes each of its five findings:
 - The advisory count at the start is 79, not 81.
 - The evidence of disputed doc 2 named the wrong gather as the inverse
   permutation.
-- The reason of the choice for `retrieve` was wrong (see **Read** in
+- The reason of the choice **Read** was wrong (see
   [Choices of the sweep](#choices-of-the-sweep)).
 - In the header of `capture.rs`, "the caches of the capture" could mean the
   caches after the capture. It says "the `caches` argument of the capture".

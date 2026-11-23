@@ -93,8 +93,8 @@ Test-device rules:
   when every session needs it. A mechanism goes into the module header of its
   file.
 - The docs describe the code as it is now. Delete changelog prose where you
-  find it: individual changes, migrations, "used to be / now", "verified by",
-  dates and PR history.
+  find it: individual changes, migrations, an old state next to the current
+  one, "verified by", dates and PR history.
 - Update the [File Map](#file-map) in the change that adds, deletes or
   renames a directory or a listed file. A new file whose name does not tell
   what it holds also gets a line.

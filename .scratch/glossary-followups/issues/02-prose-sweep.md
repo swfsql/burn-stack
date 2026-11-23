@@ -115,8 +115,9 @@ has a different meaning from the _Avoid_ entry:
 - **level**: a marker level ("network-level", "stack-level", "at either
   level"), and "high-level" in CLAUDE.md.
 - **graph**: the autodiff graph, and the module path `utils::graph`.
-- **memory**: the memory of the device ("peak memory", "runs out of
-  memory"), and the auto-memory in CLAUDE.md.
+- **memory**: the memory of the device (for example "peak memory"), and the
+  auto-memory in CLAUDE.md. The git history of this ticket gives one more
+  quote.
 - **variant**: the variants of a Rust enum (`cache.rs`, the
   `large_enum_variant` lint). "generation" is text generation, and
   "conversion" is a false positive of the pattern.

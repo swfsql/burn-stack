@@ -107,13 +107,14 @@ names `docs/burn/`, as it does for `docs/adr/` and `docs/agents/`.
 **Corrections.** The copy had these faults. Each fix has a run on 0.22.1,
 unless its item says otherwise:
 
-- §13, #5537: "`list_param_ids` removed" is false. The PR deleted only a test.
-  The function is public in 0.22.1.
+- §13, #5537: the copy said that the PR deleted `list_param_ids`. That is
+  false: the PR deleted only a test. The function is public in 0.22.1. The
+  git history of this ticket gives the words of the copy.
 - §8: `train()` of a `Tensor` field resets the strategy only when the field has
   no autodiff. `from_inner` keeps the strategy of a `Balanced` tensor.
 - Trap 12: an earlier `configure` also locks the settings.
 - §9.3 and trap 4: "a derived round trip skips every field" is false. Only
-  `map` and `visit` skip a plain `Tensor` field. A derived `valid()` removes
+  `map` and `visit` skip a plain `Tensor` field. A derived `valid()` strips
   its autodiff, and a derived `train()` enables autodiff with `Disabled`.
 - Rule 8, §9.2: `train()` gives `Disabled` only to a plain parameter. A
   parameter on autodiff keeps its strategy (`Balanced` stays `Balanced`).

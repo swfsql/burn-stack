@@ -260,9 +260,9 @@ Fixed:
 - The docs and the horizon test said "untracked slot" and "tracked slot". They use the
   glossary terms **Untracked layer** and **Tracked layer**. The test name is
   `the_origin_of_an_untracked_layer_gets_no_gradient`.
-- The doc of `to_layer` had two phrasal verbs ("takes it down", "come back up"). It says
-  "moves the cache to the inner backend" and "does not move back to the autodiff
-  backend".
+- The doc of `to_layer` had two phrasal verbs. The git history of this ticket gives
+  them. It says "moves the cache to the inner backend" and "does not move back to the
+  autodiff backend".
 - "Slot" had two senses in the docs of `Layers::forward_packed` and
   `VocabNetwork::forward_packed`: a cache of the stack and an opening slot. A cache of
   the stack is "each virtual layer". The origin of a layer has one wording, "row `b` of

@@ -77,8 +77,8 @@ scopes. Neither scope has a kept finding.
 
 In `src/examples/`, the commit that resolves ticket 03 (`2332385`) has 5 hard
 findings on the new linter. Commit `c1741a1` removes two of them from
-`src/examples/tiny_stories/lm.rs`: `cut off` and `Cut a carried cache off`.
-See ticket 02,
+`src/examples/tiny_stories/lm.rs`, both phrasal verbs. The git history of this
+ticket gives them. See ticket 02,
 [The detach of a cache](02-sweep-modules.md#the-detach-of-a-cache).
 
 ### Messages, docs and checks

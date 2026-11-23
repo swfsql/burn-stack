@@ -175,15 +175,17 @@ The sweep changes neither side. The user decides each one.
   (spec, "Out of Scope").
 - **Print.** The comments before the `println!` of the averaged metrics in
   the two `epoch_train` and the two `epoch_valid` say "Print". In `lm.rs`, the
-  linter took `display` and `show` for one action.
+  linter took two verbs of the old comments for one action. The git history of
+  this ticket gives them.
 - **Read back.** The passives `are read back` and `is read back` become
   active: "reads … back" (`sample.rs`, `sample/tests.rs`). The header of
   `sample.rs`, `READBACK` and `read_back` use the same words. In `trainer.rs`,
   the loss "must not read a value back to the host". In `lm_output`,
   `A longer output is read out, not trimmed` becomes "It reads a longer
   output, not a trimmed one".
-- **Start.** `a run begins and ends with its story` (`lm.rs`) becomes "a run
-  starts and ends with its story".
+- **Start.** A sentence of `lm.rs` says "a run starts and ends with its
+  story", in place of a synonym of "starts". The git history of this ticket
+  gives the old sentence.
 - **Device.** The old header of `device.rs` said `with the BURN_DEVICE env
   override and a built-in priority list when several are compiled in`. The
   condition could apply to the override too. Burn reads `BURN_DEVICE` in each
@@ -197,9 +199,9 @@ The sweep changes neither side. The user decides each one.
 
 ### For the linter
 
-- The linter does not flag `run out` in `A loop sees it run out`
-  (`src/examples/training.rs`). The sweep changes it to "A loop finds the
-  budget spent".
+- The linter does not flag a phrasal verb in a sentence of
+  `src/examples/training.rs`. The sweep changes the sentence to "A loop finds
+  the budget spent". The git history of this ticket gives the old sentence.
 - The linter does not flag a passive whose two words are on two lines of a
   comment. An example is "only the row groups up to the requested rows are /
   decompressed" in the header of `src/examples/tiny_stories/dataset.rs`. After
@@ -216,8 +218,8 @@ of each ticket gives its findings, and `--selftest` passes.
 The scope keeps its 21 tracked `.rs` files. At `2332385`, the commit that
 resolves this ticket, the new linter gives 5 hard findings. Commit `c1741a1`
 rewrites the header of `src/examples/tiny_stories/lm.rs` and the doc of
-`LmModel::detach_caches`. That removes two of them: `cut off` and
-`Cut a carried cache off`.
+`LmModel::detach_caches`. That removes two of them, both phrasal verbs. The
+git history of this ticket gives them.
 
 | Findings | At `2332385` | At `c1741a1` | After |
 |---|---|---|---|
@@ -228,14 +230,16 @@ rewrites the header of `src/examples/tiny_stories/lm.rs` and the doc of
 The three hard findings come from ticket 01 of `ste-lint-misses`:
 
 - `src/examples/mnist/classify.rs:89` and `src/examples/tiny_stories/lm.rs:708`,
-  the docs of the two `epoch_train`: the budget of the session `runs out`. The
-  two sentences are copies, so both change to `is spent`. The doc of
-  `Session::is_exhausted` uses this verb, and so does the next sentence of
-  `lm.rs`.
+  the docs of the two `epoch_train`: a phrasal verb gives the end of the budget
+  of the session. The two sentences are copies, so both change to `is spent`.
+  The doc of `Session::is_exhausted` uses this verb, and so does the next
+  sentence of `lm.rs`.
 - `src/examples/tiny_stories/dataset.rs:366`, a message of `read_parquet`:
-  `the {} split ran out of rows` changes to `the {} split has too few rows`.
-  No test or script of either repo matches a part of the old string. The
-  `assert_eq!` prints the two counts.
+  a phrasal verb changes to `the {} split has too few rows`. No test or script
+  of either repo matches a part of the old string. The `assert_eq!` prints the
+  two counts.
+
+The git history of this ticket gives each old phrasal verb.
 
 Ticket 02 of `ste-lint-misses` gives five new passives in the scope. Four
 change to a form without a passive, because each one has a relevant actor or

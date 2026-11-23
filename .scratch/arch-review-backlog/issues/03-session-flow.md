@@ -56,8 +56,8 @@ order:
    when its gate drops a window or when the budget is exhausted. Then it calls
    `skip_training_steps(n)` for the windows that it did not train.
 4. After each item, the loop calls `checkpoint_due()` (true: save the model and the
-   optimizer), then `valid_due()` (true: validate). Then it stops the epoch if
-   `is_exhausted()`.
+   optimizer), then `valid_due()` (true: run a validation). Then it stops the epoch
+   if `is_exhausted()`.
 5. After the epoch, the loop calls `end_epoch(batches_per_epoch)`. Then it saves the
    `progress()` with the optimizer, and it stops if `is_exhausted()`.
 
@@ -208,20 +208,21 @@ about 9 minutes.
 ### The redesign waits
 
 The review proposed that `Session` takes the decision after each training step: what
-to save, when to validate and when to stop. Triage keeps only the tests, because:
+to save, when to run a validation and when to stop. Triage keeps only the tests,
+because:
 
 - All ten loops call `Session` in the same order. Neither repo has a fix for an
   order bug.
 - One of the order rules of the review was wrong. `validated_now` stays correct when a
   loop polls `valid_due` less often than once for each training step. The two
-  hidden facts are different: `Session::new` counts the start as validated, and a
+  hidden facts are different: `Session::new` counts the start as a validation, and a
   validation outside `valid_due` does not count.
 - The redesign changes the public API of burn-stack. burn-mamba then moves its pin.
   Each repo changes its minor version.
 - The decision must come after each dataloader item, not after each training step.
   The character LM cannot save in the middle of its windows, because the cache of
   the item would be lost.
-- A callback that validates needs `&mut Session` while `Session` calls it. A
+- A callback that runs a validation needs `&mut Session` while `Session` calls it. A
   returned value (for example, a struct of due flags) does not have this problem.
 - burn-mamba `.scratch/arch-review-backlog/issues/09-reset-loop.md` merges the six
   reset copies of the loop. Then five loops keep the order.
