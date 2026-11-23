@@ -2,7 +2,7 @@
 
 Status: ready-for-agent
 
-Blocked by: 01, 02, 03, 04
+Blocked by: 01, 02, 03, 04, 06, `../burn-mamba/.scratch/ste-lint-misses/` 01 and 02 (the linter)
 
 Spec: `../burn-mamba/.scratch/ste-sweep/spec.md`. Follow its method, its text
 that does not change and its kept findings.
