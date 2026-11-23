@@ -100,3 +100,12 @@ strings that the linter does not read.
   that `scripts/check.sh` covers.
 - `../burn-mamba/.scratch/check-script-followups/issues/01-prose-ratchet-reads-scratch.md`
   asks for the same step in burn-mamba.
+
+### The `tmp/` directories
+
+After the review of the burn-mamba ticket, the maintainer selects a skip of
+each `tmp/` directory, at any depth. So the step reads what the sweep reads. A
+second commit adds `grep -v -E '(^|/)tmp/'` to the list of files, and a
+sentence to the comment of `check_prose`. In burn-stack, no tracked `.rs` or
+`.md` file is under a `tmp/` directory, and `.gitignore` has the root `tmp/`.
+So the step reads the same files as before. The two steps stay equal.
