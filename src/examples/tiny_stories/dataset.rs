@@ -83,7 +83,8 @@
 //! one window of stories of similar length. Each story goes to the shortest
 //! of a few *buckets* (batch lengths) that holds it ([`bucket_batches`]). Each
 //! bucket takes as many stories as score about the same number of characters,
-//! so a bucket has one batch shape. Only the train split is bucketed.
+//! so a bucket has one batch shape. The dataloaders bucket the train split and
+//! the validation split.
 
 #[cfg(test)]
 mod tests;
@@ -779,10 +780,13 @@ impl Dataset<PackedItem> for PackedStoriesDataset {
 /// `[rows, width]`, with its [`PackedRows`].
 ///
 /// A segment takes `lead` opening slots, then its tokens but the last as
-/// inputs. The next token is the target of each input. The last opening slot
-/// is scored against the first token. The next segment starts at the next
-/// multiple of `align`. The pair (0, 0) fills the opening slots and the gaps,
-/// which are not scored. Inputs and targets are pairs (see [`pair`]).
+/// inputs. The next segment starts at the next multiple of `align`. The pair
+/// (0, 0) fills the opening slots and the gaps. Inputs and targets are pairs
+/// (see [`pair`]).
+///
+/// The next token is the target of each input. The last opening slot is
+/// scored against the first token. The gaps and the other opening slots are
+/// not scored.
 #[derive(Clone)]
 pub struct PackedStoriesBatcher {
     /// Positions per row.
@@ -947,7 +951,7 @@ pub struct BucketItem {
     pub stories: Vec<Vec<u8>>,
 }
 
-/// The train split as batches of similar length (see [`bucket_batches`]).
+/// One split as batches of similar length (see [`bucket_batches`]).
 /// One item is one whole batch, so its dataloader takes one item per batch.
 pub struct BucketedStoriesDataset {
     /// The stories, each truncated to the longest bucket.

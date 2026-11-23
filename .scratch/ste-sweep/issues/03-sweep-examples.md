@@ -1,6 +1,6 @@
 # 03: Sweep: the examples
 
-Status: ready-for-agent
+Status: resolved
 
 Blocked by: 01
 
@@ -45,35 +45,48 @@ The linter runs with `--enable history --parts docs,comments,messages` on the
 
 | Findings | Before | After |
 |---|---|---|
-| Hard | 41 | 2 |
-| Hard, in messages | 2 | 2 |
-| Advisory | 86 | 4 |
+| Hard | 41 | 0 |
+| Hard, in messages | 2 | 0 |
+| Advisory | 86 | 2 |
 
-The two hard findings that stay are the kept findings below. Four advisory
-findings stay, all of them passives in `src/examples/tiny_stories/dataset.rs`:
+The scope has no kept finding. Two advisory findings stay:
+`src/examples/tiny_stories/dataset.rs:507` and `:1006` say that positions
+`are scored`. The scored positions mask the loss and the accuracy, so "the
+loss" is not the actor. An active verb needs a new actor, and the passive
+keeps the scope.
 
-- `:86` is the sentence of item 1 of "Docs that disagree with the code".
-- `:506`, `:783` and `:1002` say that a position `is scored`. The scored
-  positions mask the loss and the accuracy, so "the loss" is not the actor.
-  An active verb needs a new actor, and the passive keeps the scope.
+### The two log lines
 
-### Kept findings
+The linter read two metric lines of `println!` in
+`src/examples/tiny_stories/lm.rs` as one sentence each, above the strict cap:
 
-| Location | Rule | Match | Reason |
-|---|---|---|---|
-| `src/examples/tiny_stories/lm.rs:631` | long-sentence (25 words, cap 20) | the corpus line of the packed rows (`dataloaders_for`) | false positive |
-| `src/examples/tiny_stories/lm.rs:790` | long-sentence (21 words, cap 20) | the progress line of `epoch_train` | false positive |
+| Location | Line | Words |
+|---|---|---|
+| `:631` | the corpus line of the packed rows (`dataloaders_for`) | 25 |
+| `:790` | the progress line of `epoch_train` | 21 |
 
-Both strings are metric lines of `println!` with format fields. They are not
-sentences, and a split changes the log format.
-`.scratch/glossary-followups/issues/05-prose-sweep-examples.md` keeps the same
-two lines for the same reason.
+The user selected a full stop in each line (see "The decisions of the user"):
+
+| Location | Old part | New part |
+|---|---|---|
+| `:632` | `({:.3} of the positions, {} open rows, …, {} opening slots)` | `({:.3} of the positions). {} open rows, …, {} opening slots` |
+| `:790` | `Windows {depth}/{windows} (mean {:.2}), Loss …` | `Windows {depth}/{windows} (mean {:.2}). Loss …` |
+
+Each line stays one output line, with the same fields in the same order:
+
+- `../burn-mamba/examples/tiny-stories/tmp/1m-cased/speed.sh:30` reads the
+  corpus line with a regex. On a sample of the new line, the regex finds its
+  5 fields.
+- No script of either repo reads the progress line. The run scripts read
+  `metrics.jsonl`.
+- `../burn-mamba/examples/tiny-stories/README.md:141` quotes
+  `Windows k/n (mean m)`. The new line keeps that text.
 
 ### The messages
 
-Four message strings change. Each one had an advisory finding (a passive). A
-search of the tests and the scripts of both repos finds no match for a part of
-these strings.
+Four other message strings change. Each one had an advisory finding (a
+passive). A search of the tests and the scripts of both repos finds no match
+for a part of these strings.
 
 | Location | Old string | New string |
 |---|---|---|
@@ -130,8 +143,27 @@ The sweep changes neither side. The user decides each one.
    (`src/examples/cli.rs:478`). Without `--resume`, it prints the saved
    training step and returns a new progress (`src/examples/cli.rs:493`). So
    the code also reads the progress without `--resume`, but it restores the
-   progress only under `--resume`. The module header says "`--resume` restores it". The rewrite of
-   the sentence keeps the words "read it back".
+   progress only under `--resume`. The module header says "`--resume`
+   restores it". The rewrite of the sentence keeps the words "read it back".
+
+### The decisions of the user
+
+1. The code is correct. So the two docs of item 1 change.
+   `src/examples/tiny_stories/dataset.rs:86` says "The dataloaders bucket the
+   train split and the validation split". The doc of `BucketedStoriesDataset`
+   says "One split as batches of similar length". No other doc of either repo
+   makes the claim. `../burn-mamba/examples/common/long_stories.rs:28` agrees
+   with the code.
+2. The sentence of item 2 splits in two: "The pair (0, 0) fills the opening
+   slots and the gaps. The gaps and the other opening slots are not scored."
+   Its paragraph then holds seven sentences. So it splits into two paragraphs:
+   the layout of a row, then the targets and the scored positions.
+3. The code is correct. So the doc of `TrainingProgress` says that the
+   examples "restore it only under `--resume`", the verb of the module header.
+4. The user prefers zero hard findings. So each of the two log lines gets a
+   full stop (see "The two log lines").
+5. The two misses of the linter (see "For the linter") go to a new ticket.
+   The user writes it later.
 
 ### Choices of the sweep
 

@@ -30,7 +30,7 @@ use std::ops::RangeInclusive;
 use std::path::Path;
 
 /// Where a training run stands. The examples save it next to every optimizer
-/// checkpoint, and they read it back only under `--resume`. A position has a
+/// checkpoint, and they restore it only under `--resume`. A position has a
 /// meaning only for the state that they save with it.
 #[derive(Config, Debug)]
 pub struct TrainingProgress {

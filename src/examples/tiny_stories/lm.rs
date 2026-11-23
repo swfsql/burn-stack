@@ -629,8 +629,8 @@ pub fn dataloaders_for(
             let (chars, rows) = (train_set.num_tokens(), train_set.num_rows());
             println!(
                 "corpus: {chars} train characters in {rows} packed rows of {} \
-                 ({:.3} of the positions, {} open rows, segments at multiples of {}, \
-                 {} opening slots)",
+                 ({:.3} of the positions). {} open rows, segments at multiples of {}, \
+                 {} opening slots",
                 pack.width,
                 chars as f64 / (rows * pack.width) as f64,
                 pack.open_rows,
@@ -787,7 +787,7 @@ pub fn epoch_train<W: LmModel>(
         session.skip_training_steps(windows - depth);
 
         println!(
-            "Epoch {}/{}, Batch {b:0>4}/{batches}, Windows {depth}/{windows} (mean {:.2}), \
+            "Epoch {}/{}, Batch {b:0>4}/{batches}, Windows {depth}/{windows} (mean {:.2}). \
              Loss {loss:.4} ({:.3} bits/char), Acc {:0>6.2}, lr {lr:0>6.2e}, it/s {:.2}",
             epoch,
             config.training.num_epochs,
