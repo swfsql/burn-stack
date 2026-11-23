@@ -131,8 +131,63 @@ two sentences are not copies, so this ticket does not change the test doc.
 
 ### For the linter
 
-- The linter does not flag "blow up" in `src/modules/loss/bce.rs`. The sweep
+- The linter does not flag `blow up` in `src/modules/loss/bce.rs`. The sweep
   changes it to "grow without bound".
 - In `src/modules/loss/bce.rs`, the linter reads a formula comment and the
   next sentence as one sentence. The split of that sentence is enough, so the
   formula line stays as it is.
+
+### The recount on the new linter
+
+The two tickets of `../burn-mamba/.scratch/ste-lint-misses/` change the linter
+after this sweep. So the scope gets a second count and a second rewrite.
+
+The installed copy of the skill holds the change of both tickets. The repro
+of each ticket gives its findings, and `--selftest` passes. The repro files
+are in `tmp/ste-sweep-02/`.
+
+The scope has 49 tracked `.rs` files. Commit `964345f` (the clamp of
+`.scratch/rms-guard/`) adds `src/modules/norm/tests.rs`. The new linter gives
+the same counts at `ff44142`, the commit that resolves this ticket.
+
+| Findings | Before | After |
+|---|---|---|
+| Hard | 2 | 0 |
+| Advisory | 38 | 35 |
+
+The two hard findings come from ticket 01 of `ste-lint-misses`:
+
+- `src/modules/cache.rs:44`, the summary of `cache_detach`: `cut off` changes
+  to `detached from`, the verb of the name. The paragraph rewraps.
+- `src/modules/layers.rs:47`, the doc of `Layers::grad_horizon`:
+  `is what runs out of memory` changes to `is what fills the memory`.
+
+Ticket 02 of `ste-lint-misses` gives eight passives in the scope. Three
+change to the active voice, because each one has a relevant actor:
+
+- `src/modules/hnet/smooth.rs:49`: `smooth` clamps `p_bk`. Two sentences
+  later, `smooth` also replaces `It`.
+- `src/modules/layer.rs:35`: every other method acts on `self`.
+- `src/modules/loss/l2warp.rs:4`: the penalty pulls the winning logit.
+
+Five stay:
+
+- `src/modules/bidi.rs:8` (`is written`): the actor is the author, and the
+  author is not relevant.
+- `src/modules/layers.rs:295` (`is suppressed`) and `:300` (`is gated`): these
+  are near-copies of `src/modules/bidi.rs:276` and `:281`, and the sweep kept
+  those two.
+- `src/modules/network.rs:314` (`is rounded`): the sweep kept the three other
+  `is rounded` of the scope.
+- `src/modules/residuals.rs:309` (`is untracked`): an adjective, as the kept
+  `are untracked` of `src/modules/layers.rs:827`.
+
+No message changes. No changed paragraph has a copy in either repo. The
+recount finds no doc that disagrees with the code, and it has no kept finding.
+
+The prose step of `scripts/check.sh` fails on two ticket files. Each file is
+new at the merge base with `origin/main`, so the step starts it at zero. The
+new linter flags the quoted `blow up` of [For the linter](#for-the-linter) and
+the two quoted `run out` of ticket 03. A quoted word is a kept finding, but the
+step cannot accept one. So the recount puts the three words in code spans, as
+ticket 01 of `ste-lint-misses` does.

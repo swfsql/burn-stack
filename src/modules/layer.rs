@@ -32,8 +32,7 @@ use std::borrow::Cow;
 /// **untie** parameters: its [`LayerUntied`] pre-norms and those of its block
 /// ([`Block::untied_params`]). It then holds one copy per application. A
 /// container runs application `k` as [`Self::application`]`(k)`, the layer
-/// that this application sees. Every other method acts on the layer that it is
-/// called on.
+/// that this application sees. Every other method acts on `self`.
 #[derive(Module, Debug)]
 pub struct Layer<M: Module> {
     /// Pre-norm applied before the inner block.

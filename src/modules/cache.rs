@@ -41,11 +41,11 @@ pub fn lift<const D: usize>(tensor: Tensor<D>, device: &Device) -> Tensor<D> {
     tensor
 }
 
-/// `cache` cut off the autodiff graph: the round trip [`cache_to_inner`],
-/// then [`cache_from_inner`] onto the device of `cache` ([`cache_device`]).
-/// The cache keeps its values and loses the graph that produced it. Each
-/// tensor gets the checkpointing strategy of that device. On a device without
-/// autodiff, the cache stays unchanged.
+/// `cache` detached from the autodiff graph: the round trip
+/// [`cache_to_inner`], then [`cache_from_inner`] onto the device of `cache`
+/// ([`cache_device`]). The cache keeps its values and loses the graph that
+/// produced it. Each tensor gets the checkpointing strategy of that device. On
+/// a device without autodiff, the cache stays unchanged.
 ///
 /// `cache` is one block cache, the caches of a layer stack (a `Vec`), an
 /// [`HNetCaches`](crate::modules::HNetCaches) or a tuple of caches. So one

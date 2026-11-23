@@ -46,9 +46,9 @@ pub const P_MAX: f64 = 1.0 - 1e-4;
 /// The EMA over `x_bkd` (`[batch, K, d]`) from `carry_bd` (`[batch, d]`), in
 /// scan blocks of `scan_block` chunks. Out: `z̄`, `[batch, K, d]`.
 ///
-/// `p_bk` (`[batch, K]`) is the router probability of each chunk. It is
-/// clamped to `[P_MIN, P_MAX]`. `pad_bk` (`None` ⇒ none) marks the absent
-/// chunks, which hold the state. It computes in f32 when the inputs are
+/// `p_bk` (`[batch, K]`) is the router probability of each chunk. `smooth`
+/// clamps it to `[P_MIN, P_MAX]`. `pad_bk` (`None` ⇒ none) marks the absent
+/// chunks, which hold the state. `smooth` computes in f32 when the inputs are
 /// f16/bf16.
 pub fn smooth(
     x_bkd: Tensor<3>,

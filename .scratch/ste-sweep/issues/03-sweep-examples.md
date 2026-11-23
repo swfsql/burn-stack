@@ -197,7 +197,7 @@ The sweep changes neither side. The user decides each one.
 
 ### For the linter
 
-- The linter does not flag "run out" in "A loop sees it run out"
+- The linter does not flag `run out` in `A loop sees it run out`
   (`src/examples/training.rs`). The sweep changes it to "A loop finds the
   budget spent".
 - The linter does not flag a passive whose two words are on two lines of a

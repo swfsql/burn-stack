@@ -44,7 +44,7 @@ pub struct Layers<M: Module> {
     ///
     /// The horizon follows the deep recursion of TRM and HRM. When
     /// `n_virtual_layers` is far above `n_real_layers`, the tracking of every
-    /// pass is what runs out of memory. Both papers back-propagate only a
+    /// pass is what fills the memory. Both papers back-propagate only a
     /// suffix: TRM one full recursion, HRM-Text a horizon `K` warmed from 2 to
     /// 5. The horizon counts **from the top**. So it keeps its meaning when the
     /// stack depth changes, and a training loop can move it per training step.

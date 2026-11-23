@@ -1,8 +1,8 @@
 //! The L2 penalty on the largest logit ("L2 warp"): a regulariser that the
 //! reference linear-attention language models train with (`use_l2warp`).
 //!
-//! It penalises confidence. At each position, only the **winning** logit is
-//! pulled toward zero, by `∂/∂z_max = c/(B·T) · z_max`, which is the gradient
+//! It penalises confidence. At each position, it pulls only the **winning**
+//! logit toward zero, by `∂/∂z_max = c/(B·T) · z_max`, which is the gradient
 //! of
 //!
 //! ```text
