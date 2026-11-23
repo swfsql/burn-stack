@@ -363,7 +363,7 @@ fn read_parquet(split: Split, n_stories: usize) -> Vec<String> {
     assert_eq!(
         stories.len(),
         n_stories,
-        "the {} split ran out of rows",
+        "the {} split has too few rows",
         split.name(),
     );
     stories
@@ -719,8 +719,8 @@ pub struct PackedStoriesDataset {
 
 impl PackedStoriesDataset {
     /// Pack `n_stories` of `split` into rows of `width` positions, in the
-    /// order of a shuffle with `seed`. A story too long for a row is
-    /// truncated to fit.
+    /// order of a shuffle with `seed`. It truncates a story that is too long
+    /// for a row, so that the story fits.
     pub fn new(
         split: Split,
         n_stories: usize,

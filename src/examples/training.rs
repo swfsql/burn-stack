@@ -219,8 +219,8 @@ pub const ADAMW_WEIGHT_DECAY: f32 = 1e-4;
 
 /// The AdamW defaults shared by the examples: per-dtype epsilon, gradient
 /// clipping at 1.0, and cautious weight decay ([`ADAMW_WEIGHT_DECAY`]).
-/// `dtype` should be the default float dtype of the device (the epsilon is
-/// sized to it).
+/// `dtype` should be the default float dtype of the device (`dtype` sizes
+/// the epsilon).
 ///
 /// The epsilon is the [`div_eps`](crate::utils::div_eps) of `dtype`, not the
 /// one of f32. Burn's AdamW keeps its moments in the dtype of the gradient.

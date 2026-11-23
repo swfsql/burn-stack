@@ -451,8 +451,8 @@ impl AppArgs {
     }
 
     /// Load optimizer state from the artifacts directory into `optim`, if
-    /// present. `optim` must already carry the parameter groups the state was
-    /// saved with (see [`crate::optim::MuonPlan`]).
+    /// present. `optim` must already carry the parameter groups of the saved
+    /// state (see [`crate::optim::MuonPlan`]).
     pub fn load_optim(&self, optim: ModuleOptimizer) -> Option<ModuleOptimizer> {
         load_optim(&self.artifacts_path, optim)
     }

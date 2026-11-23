@@ -86,7 +86,7 @@ pub const CADENCE: Cadence = Cadence {
 /// updated model.
 ///
 /// The epoch ends early when the budget of the session (the `--max-batches` /
-/// `--max-seconds` caps) runs out. The epoch loop of the caller should then
+/// `--max-seconds` caps) is spent. The epoch loop of the caller should then
 /// stop, because [`Session::is_exhausted`] is true.
 #[allow(clippy::too_many_arguments)]
 pub fn epoch_train<W: MnistModel>(

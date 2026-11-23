@@ -205,6 +205,66 @@ The sweep changes neither side. The user decides each one.
   decompressed" in the header of `src/examples/tiny_stories/dataset.rs`. After
   a rewrap put both words on one line, the linter flagged it.
 
+### The recount on the new linter
+
+The two tickets of `../burn-mamba/.scratch/ste-lint-misses/` change the linter
+after this sweep. So the scope gets a second count and a second rewrite.
+
+The installed copy of the skill holds the change of both tickets. The repro
+of each ticket gives its findings, and `--selftest` passes.
+
+The scope keeps its 21 tracked `.rs` files. At `2332385`, the commit that
+resolves this ticket, the new linter gives 5 hard findings. Commit `c1741a1`
+rewrites the header of `src/examples/tiny_stories/lm.rs` and the doc of
+`LmModel::detach_caches`. That removes two of them: `cut off` and
+`Cut a carried cache off`.
+
+| Findings | At `2332385` | At `c1741a1` | After |
+|---|---|---|---|
+| Hard | 5 | 3 | 0 |
+| Hard, in messages | 1 | 1 | 0 |
+| Advisory | 7 | 7 | 3 |
+
+The three hard findings come from ticket 01 of `ste-lint-misses`:
+
+- `src/examples/mnist/classify.rs:89` and `src/examples/tiny_stories/lm.rs:708`,
+  the docs of the two `epoch_train`: the budget of the session `runs out`. The
+  two sentences are copies, so both change to `is spent`. The doc of
+  `Session::is_exhausted` uses this verb, and so does the next sentence of
+  `lm.rs`.
+- `src/examples/tiny_stories/dataset.rs:366`, a message of `read_parquet`:
+  `the {} split ran out of rows` changes to `the {} split has too few rows`.
+  No test or script of either repo matches a part of the old string. The
+  `assert_eq!` prints the two counts.
+
+Ticket 02 of `ste-lint-misses` gives five new passives in the scope. Four
+change to a form without a passive, because each one has a relevant actor or
+needs no actor:
+
+- `src/examples/cli.rs:454` (`was saved`), the doc of `AppArgs::load_optim`:
+  `the parameter groups of the saved state`.
+- `src/examples/tiny_stories/dataset.rs:722` (`is truncated`), the doc of
+  `PackedStoriesDataset::new`: `It truncates a story`, the active verb of the
+  doc of `BucketedStoriesDataset::new`. The words `too long for a row` stay,
+  because a row also holds the opening slots.
+- `src/examples/tiny_stories/lm.rs:184` (`is truncated`), the doc of
+  `Pack::width`: `The dataset truncates a story`, the form of the doc of
+  `TinyStoriesConfig::run_len`.
+- `src/examples/training.rs:222` (`is sized`), the doc of `optimizer_config`:
+  `dtype` sizes the epsilon, as in the doc of
+  `AppArgs::override_training_config`.
+
+One stays: `src/examples/tiny_stories/dataset.rs:787` (`is scored`), in the
+doc of `PackedStoriesBatcher`. The next sentence is the sentence of decision 2
+of the user, with the same passive. The two sentences tell which positions
+the batcher scores, so they keep one voice.
+
+No other changed paragraph has a copy in either repo. The recount finds no
+doc that disagrees with the code, and it has no kept finding.
+
+The tests and the docs of the feature `examples-common` and
+`./scripts/check.sh` pass. The prose step reads this ticket file too.
+
 ### Work files
 
 `tmp/ste-sweep-03/` holds the lint reports before and after, the two review

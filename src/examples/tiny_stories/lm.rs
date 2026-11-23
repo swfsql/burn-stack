@@ -181,8 +181,8 @@ pub struct Bucketing {
 /// The geometry of packed training (see [`dataset`](super::dataset)).
 #[derive(Config, Debug)]
 pub struct Pack {
-    /// Positions per row (the window). A story longer than a row is
-    /// truncated to fit. So a width of at least the longest story (4,149
+    /// Positions per row (the window). The dataset truncates a story longer
+    /// than a row to fit. So a width of at least the longest story (4,149
     /// characters) plus the opening slots of the model keeps every story
     /// whole.
     pub width: usize,
@@ -705,7 +705,7 @@ pub const CADENCE: Cadence = Cadence {
 /// `session`. Returns the updated model.
 ///
 /// The epoch ends early when the budget of the session (the `--max-batches` /
-/// `--max-seconds` caps) runs out. The epoch loop of the caller should then
+/// `--max-seconds` caps) is spent. The epoch loop of the caller should then
 /// stop, because [`Session::is_exhausted`] is true. The budget is spent per
 /// **window**, that is, per training step. The position of the session within
 /// the epoch counts batches of stories.
