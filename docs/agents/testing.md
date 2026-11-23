@@ -34,10 +34,11 @@ the ticket gives each break and each test that it failed.
 
 `scripts/check.sh` runs `scripts/coverage.py`. The script gives the line,
 branch and condition coverage of `src/` by the lib tests. It does not count a
-test file. Its header defines each item and the compare. A box without
-`cargo-llvm-cov` or the nightly toolchain skips it with a note. When nightly has
-no `llvm-tools-preview`, the run installs it. A family crate can run the same
-script on itself.
+test file. Its header defines each item and the compare.
+
+A box without `cargo-llvm-cov` or the nightly toolchain skips it with a note.
+When nightly has no `llvm-tools-preview`, the run installs it. A family crate
+can run the same script on itself.
 
 The coverage is a gate, not a seam. It shows the code that the tests run, not
 the behavior that they check.

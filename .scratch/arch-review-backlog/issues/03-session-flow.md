@@ -70,12 +70,13 @@ burn-mamba runs the same coverage script on burn-mamba, which has no
 
 Three texts describe `Cadence::valid_batches`. They are its field doc, the flag
 line of `--valid-batches` in the `HELP` text of the CLI module, and the
-`BEHAVIOR OVERVIEW` list of `HELP`. The field doc and the flag line say "the batches that a periodic
-validation reads". The list says "--valid-batches caps the batches that a
-validation reads". The code follows the list: each example caps its initial and
-periodic validations. The reset and tally
-ladders also cap their final validation. The other examples run a full validation
-at each epoch end, with no cap.
+`BEHAVIOR OVERVIEW` list of `HELP`. The field doc and the flag line say "the
+batches that a periodic validation reads". The list says "--valid-batches caps
+the batches that a validation reads".
+
+The code follows the list: each example caps its initial and periodic
+validations. The reset and tally ladders also cap their final validation. The
+other examples run a full validation at each epoch end, with no cap.
 
 **Desired behavior:**
 A test module of `Session` drives the loop order above with no model, no tensor and
@@ -141,9 +142,9 @@ validation, except a full validation.
       that this session processed.
 - [ ] `MetricsLog`: the test reads `metrics.jsonl` back. Each session writes one
       `start` line first. Each line has the `training_step`, `epoch` and `batch` of
-      the progress. A `train` line has `lr` and the given fields. A `valid` line has
-      `split`. A non-finite value is `null`. A second session adds its lines to the
-      same file.
+      the progress. A `train` line has `lr` and the given fields, and a `valid` line
+      has `split`. A non-finite value is `null`. A second session adds its lines to
+      the same file.
 - [ ] The test module starts with a header that lists what its tests assert, as the
       other test modules of the crate do.
 - [ ] The check script runs the lib tests with `examples-common` on. One run is

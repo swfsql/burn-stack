@@ -17,7 +17,7 @@ is 17 MB.
 ## Considered Options
 
 - **`detach`**: it cuts the gradients, but it keeps almost every activation.
-- **A bare `Tensor::from_inner` to come back**: since Burn PR #5557,
+- **A bare `Tensor::from_inner` to return to autodiff**: since Burn PR #5557,
   `from_inner` is `Tensor::autodiff`. It enables autodiff also on a plain
   tensor, and it always sets the `Disabled` checkpointing strategy. On a
   device with gradient checkpointing, the first op that mixes the result with

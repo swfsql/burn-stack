@@ -99,7 +99,9 @@ each of them. So no test is rule 2 or rule 3.
 
 The split and step tests also compare gradients across the cache of a block. The block
 contracts compare only values. burn-mamba checks the Mamba side of that property in the
-family tests of its forms and paths. The spec keeps these tests out of scope. Examples are
+family tests of its forms and paths.
+
+The spec keeps these family tests out of scope. Examples are
 `forward_single_ssd_split_matches_full` and its `_mimo` twin in
 `src/mamba3/single_ssd/single_ssd/tests.rs`. They compare the gradients across a split
 through the cache, on the `Minimal` path. The source tests also ran only the `Minimal`
@@ -174,7 +176,8 @@ run installed it.
 
 - Fixed:
   - The glossary terms: no "carry" alone and no "carrier" in the docs of the identity
-    tests. The module header cites ADR-0003, and no longer contradicts its own checks.
+    tests. The module header contradicted its own checks. The fixed header cites
+    ADR-0003 and does not contradict them.
   - The STE rules in the doc comments: the phrasal verbs, two long sentences, an ellipsis,
     and "probe" with two meanings (the closure is `grads_of_untracked_caches`).
   - The doc of the probe said that the steps of untracked ops keep no activation. It now

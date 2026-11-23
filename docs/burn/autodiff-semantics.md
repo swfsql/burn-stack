@@ -194,8 +194,8 @@ inside a backward (`cleanup_orphaned_entries`, in
 `crates/burn-autodiff/src/runtime/graph.rs`). A backward frees:
 
 - the steps that it consumes,
-- the branches of its own graph that no live tensor needs any more,
-- the orphaned entries of other graphs that no longer look useful.
+- the branches of its own graph that no live tensor needs,
+- the orphaned entries of other graphs that do not look useful.
   **Measured** (the setup of the table below): an unrelated backward frees the
   untracked steps of another graph. It does not free the steps that depend on
   a live `Grad` leaf.
@@ -300,7 +300,7 @@ kind. `Param<Flag>` is a training switch (§9.4). A tensor parameter holds:
 |---|---|---|---|
 | `valid()` | Off, configured state kept | Off, configured state kept | **Removed** (also the strategies) |
 | `train()` | Configured state applied | Configured state applied | **Enabled with `from_inner`**, on every device. A plain parameter gets the strategy `Disabled`. |
-| `no_grad()` = `set_require_grad(false)` | Off, **persistent**: `train()` keeps them off | Unchanged | Unchanged |
+| `no_grad()` = `set_require_grad(false)` | Off, **persistent**: `train()` does not enable them | Unchanged | Unchanged |
 | `set_require_grad(b)` | All tensor parameters | Unchanged | Unchanged |
 | `set_require_grad_group(g, b)` | Matched tensor parameters | Ignored, also when matched | Unchanged |
 | `freeze()` / `unfreeze()` | All off / all on, persistent | All off / all on | Unchanged |
@@ -317,8 +317,8 @@ kind. `Param<Flag>` is a training switch (§9.4). A tensor parameter holds:
 - `unfreeze()` sets every flag to *on*. It does not restore earlier values.
 - `set_require_grad(true)` and `unfreeze()` override a selective setup, such
   as the frozen base weights of `apply_lora`. `apply_lora` keeps the flags.
-- `LearningResult::model` comes back in validation mode. Call `train()`
-  before more training.
+- `LearningResult::model` is in validation mode. Call `train()` before more
+  training.
 
 ### 9.3 Plain `Tensor` fields
 

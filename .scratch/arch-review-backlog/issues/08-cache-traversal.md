@@ -16,8 +16,8 @@ and this ticket blocks it.
 
 **Category:** enhancement
 
-**Summary:** Derive the backend hop of a cache from its `CacheTensors` traversal, so
-that the traversal is the only hand-written list of the fields of a cache. Replace the
+**Summary:** Derive the backend hop of a cache from its `CacheTensors` traversal. Then
+the traversal is the only hand-written list of the fields of a cache. Replace the
 two zero-cache methods of `Block` with one method that gives one zero cache.
 
 **Current behaviour:**
@@ -50,8 +50,8 @@ two zero-cache methods of `Block` with one method that gives one zero cache.
   - `cache_from_inner` lifts each tensor with `lift`, as today.
   - `cache_device` panics with a message on a cache that holds no tensor. Its doc gives
     the rule: a per-layer cache holds at least one tensor.
-- `CacheStack::detach` and `Layers::grad_horizon` keep their behaviour: each slot goes
-  back onto its own device, with the checkpointing strategy of that device.
+- `CacheStack::detach` and `Layers::grad_horizon` keep their behaviour: each slot
+  returns to its own device, with the checkpointing strategy of that device.
 - The doc that gives the reason for a hand-written list (`Module::map` does nothing on a
   plain `Tensor` field) moves to `CacheTensors`. The traversal is now the one list.
 - `Block::zero_cache(&self, batch, device) -> Self::Cache` replaces `zero_caches_3d` and

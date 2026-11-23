@@ -66,8 +66,8 @@ change.
      span and gives the carry. The other one runs at the cut and adds the carry back.
    - The carry is a type of the scheme. Both methods take the residual-streams value
      by move, so ticket 10 can keep its span state inside that value.
-   - The current rule stays. Under Standard, the carry of the token goes back to the
-     token. Under MGR, the carry of the pooled token goes back to the token and to
+   - The current rule stays. Under Standard, the carry of the token returns to the
+     token. Under MGR, the carry of the pooled token returns to the token and to
      every residual stream. Ticket 10 changes the MGR rule.
 4. **The backend hop has one owner.** A private type in `layers.rs` owns everything
    that crosses either end of an untracked span:
@@ -90,10 +90,10 @@ change.
      that the join can call them at each rank.
    - `MultiGateResidual::{forward, step, accumulate, accumulate_step}` stay public
      with the same signatures. They become thin wrappers.
-   - The paths `modules::Residuals` and `modules::ResidualsConfig` stay. The paths
-     `modules::multi_gate::{Residuals, ResidualsConfig}` go away, with no re-export.
-     This breaks the public API, so `Cargo.toml` goes from 0.41.0 to 0.42.0 in the
-     first breaking commit.
+   - The paths `modules::Residuals` and `modules::ResidualsConfig` stay. The ticket
+     removes the paths `modules::multi_gate::{Residuals, ResidualsConfig}`, with no
+     re-export. This breaks the public API, so `Cargo.toml` goes from 0.41.0 to
+     0.42.0 in the first breaking commit.
 6. The public interfaces of `Layers` and `BidiLayers` do not change.
 
 **Tests:**
@@ -138,7 +138,7 @@ change.
 **Constraints:**
 
 - burn-mamba builds against its pin. Do not enable the `[patch]` of burn-mamba for
-  this ticket. burn-mamba uses none of the paths that go away.
+  this ticket. burn-mamba uses none of the paths that the ticket removes.
 - Push the commits when the ticket is complete and reviewed.
 
 **Benches:** none. No bench covers the stack loop: the benches of burn-mamba time one
@@ -180,21 +180,22 @@ Triage of 2026-11-16, against `f2927ae`:
   glossary avoids "carry" alone. `open_span` takes the straight-through carry on the
   autodiff side, then moves the value to the inner backend. `close_span` lifts the
   value, then adds the carry back. So the order of each end of a span is in one function.
+
   The owner `BackendHop` (in `layers.rs`) decides where each end is, and it hops the
   cache slots. At the top, it drops the residual streams (`ResidualStreams::into_top`)
   and calls `close_span`. This matches the base, which lifted only the token there.
 - For ticket 10: `open_span` and `close_span` run on the `Residuals` of the tracked
   stack, not on the `Module::valid` view. The join of an untracked layer runs on the
-  view. So a per-stream factor can update on the inner backend inside the join, and
-  `close_span` must take the aggregator weights from the value, not from the MGR
-  parameters. `StraightThroughCarry<R, S>` has the stream rank `S` for the per-stream
-  carries of ticket 10.
+  view. So a per-stream factor can update on the inner backend inside the join. For
+  the same reason, `close_span` must take the aggregator weights from the value, not
+  from the MGR parameters. `StraightThroughCarry<R, S>` has the stream rank `S` for
+  the per-stream carries of ticket 10.
 - `pub mod residuals` adds the path `modules::residuals::{Residuals, ResidualsConfig}`,
   in the pattern of `pub mod multi_gate`.
 - `rg multi_gate_streams_seed src docs` finds nothing. From the repo root, `rg` also
   finds the text of this ticket.
 - The review (`tmp/arb02/review-standards.md`, `tmp/arb02/review-spec.md`) found no
-  error in the code. Its doc and test findings are fixed. Two smells stay: the
+  error in the code. The ticket fixed its doc and test findings. Two smells stay: the
   `JoinAt` of `BidiLayers::forward` repeats the shape of `Layers::join_at`, with pair
   indices. And `forward_rows` puts its one value in a `Vec`, because one `BackendHop`
   serves both loops.
@@ -232,4 +233,4 @@ bump gives the test binary a new hash, so the coverage target dir kept the binar
 0.41.0. `cargo llvm-cov report` merged its zero counts, mapped onto the new source.
 `cargo +nightly llvm-cov clean --workspace` removed it, and the compare above ran after
 that. The user then chose to change `scripts/coverage.py`: each run cleans with
-`cargo llvm-cov clean --workspace`, so it also deletes such an old binary.
+`cargo llvm-cov clean --workspace`, so it also removes such an old binary.

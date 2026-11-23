@@ -34,8 +34,8 @@ method and the acceptance criteria of ticket 02. Build and test with the
 ## Acceptance criteria
 
 - [x] For each _Avoid_ term, `rg` over the scope finds only the uses that the
-      tables of ticket 02 permit. Each other hit that you keep is listed with
-      its reason under `## Comments`.
+      tables of ticket 02 permit. `## Comments` lists each other hit that you
+      keep, with its reason.
 - [x] `cargo check --features examples-common` and
       `cargo test --lib --features examples-common -- --test-threads=1` pass
       (flex).

@@ -74,12 +74,12 @@ Add these after the merge:
 
 The reports mark 29 rows as wrong:
 
-- Text, and usually citations: R1, R2, R3, R4, R5, R6, R7, R10, R11, R16, R19, R20, R21,
-  R25, R26, R29, R37, R41, R43, R44, R46, R48, R51, R52.
+- Text, and usually citations: R1–R7, R10, R11, R16, R19–R21, R25, R26, R29, R37, R41,
+  R43, R44, R46, R48, R51, R52.
 - Citations only: R31, R35, R47, R49, R53.
 
-The other 13 corrected rows take a proved addition from a note in a report: R8,
-R9, R18, R22, R30, R32, R33, R36, R39, R40, R42, R45, R55.
+The other 13 corrected rows take a proved addition from a note in a report. They
+are R8, R9, R18, R22, R30, R32, R33, R36, R39, R40, R42, R45 and R55.
 
 ### Lead decisions
 

@@ -4,9 +4,11 @@ A real layer can hold a parameter once for each of its applications (an
 untied parameter). The copies lie side by side on an axis that the parameter
 already has. For example, a gain of `d_model = 4` values, untied over 3
 applications, has the shape `[12]`. So the parameter keeps its rank, its type
-and its path. Application `k` reads its own copy through `untied::view`. A
-real layer with one application keeps its stock shape. So the default case
-(no virtual layers, no untied parameter) has no extra cost.
+and its path.
+
+Application `k` reads its own copy through `untied::view`. A real layer with
+one application keeps its stock shape. So the default case (no virtual
+layers, no untied parameter) has no extra cost.
 
 ## Considered Options
 

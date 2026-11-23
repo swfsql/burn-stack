@@ -48,7 +48,8 @@ mechanism.
 3. **Letters.** The H-Net and Multi-Gate Residuals rows of research part 5.3.
 
 **Citations.** A source citation has the form `file:line`, and the doc header
-gives the path aliases. Our own code is cited by item name, with no line number.
+gives the path aliases. A citation of our own code gives the item name, with no
+line number.
 
 **The `Layer` wording.** The glossary now says "A Pre-LN norm around one block,
 with an optional feed-forward part. The layer stack combines its output with its

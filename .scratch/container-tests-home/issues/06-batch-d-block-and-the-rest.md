@@ -279,10 +279,11 @@ burn-stack cover more:
 The compare lists 1 lost line: line 232 of `src/block_contract.rs`. It is not lost code.
 Line 232 is a closing brace of the two loops of `padded_rows_equal_each_row_alone`. The
 compiler gives no coverage region to that brace and to the brace after it. Each line of
-the loop body runs 26 times. At the base, the one closing brace of the loop had a region,
-and the diff maps that brace to line 232. `compare_items` counts a line with no region as
-a line that ran 0 times. The user chose to record this here, with no change of the
-script.
+the loop body runs 26 times.
+
+At the base, the one closing brace of the loop had a region, and the diff maps that brace
+to line 232. `compare_items` counts a line with no region as a line that ran 0 times. The
+user chose to record this here, with no change of the script.
 
 The compare also lists 19 lines, 2 branches and 1 condition on changed lines. Of these,
 14 lines, the branches and the condition are the old body of
@@ -312,6 +313,7 @@ the signature of `cache_diff`, now `pub(crate)`, and the loop of `step_unrolled`
   whole tensor to the stock Muon. The test fails at copy 0, in fp32 (difference 0.45,
   tolerance `1e-4`) and under `dev-f16` (difference 0.39). The red check reverted the
   break after the run. The test passes in fp32 and under `dev-f16`.
-- The seam row "Containers with real blocks" of `docs/agents/testing.md` is deleted, as
-  the spec says: "**Block contracts** (new) replaces **Containers with real blocks**".
-  The line of `CLAUDE.md` about the tests of `../burn-mamba` names the block contracts.
+- The ticket deletes the seam row "Containers with real blocks" of
+  `docs/agents/testing.md`, as the spec says: "**Block contracts** (new) replaces
+  **Containers with real blocks**". The line of `CLAUDE.md` about the tests of
+  `../burn-mamba` names the block contracts.

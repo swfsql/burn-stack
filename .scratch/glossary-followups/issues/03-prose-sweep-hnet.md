@@ -32,8 +32,8 @@ ticket 02.
 ## Acceptance criteria
 
 - [x] For each _Avoid_ term, `rg` over the scope finds only the uses that the
-      tables of ticket 02 permit. Each other hit that you keep is listed with
-      its reason under `## Comments`.
+      tables of ticket 02 permit. `## Comments` lists each other hit that you
+      keep, with its reason.
 - [x] `cargo check` and `cargo test --lib -- --test-threads=1` pass (flex).
 - [x] `cargo doc --no-deps` has no warnings.
 
@@ -113,6 +113,7 @@ For a later rename:
   `HNetVocabNetwork` **start embeddings**. The old prose called them "start
   rows". The new name follows the field `start_emb` and the rename
   `splice_class_embeddings` of ticket 02. The glossary has no term for them.
+
   Open for the user: does the glossary need an entry for **start embedding**
   (and for **scan block**)? A start embedding is close to a **class marker**,
   but `HNet` refuses class markers. The user chose to add **start

@@ -202,13 +202,12 @@ scripts/coverage.py    the coverage of `src/` by the lib tests, and its compare 
 - A dangerous-command-guard hook (`dcg`) checks each Bash command. It also
   blocks a `>` redirect to a path that holds a variable. Use a literal path or
   a script file.
-- **Waiting**: some commands or waits can take more than ~1 min: a build, a
-  run, a chain of runs, or one part of a chain. For these, do not hold the
-  turn. Use no foreground loop (`until`, `while`), no `sleep` and no long
-  `timeout`. Watch the job in the background, then return the turn to the
-  user. A `Monitor` is the best watch. A background waiter script or
-  `run_in_background` is also correct. The watch also reports each failure
-  state (for example, a crash).
+- **Waiting**: a build, a run, a chain of runs or one part of a chain can take
+  more than ~1 min. Run each such command or wait in the background. Watch it
+  with a `Monitor` (preferred), a background waiter script or
+  `run_in_background`, then return the turn to the user. The watch also
+  reports each failure state (for example, a crash). Do not hold the turn with
+  a foreground loop (`until`, `while`), a `sleep` or a long `timeout`.
 - **Agents**: run one agent at a time, even if a skill or a ticket asks for
   parallel agents. A usage limit makes each active agent pay for a cold cache.
 - **Agent size**: a rough estimate only: about 2-3k lines of reads per agent.

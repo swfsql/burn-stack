@@ -33,13 +33,15 @@ carry is the exact leading term of the gradient of the span.
   straight-through carry. It follows the gain `1 − βᵢ` of the carry path of
   its stream. The token gets each straight-through carry times the aggregator
   weight `αᵢ` of its stream in the last pool of the span. A stream that the
-  span appends gets none. The rule holds the scores of the gates and of the
-  aggregator constant across the span. So it is exact only when the
-  transforms of the span are zero and the scores do not depend on the
-  streams. The same rule applies at a cut inside the stack, in a span in
-  which the accumulation phase ends, and in `step` and `prime`. With one
-  module for each virtual layer (`per_virtual_layer`), each join of the span
-  reads the gate of its own virtual layer.
+  span appends gets none.
+
+  The rule holds the scores of the gates and of the aggregator constant
+  across the span. So it is exact only when the transforms of the span are
+  zero and the scores do not depend on the streams. The same rule applies at
+  a cut inside the stack, in a span in which the accumulation phase ends, and
+  in `step` and `prime`. With one module for each virtual layer
+  (`per_virtual_layer`), each join of the span reads the gate of its own
+  virtual layer.
 - A horizon that would leave a parameter with no gradient panics on the
   autodiff backend:
   - An untracked layer 0 under `ignore_first_residual`, or an untracked top

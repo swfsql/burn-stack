@@ -24,9 +24,11 @@ slot.
 **Why:** burn-mamba ticket 19 moves the learnable initial state of Mamba-2 and Mamba-3
 out of the block. A caller then gives a start state as a cache. The cache of a call
 gives the start of each row, and the origin gives the start of each segment. The family
-API of burn-mamba already takes both. A container cannot take an origin today: each
-segment starts from the zero cache of its slot. So a caller can give a start state to
-the rows of a stack, but not to its segments. This ticket closes that gap.
+API of burn-mamba already takes both.
+
+A container cannot take an origin today: each segment starts from the zero cache of
+its slot. So a caller can give a start state to the rows of a stack, but not to its
+segments. This ticket closes that gap.
 
 **Current behaviour:**
 
@@ -95,9 +97,9 @@ the rows of a stack, but not to its segments. This ticket closes that gap.
   batch. Each sequence gives what its own row gives in a batch of plain calls from the
   origin.
 - The hop: `BackendHop::layer` in `src/modules/layers.rs` takes the cache of one slot,
-  moves it down for an untracked layer, and moves the advanced cache back up. The
-  origin of the slot takes the same move down, and no move up. ADR-0003 gives the
-  reason for the hop.
+  moves it to the inner backend for an untracked layer, and lifts the advanced cache.
+  The origin of the slot takes the same move to the inner backend, and no lift.
+  ADR-0003 gives the reason for the hop.
 - The tests to extend or copy:
   - `src/reference/tests/packed.rs`: the packed tests of `Layer`, `Layers` and
     `VocabNetwork`.
@@ -110,9 +112,9 @@ the rows of a stack, but not to its segments. This ticket closes that gap.
 
 - Read `docs/burn/autodiff-semantics.md` before you write the hop of the origins and
   the gradient tests: §1, §3 and §11. ADR-0003 gives the hop.
-  - The origin of an untracked slot goes down with `cache_to_inner`, as its cache does.
-    On a plain origin, this does nothing (rule 3). The origin does not come back up,
-    because the call does not return it.
+  - The origin of an untracked slot moves to the inner backend with `cache_to_inner`,
+    as its cache does. On a plain origin, this does nothing (rule 3). The origin gets
+    no lift, because the call does not return it.
   - An origin from the caller follows the rules of a cache. It has the checkpointing
     strategy of the stack, or an op panics (rule 2, trap 2). An origin that an earlier
     backward used needs a detach or a round trip first (trap 11). The docs of

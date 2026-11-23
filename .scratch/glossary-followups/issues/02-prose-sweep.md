@@ -72,8 +72,8 @@ replacement. Write in the style of the `asd-ste100` skill.
 ## Acceptance criteria
 
 - [x] For each _Avoid_ term, `rg` over the scope finds only the uses that the
-      tables permit. Each other hit that you keep is listed with its reason
-      under `## Comments`.
+      tables permit. `## Comments` lists each other hit that you keep, with its
+      reason.
 - [x] `cargo check` and `cargo test --lib -- --test-threads=1` pass (flex).
 - [x] `cargo doc --no-deps` has no warnings.
 
@@ -179,8 +179,8 @@ only.
   words of CLAUDE.md and of the glossary. No link points to its anchor.
 - "Block" alone now names only the block of a family. "Sub-block" names one
   of the two Pre-LN parts of a layer: the block, or the feed-forward. So the
-  feed-forward is no longer a "block" (`mlp.rs`, `norm/rms_norm.rs`, the
-  `Layer` docs).
+  feed-forward is not a "block". The sweep changed that word in `mlp.rs`,
+  `norm/rms_norm.rs` and the `Layer` docs.
 
 ### A doc that does not match its test
 

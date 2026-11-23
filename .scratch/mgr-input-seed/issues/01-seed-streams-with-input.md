@@ -6,7 +6,7 @@ Blocked by: `.scratch/glossary-followups/` 01 to 05 (the glossary changes)
 
 **What to build:** A setting of Multi-Gate Residuals that starts every
 residual stream as a copy of the stack input. This is an idea of the user, and
-nobody has thought it through yet.
+nobody has examined it yet.
 
 ## Facts from the burn-stack grill
 

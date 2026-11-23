@@ -23,7 +23,7 @@ cache traversal that only forwards to the `Vec`. There are 7 such types: `RefCac
 - `Mamba3Caches::from_slots` guesses the pathway from slot 0.
 
 The contract `cache_stack_moves_every_slot` tests only these impls. Deletion test:
-with the 7 types deleted, no complexity comes back, because `modules/cache.rs` already
+with the 7 types deleted, no complexity reappears, because `modules/cache.rs` already
 gives `Vec<C>` a cache traversal.
 
 **Direction:** The containers hold `Vec<M::Cache>`. `Block::Caches` and `CacheStack`
@@ -349,7 +349,7 @@ undone.
 | branches | 299 of 418 (71.5%) | 299 of 418 (71.5%) |
 | conditions | 122 of 209 (58.4%) | 122 of 209 (58.4%) |
 
-Lost items: 0 lines, 0 branches, 0 conditions. The line count goes down because
+Lost items: 0 lines, 0 branches, 0 conditions. The line count drops because
 the change deletes covered code (`CacheStack`, `RefCaches`, the two contracts).
 
 ### Review
@@ -362,8 +362,8 @@ No hard violation, and no missing requirement.
 
 Fixed:
 
-- The doc of `detach_keeps_the_device_of_each_slot` said that each slot goes back
-  onto its own device. `cache_detach` on a `Vec` puts each tensor onto the device of
+- The doc of `detach_keeps_the_device_of_each_slot` said that each slot returns to
+  its own device. `cache_detach` on a `Vec` puts each tensor onto the device of
   the first tensor. The doc now says "the device of the stack".
 - The doc of `Block`: "A family can accept no cache in its own API" can also mean
   that a family refuses each cache. The doc now says that the API of a family can

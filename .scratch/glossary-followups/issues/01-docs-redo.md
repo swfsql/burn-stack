@@ -32,7 +32,7 @@ module headers.
   to the module header. If it holds a new term or a new decision, also add a
   note under `## Comments` for the user. Do not edit the glossary or the ADRs.
 - The block-agnostic rule is ADR-0002. Code is block-agnostic by default, and
-  docs can cite a family. A rare exception is named after the mechanism.
+  docs can cite a family. A rare exception takes the name of the mechanism.
   burn-mamba and burn-deltanet are consumers.
 - The doc-maintenance rules:
   - Keep the docs small, and never use them as a changelog (keep this rule).
@@ -41,8 +41,8 @@ module headers.
   - A new term goes to `GLOSSARY.md` (through `/domain-modeling`). A new
     decision with a trade-off goes to an ADR.
   - Delete the `tmp.md` rule and the "do not read big files at the end" rule.
-- Custom Commands: `mv` and `cp` are allowed to move and copy files. Content
-  edits still use the Edit/Write tools. Keep the other rules.
+- Custom Commands: the rules permit `mv` and `cp` to move and copy files.
+  Content edits still use the Edit/Write tools. Keep the other rules.
 - Do not edit README.md. Ticket 02 sweeps its prose.
 
 ## Decisions from the burn-stack grill
@@ -86,10 +86,10 @@ module headers.
 - [x] CLAUDE.md has about 200 lines or fewer, and its File Map has 40 lines or
       fewer.
 - [x] Each deleted CLAUDE.md paragraph has its content in the glossary, an ADR
-      or a module header, or is listed under `## Comments`.
-- [x] No doc of this repo links to a CLAUDE.md anchor that is gone. Each line
-      of `../burn-mamba` or `../burn-deltanet` that the change makes stale is
-      listed under `## Comments`.
+      or a module header, or `## Comments` lists it.
+- [x] No doc of this repo links to a CLAUDE.md anchor that is gone.
+      `## Comments` lists each line of `../burn-mamba` or `../burn-deltanet`
+      that the change makes stale.
 - [x] `cargo check` passes, and `cargo doc --no-deps` has no warnings.
 - [x] The asd-ste100 lint (`ste-lint.py`) passes on CLAUDE.md.
 

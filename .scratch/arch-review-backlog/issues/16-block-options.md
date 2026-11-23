@@ -18,9 +18,9 @@ parameter of each forward in `src/modules/{layer,layers,network,bidi}.rs` and
 **Problem:** Each forward of each container passes `options` to the next module, with
 the bound `M::Options: Clone`. `step` and `prime` take none. In the examples, the
 value is a constant of the run (`Run::ssd_path`). The run-time family choice adds the
-enum `MambaSsdPath`, 5 functions that extract the path of one family, and a panic for
-a path of the wrong family. One `Options` value also makes a mixed stack panic
-(ADR-0009 of burn-mamba).
+enum `MambaSsdPath` and 5 functions that extract the path of one family. It also adds
+a panic for a path of the wrong family. One `Options` value also makes a mixed stack
+panic (ADR-0009 of burn-mamba).
 
 **Direction:** The block holds its options as a non-parameter field, as `Layers` holds
 `grad_horizon`. `Block::Options`, the `options` parameters and `MambaSsdPath` go, and
@@ -71,5 +71,5 @@ before this ticket, because they change the same signatures. After them:
 - `Layer::forward`, `Layer::forward_packed` and `Layer::step` take `M::Cache`.
 - The containers take `Option<Vec<M::Cache>>`, and return `Vec<M::Cache>`. `HNet`
   and `HNetVocabNetwork` take `Option<HNetCaches<E, M>>`.
-- So the `options` parameter is the only change of these signatures that is left for
+- So the `options` parameter is the only change of these signatures that remains for
   this ticket.

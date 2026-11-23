@@ -98,9 +98,11 @@ names a port that runs it:
 
 A container gives a block two forms of an empty cache. `Layers::forward` and
 `Layers::step` start from `Block::zero_cache`. `Layers::prime` starts from empty slots,
-so `Layer::step` gives `None` to `block_step`. The prime tests compare a prime with a
-forward. So they rely on this: a block from its zero cache equals the block from no
-cache. No block contract states it. `prime_emits_the_class_markers_a_step_would_drop` and
+so `Layer::step` gives `None` to `block_step`.
+
+The prime tests compare a prime with a forward. So they rely on this: a block from its
+zero cache equals the block from no cache. No block contract states it.
+`prime_emits_the_class_markers_a_step_would_drop` and
 `prime_on_a_network_covers_every_class_level` check it on Mamba-2 only.
 
 So the sort adds one contract, `zero_cache_equals_no_cache` (rule 2). burn-mamba ticket 03

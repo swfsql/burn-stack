@@ -76,8 +76,8 @@ Do not implement cases 1 and 2 before the user selects an option.
 - [x] Each fix has a test that fails before the fix.
 - [x] Coverage: run `scripts/coverage.py --base BASE`, with `BASE` = the last commit of
       ticket 10. Copy the result into a **Coverage result** section of this ticket. The
-      branch and condition coverage of `residuals.rs` and `layers.rs` goes up, and no
-      item is lost. (`layers.rs` stays the same: see the Coverage result.)
+      branch and condition coverage of `residuals.rs` and `layers.rs` increases, and
+      no item is lost. (`layers.rs` stays the same: see the Coverage result.)
 - [x] The checks and tests of this repo pass, as `CLAUDE.md` gives them, with no
       warnings.
 - [x] The doc of `Layers::grad_horizon` and ADR-0006 give the rule of each edge case.
@@ -133,8 +133,8 @@ Decisions of the user:
 
 1. Cases 1 and 2: option (iii). `grad_tracked` panics when `ignore_first_residual`
    leaves virtual layer 0 untracked, or `ignore_last_residual` leaves the top layer
-   untracked. Then each span pools, so `alpha` lives only inside a span, and the
-   `None` arm of `close_span` goes away.
+   untracked. Then each span pools, so `alpha` lives only inside a span, and
+   `close_span` loses its `None` arm.
 2. The `w_alpha` finding: a panic in this ticket, with its full scope. `grad_tracked`
    panics when an MGR module pools in a tracked layer, but no such layer feeds a
    tracked layer or the stack output. A module with no tracked pool does not panic
@@ -161,9 +161,9 @@ The tests (`src/reference/tests/grad_horizon.rs`):
 
 - `assert_zero_transform_span_is_exact` takes a `ZeroTransformSpan` (stack, mask,
   `UntrackedGates`) and a `Call` (`Forward`, `Step`, `Prime`). It compares the
-  gradient of the input (the class latent in the prime) and the gradients of each
-  tracked real layer and of its MGR module. `UntrackedGates::Alternating` gives the
-  modules of a span different gates.
+  gradient of the input (the class latent in the prime). It also compares the
+  gradients of each tracked real layer and of its MGR module.
+  `UntrackedGates::Alternating` gives the modules of a span different gates.
 - Cases 3, 4 and 5 each have one test that loops over the three calls. That loop is
   case 6. The stacks share real layers, because the `w_alpha` panic rejects a span
   above a tracked layer whose module pools only there:
@@ -190,9 +190,9 @@ The tests (`src/reference/tests/grad_horizon.rs`):
 The red runs:
 
 - Before the panics, each panic test failed with "the run does not panic".
-- Cases 3, 4 and 5 passed with no fix. Two mutations of `close_span` fail them: "only
-  the seed stream gets a straight-through carry" (before the move, in each call), and
-  "the gain of each carry path is 1" (after the move, each test with an open gate).
+- Cases 3, 4 and 5 passed with no fix. Two mutations of `close_span` fail them:
+  - "only the seed stream gets a straight-through carry" (before the move, in each call),
+  - "the gain of each carry path is 1" (after the move, each test with an open gate).
 
 The review (`tmp/arb11/review-standards.md`, `tmp/arb11/review-spec.md`) found no
 error in the checks. The fixes after it:
@@ -235,7 +235,7 @@ The compare lists 0 lost lines, 0 lost branches and 0 lost conditions.
 | `src/modules/residuals.rs` | 12 of 12 → 34 of 34 | 6 of 6 → 17 of 17 |
 | `src/modules/layers.rs` | 22 of 24 → 22 of 24 | 10 of 12 → 10 of 12 |
 
-The coverage of `layers.rs` does not go up. Its change adds no branch: the checks are
+The coverage of `layers.rs` does not increase. Its change adds no branch: the checks are
 in `residuals.rs`, and `grad_tracked` only calls them. An `&&` in a `debug_assert` of
 `open_span` had two outcomes that no test can reach. Two separate `debug_assert`s
 replace it, each with its own message. `src/block_contract.rs` and

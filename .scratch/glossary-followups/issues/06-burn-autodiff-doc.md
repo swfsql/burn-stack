@@ -25,7 +25,7 @@ by accident, and it describes an older Burn revision.
   `Cargo.lock`), not the `8f08fdad` git revision.
 - §14 lists the differences at `8f08fdad`. Check each row of §13 and §14
   against the Burn 0.22.1 source. Rewrite §14 for 0.22.1, or delete it when no
-  difference is left. Fix the anchors that point to it.
+  difference remains. Fix the anchors that point to it.
 - Delete each reference that exists only in the burn-bug workspace
   (`projects/autodiff-retention`, `projects/untied-leak`, `issues/issue9.md`,
   "this workspace"). Keep each measured number and its **Measured** mark, and
@@ -40,8 +40,8 @@ by accident, and it describes an older Burn revision.
       with its reason under `## Comments`.
 - [x] ADR-0003 and the "where to look" map of CLAUDE.md link to the doc, and
       the links resolve.
-- [x] The asd-ste100 lint (`ste-lint.py`) passes on the doc, or each
-      remaining hit is listed under `## Comments`.
+- [x] The asd-ste100 lint (`ste-lint.py`) passes on the doc, or
+      `## Comments` lists each remaining hit.
 
 ## Comments
 
@@ -65,9 +65,10 @@ This table replaces the "per the PR title" and "not checked" cells of §14.
 **burn-deltanet.** It pins Burn `4a0d726` (2026-09-10). That revision has the
 §13 PRs, but none of the PRs of this table. So the "before" column stays true
 for burn-deltanet until it moves to 0.22.1. For example, its `repeat_dim`
-gradient is wrong. The user said that this comment is sufficient, so the doc
-does not list these rows. The "Older code" line of the doc says that the
-doc describes 0.22.1 only.
+gradient is wrong.
+
+The user said that this comment is sufficient, so the doc does not list these
+rows. The "Older code" line of the doc says that the doc describes 0.22.1 only.
 
 **§13 is here, not in the doc.** The user asked the implementer to decide. The
 reasons:
@@ -79,12 +80,13 @@ reasons:
   §13. They moved to the doc: the mapper and the LoRA flags (§9.2), the
   hand-written update loop (§8), and the metric tensors (§10).
 
-Each row is checked against the 0.22.1 source. All PRs and merge dates match
-`git log v0.22.1`. These PRs merged between 2026-08-27 and 2026-09-08. Code for
-an older Burn can compile after them and do something different. Before the
-Dispatch API (Burn 0.22), `inner` and `from_inner` converted between the types
-`Tensor<B>` and `Tensor<B::InnerBackend>`. Code on a plain backend could not
-call `from_inner`. Code ported from that API often keeps
+This ticket checked each row against the 0.22.1 source. All PRs and merge dates
+match `git log v0.22.1`. These PRs merged between 2026-08-27 and 2026-09-08.
+Code for an older Burn can compile after them and do something different.
+
+Before the Dispatch API (Burn 0.22), `inner` and `from_inner` converted between
+the types `Tensor<B>` and `Tensor<B::InnerBackend>`. Code on a plain backend
+could not call `from_inner`. Code ported from that API often keeps
 `Tensor::from_inner(x.inner())` round trips, which now enable autodiff on plain
 tensors. Each § in the table is a section of the doc.
 

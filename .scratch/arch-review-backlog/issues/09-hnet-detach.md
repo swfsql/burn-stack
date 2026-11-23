@@ -38,11 +38,11 @@ impls out of scope. This ticket removes the field list that remains in H-Net.
   free function in `src/modules/cache.rs`, beside the hop of ticket 08. It is the round
   trip: `cache_device`, `cache_to_inner`, then `cache_from_inner` onto that device. The
   agent selects the name. A cache type cannot override it.
-- `CacheStack::detach` calls it on each slot. Each slot still goes back onto its own
+- `CacheStack::detach` calls it on each slot. Each slot still returns to its own
   device, with the checkpointing strategy of that device.
 - `HNetCaches::detach` calls it on the whole cache. It names no field. It requires
   `E::Caches: CacheTensors` and `M::Caches: CacheTensors`, as `HNet::step` does.
-- Each tensor of an H-Net cache goes back onto the device of the cache. All the tensors
+- Each tensor of an H-Net cache returns to the device of the cache. All the tensors
   of one H-Net cache are on one device. So the result is the same as the per-tensor
   `hop` of today.
 - The docs of `HNetCaches::detach`, of `CacheStack::detach` and of the module header

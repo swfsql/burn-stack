@@ -290,8 +290,8 @@ the autodiff backend at its cut.
 _Avoid_: horizon hop
 
 **Straight-through carry**:
-What enters an untracked span, added back at its cut with value zero and the
-gradient of the carry path of the residual scheme.
+What enters an untracked span, added back at its cut. It has the value zero
+and the gradient of the carry path of the residual scheme.
 _Avoid_: carry (alone)
 
 ### Optimizer

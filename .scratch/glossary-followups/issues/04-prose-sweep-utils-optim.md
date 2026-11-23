@@ -37,8 +37,8 @@ method and the acceptance criteria of ticket 02.
 ## Acceptance criteria
 
 - [x] For each _Avoid_ term, `rg` over the scope finds only the uses that the
-      tables of ticket 02 permit. Each other hit that you keep is listed with
-      its reason under `## Comments`.
+      tables of ticket 02 permit. `## Comments` lists each other hit that you
+      keep, with its reason.
 - [x] `cargo check` and `cargo test --lib -- --test-threads=1` pass (flex).
 - [x] `cargo doc --no-deps` has no warnings.
 
@@ -72,15 +72,17 @@ each one, or it has a different meaning from the _Avoid_ entry:
 - **level**: a marker level (`class/mod.rs`, `padding/tests.rs`), and
   "high-level", "primitive-level" and "lower-level" (`fprim.rs`,
   `utils/mod.rs`).
-- **slot**: the **Slot** of the glossary. Examples: the opening slots of a
-  packed row (with the locals `slot_bs`, `is_slot_bs` and `slots` of
-  `Packed::place`), a cache slot (the message `"{label}: slot {i} …"` of
-  `graph/tests.rs`, the doc of `check_each_slot_alone`), and the `slot`
-  locals of `CapturedStep` (the `Option` in a `RefCell`).
-- **row**: a row of a batch. Also a row of a matrix or a table: the rows of a
-  class marker table and of the table of `Packed::place`, `fprim.rs`, the
-  rows of a strided cubecl buffer (`graph.rs`, `graph/tests.rs`), and `Row`
-  and `rows` of `report.rs` (one line of the report).
+- **slot**: the **Slot** of the glossary. Examples:
+  - the opening slots of a packed row (with the locals `slot_bs`,
+    `is_slot_bs` and `slots` of `Packed::place`),
+  - a cache slot (the message `"{label}: slot {i} …"` of `graph/tests.rs`,
+    the doc of `check_each_slot_alone`),
+  - the `slot` locals of `CapturedStep` (the `Option` in a `RefCell`).
+- **row**: a row of a batch. Also a row of a matrix or a table:
+  - the rows of a class marker table and of the table of `Packed::place`,
+  - `fprim.rs`,
+  - the rows of a strided cubecl buffer (`graph.rs`, `graph/tests.rs`),
+  - `Row` and `rows` of `report.rs` (one line of the report).
 - **chunk**: a chunk of a chunked scan ("only at the start of a chunk",
   `packing.rs`). The `chunk_len` code spans are identifiers (see below).
 - **carry**: the plain verb.
@@ -183,13 +185,14 @@ For a later rename:
   the map of each variant, from its `real_idx`. For example, `StridedCyclic`
   runs the straight pass on the even real layers. The two symmetric variants
   name the **bidirectional pair** of the virtual layers `2i` and `2i + 1`.
+
   "Weight set" is now **real layer**, and "weight sharing" is "virtual
   layers" or "tied parameters".
 - **The worked examples of `schedule/mod.rs`** keep their text. Their line
   breaks are now a backslash at the end of the line, not two trailing spaces.
   Rustdoc renders both as a hard line break. The Edit tool cannot keep
-  trailing spaces, so a two-space break goes away at the next edit of its
-  line. This sweep lost four of them before the review found it.
+  trailing spaces, so the next edit of a line drops its two-space break.
+  This sweep lost four of them before the review found it.
 - **The heading of `schedule/mod.rs`** is now "Layer schedules: virtual layer
   → real layer". The old heading said "real-weight scheduling" (a real layer
   and bare "schedule"). No link points to its anchor, in this crate or in a
@@ -200,28 +203,32 @@ For a later rename:
   `[batch, rows]` are now `[batch, sequence]`, after the suffix `_bs`.
   "Chunk" for the part of a sequence that one `forward` takes is now
   **window**.
-- **Class markers.** The header no longer cites `[CLS]` or a "register"
-  (_Avoid_ terms). "At its input boundary" is now "at its input".
-  "Full-length hint" is now **length hint** in the docs.
+- **Class markers.** The sweep removed the citations of `[CLS]` and of a
+  "register" from the header (_Avoid_ terms). "At its input boundary" is now
+  "at its input". "Full-length hint" is now **length hint** in the docs.
 - `Padding::reversed` said "Its batch-wide order is the forward one"
   ("forward" for a direction). It now says "Its batch-wide order does not
   change".
 - These messages changed. For each one, the list gives the test that matches
   its text:
-  - `Lr::validate`: "an LR chain needs at least one schedule"
-    (`an_empty_sequence_is_invalid`), "the first schedule of an LR chain must
-    start at training step 0" (`a_sequence_starts_at_step_zero`), and "the
-    schedules of an LR chain must start at increasing training steps"
-    (`the_segments_start_at_increasing_steps`,
-    `validate_checks_the_inner_sequences`). The tests now match the new
-    text.
-  - No test matches these: the `expect` of `Lr::get_lr`, "an LR schedule
-    with a peak of 0 …" (`Lr::set_peak`), the three changed asserts of
-    `Packed`, the shape assert of `Padding::in_row_order`, the three
-    `expect`s of `class/mod.rs` ("the class markers have no embedding
-    param"), and the two invariant messages of `CapturedStep` ("replay needs
-    a recording", "the capture keeps a recording only where it can read the
-    buffer ids").
+  - `Lr::validate`. The tests now match the new text:
+    - "an LR chain needs at least one schedule"
+      (`an_empty_sequence_is_invalid`),
+    - "the first schedule of an LR chain must start at training step 0"
+      (`a_sequence_starts_at_step_zero`),
+    - "the schedules of an LR chain must start at increasing training steps"
+      (`the_segments_start_at_increasing_steps`,
+      `validate_checks_the_inner_sequences`).
+  - No test matches these:
+    - the `expect` of `Lr::get_lr`,
+    - "an LR schedule with a peak of 0 …" (`Lr::set_peak`),
+    - the three changed asserts of `Packed`,
+    - the shape assert of `Padding::in_row_order`,
+    - the three `expect`s of `class/mod.rs` ("the class markers have no
+      embedding param"),
+    - the two invariant messages of `CapturedStep` ("replay needs a
+      recording", "the capture keeps a recording only where it can read the
+      buffer ids").
   - The `Middle` assert of `Padding::splice` now ends with "half of the
     length of each row". `a_middle_marker_needs_the_whole_padded_sequence`
     matches "needs the whole padded sequence", which stays.
@@ -238,9 +245,9 @@ The sweep fixed two docs to match the code:
 
 - `init.rs` listed "a class-token table" among "the bespoke parameters of a
   block". The class marker tables (`class_tokens_emb`, `class_latents_emb`)
-  belong to the networks and the layer containers, not to a block. The list
-  no longer says "of a block", and the comment of `Reinit::map_float` names
-  both kinds.
+  belong to the networks and the layer containers, not to a block. The sweep
+  removed "of a block" from the list, and the comment of `Reinit::map_float`
+  names both kinds.
 - The header of `class/mod.rs` said that a layer inserts the class latents.
   A layer stack also inserts them (`Layers::class_latents`,
   `BidiLayers::class_latents`). The header and the doc of `ClassLatent` now

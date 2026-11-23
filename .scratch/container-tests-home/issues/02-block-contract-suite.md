@@ -87,10 +87,13 @@ of `reference.rs` names the new directory.
 
 ### The review (`tmp/review-cth-02-*.md`)
 
-- Fixed: the panics that did not name the contract, the record check of the
-  step, the row select in the traversal contract, the advice on chunks in the
-  module header, the name `ParamRow` (the glossary **Row** is a sequence), and
-  the doc findings.
+- Fixed:
+  - the panics that did not name the contract,
+  - the record check of the step,
+  - the row select in the traversal contract,
+  - the advice on chunks in the module header,
+  - the name `ParamRow` (the glossary **Row** is a sequence),
+  - the doc findings.
 - Kept: the two tests of `src/reference/tests/block.rs` repeat contracts. The
   batch tickets delete them. The README names the module for a new family
   crate.

@@ -156,7 +156,7 @@ A block config builds the block for one application.
   that the layer tiles the untied parameters.
 - **`untied::tile<M: Module>(module: M, params: &[UntiedParam], n_applications: usize) -> M`**:
   - It repeats each parameter of `params` `n_applications` times along its axis.
-  - With `n_applications == 1`, it gives `module` back unchanged.
+  - With `n_applications == 1`, it returns `module` unchanged.
   - It keeps the `ParamId`, the `require_grad` flag and `is_active` of each parameter.
   - The `tile` of one parameter goes.
 - **`untied::retie`** keeps its signature. `retie` and `tile` share one private mapper.
@@ -252,7 +252,7 @@ BASE is `12d885f`. Its lib tests: 210 listed, 206 passed, 4 ignored. After the c
 
 Three choices that **Key interfaces** does not name:
 
-- `tile` also gives `module` back unchanged when `params` is empty, as `retie` does.
+- `tile` also returns `module` unchanged when `params` is empty, as `retie` does.
 - The shared mapper is `Repeat`. Its field `stored_copies` is the count of copies
   that the stored tensor holds: 1 for `tile`, and `n_applications` for `retie`.
 - The tile visits the fields of `Layer` in their order (`norm`, `block`, `norm2`), not
@@ -294,7 +294,7 @@ The change is undone.
 | branches | 299 of 418 (71.5%) | 295 of 412 (71.6%) |
 | conditions | 122 of 209 (58.4%) | 121 of 206 (58.7%) |
 
-Lost items: 0 lines, 0 branches, 0 conditions. The counts go down because the change
+Lost items: 0 lines, 0 branches, 0 conditions. The counts drop because the change
 removes covered code (the guard, `init_applications`, the `tile` of one parameter).
 
 ### Review
