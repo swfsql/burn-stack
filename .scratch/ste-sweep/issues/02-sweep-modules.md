@@ -143,8 +143,7 @@ The two tickets of `../burn-mamba/.scratch/ste-lint-misses/` change the linter
 after this sweep. So the scope gets a second count and a second rewrite.
 
 The installed copy of the skill holds the change of both tickets. The repro
-of each ticket gives its findings, and `--selftest` passes. The repro files
-are in `tmp/ste-sweep-02/`.
+of each ticket gives its findings, and `--selftest` passes.
 
 The scope has 49 tracked `.rs` files. Commit `964345f` (the clamp of
 `.scratch/rms-guard/`) adds `src/modules/norm/tests.rs`. The new linter gives
@@ -183,7 +182,9 @@ Five stay:
   `are untracked` of `src/modules/layers.rs:827`.
 
 No message changes. No changed paragraph has a copy in either repo. The
-recount finds no doc that disagrees with the code, and it has no kept finding.
+recount has no kept finding. The sweep finds no doc that disagrees with the
+code, and the review finds one: see
+[The detach of a cache](#the-detach-of-a-cache).
 
 The prose step of `scripts/check.sh` fails on two ticket files. Each file is
 new at the merge base with `origin/main`, so the step starts it at zero. The
@@ -191,3 +192,41 @@ new linter flags the quoted `blow up` of [For the linter](#for-the-linter) and
 the two quoted `run out` of ticket 03. A quoted word is a kept finding, but the
 step cannot accept one. So the recount puts the three words in code spans, as
 ticket 01 of `ste-lint-misses` does.
+
+### The detach of a cache
+
+The review reads the doc of `cache_detach` against
+`docs/burn/autodiff-semantics.md`. Three docs say that `Tensor::detach` frees
+nothing, or that the detach of a carried cache frees memory:
+
+- `src/modules/cache.rs:55`, in the doc of `cache_detach`,
+- `src/examples/tiny_stories/lm.rs`, in its header and in the doc of
+  `LmModel::detach_caches`,
+- `../burn-mamba/examples/tiny-stories/README.md:135`.
+
+A probe runs a training window loop on `RefBlock`, on flex. Each window runs
+a forward from the carried cache, then one backward:
+
+- Over 200 windows, the RSS stays at about 15 MB with `cache_detach`, with
+  `Tensor::detach` and with no carried cache. A control with `cache_detach`
+  and no backward grows by about 6.4 MB for each window. So only a backward
+  frees the graph, and neither detach frees memory.
+- A control with no detach panics at the second backward ("graph tape has
+  already been consumed").
+- Over 4 windows, both detaches give the same outputs, carried caches,
+  parameter gradients and input gradients as a reference, bit for bit. The
+  reference rebuilds the cache from its data. The stacks are 2 layers, and 2
+  real layers under 5 virtual layers. No backward gives a gradient to the
+  input of the window before it.
+- On a leaf with `require_grad`, `Tensor::detach` keeps `require_grad`, and
+  the round trip makes an untracked root.
+
+The user decides that the prose changes and that the docs keep the
+difference. So the docs say that the backward of each window frees its
+activations. The doc of `cache_detach` gives the two differences of the
+detaches: the `require_grad` of a leaf and the device of each tensor. The
+README is in burn-mamba, so its change is a commit of that repo.
+
+In `lm.rs`, the rewrite also removes two hard findings of ticket 01 of
+`ste-lint-misses`: `cut off` (line 49) and `Cut a carried cache off` (line
+490). The `runs out` of line 708 stays for ticket 06.

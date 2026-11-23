@@ -46,10 +46,11 @@
 //! in no other window. A model with no markers sees no change, and every loop
 //! here runs the same for it.
 //!
-//! The carried cache is cut off the graph ([`LmModel::detach_caches`]). So the
-//! peak memory is the activations of one window, however deep the run goes.
-//! Gradients never pass from one window to the next. Backpropagation within
-//! the window does not change.
+//! [`LmModel::detach_caches`] detaches the carried cache from the graph. So
+//! gradients never pass from one window to the next. The backward of each
+//! window frees its activations, so the peak memory is the activations of one
+//! window, however deep the run goes. Backpropagation within the window does
+//! not change.
 //!
 //! # Packed training
 //!
@@ -487,16 +488,15 @@ pub trait LmModel: Sized {
         class: &mut ClassCursors,
     ) -> (TrainOutput<ClassificationOutput>, Self::Caches);
 
-    /// Cut a carried cache off the autodiff graph. Then the backward of the
-    /// next window stops at its own first token, *and* the detach frees the
-    /// activations of this window.
+    /// Detach a carried cache from the autodiff graph. Then the backward of the
+    /// next window stops at its own first token. The detach frees no memory:
+    /// the backward of this window frees its activations.
     ///
     /// Implement it with [`cache_detach`](crate::modules::cache_detach). One
     /// call detaches all the caches of the network. A plain `Tensor::detach`
-    /// cuts the gradients but frees nothing (see
-    /// [`detach_params`](crate::utils::detach_params)). The peak memory would
-    /// then grow with the run length, and the window loop must prevent exactly
-    /// that.
+    /// gives the same values and the same gradients. The two detaches differ
+    /// on a leaf with `require_grad` and on the device of each tensor (see
+    /// [`cache_detach`](crate::modules::cache_detach)).
     fn detach_caches(caches: Self::Caches) -> Self::Caches;
 
     /// The [`train_window`](Self::train_window) counterpart on the inner

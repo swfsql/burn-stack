@@ -52,10 +52,16 @@ pub fn lift<const D: usize>(tensor: Tensor<D>, device: &Device) -> Tensor<D> {
 /// call detaches all the caches of a stack. A caller can then carry the state
 /// into the next window without the activations of the previous window.
 ///
-/// `Tensor::detach` alone would cut the gradients but free nothing, because
-/// Burn still registers an untracked op (see
-/// [`detach_params`](crate::utils::detach_params)). The backend hop drops the
-/// graph.
+/// `Tensor::detach` on each tensor also detaches the cache. After it, the next
+/// window gets the same values and the same gradients as after the round
+/// trip. Neither detach frees memory: a backward frees the graph (§7 of
+/// `docs/burn/autodiff-semantics.md`). The two detaches differ in these
+/// points:
+///
+/// - On a leaf with `require_grad`, `Tensor::detach` keeps `require_grad`.
+///   The round trip makes an untracked root.
+/// - `Tensor::detach` keeps the device of each tensor. The round trip applies
+///   the rule below.
 ///
 /// The detach follows from [`CacheTensors::zip_tensors`]. So a cache type
 /// cannot override it, and its fields stay in one list.
