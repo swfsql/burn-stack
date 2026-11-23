@@ -31,7 +31,7 @@ fn config(kind: OptimizerKind) -> TrainingConfig {
         ))
 }
 
-/// Pretend optimizer state was saved in `dir`.
+/// Pretend that `dir` holds a saved optimizer state.
 fn save_state(dir: &Path) {
     std::fs::write(dir.join(OPTIM_NAME).with_extension(RECORD_EXT), b"").unwrap();
 }
@@ -71,7 +71,7 @@ fn a_flag_replaces_the_optimizer_of_a_run_without_state() {
     assert_eq!(training.optimizer.kind(), OptimizerKind::Sgd);
     assert!(training.optimizer.plain_sgd().is_some());
     let Lr::CosineAnnealing(cosine) = &training.lr else { panic!() };
-    assert_eq!(cosine.max_lr, 1e-2, "the LR schedule is kept");
+    assert_eq!(cosine.max_lr, 1e-2, "the override keeps the LR schedule");
 }
 
 #[test]

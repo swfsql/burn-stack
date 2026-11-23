@@ -1,8 +1,8 @@
-//! The loss of [`lm_output`] against a host reference: per real position, the
-//! cross-entropy of the id, plus the binary cross-entropy of the case flag on
-//! a letter, summed and divided by the real positions. The padding and the
-//! flags of the symbols do not count. [`case_nll`] stays finite for a large
-//! logit.
+//! The loss of [`lm_output`] against a host reference. At each real position,
+//! the reference takes the cross-entropy of the id, plus the binary
+//! cross-entropy of the case flag on a letter. It divides the sum of these
+//! losses by the number of real positions. The padding and the flags of the
+//! symbols do not count. [`case_nll`] stays finite for a large logit.
 
 use super::{PAD_TARGET, case_nll, lm_output};
 use crate::examples::tiny_stories::dataset::{FIRST_LETTER, VOCAB_SIZE};

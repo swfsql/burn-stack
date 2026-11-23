@@ -22,8 +22,8 @@ const SCALE: u32 = 8;
 const SEP: usize = 2;
 
 /// Write one "digit + 10-bin probability bar chart" PNG per sample into
-/// `out_dir` (created if missing). The true label and the prediction are encoded
-/// in each file name.
+/// `out_dir` (created if missing). Each file name encodes the true label and
+/// the prediction.
 ///
 /// `images_norm` is `[n, H, W, 1]` in `[0, 1]`. `probs` is `[n, 10]`.
 pub fn save_predictions(probs: Tensor<2>, images_norm: Tensor<4>, labels: &[u8], out_dir: &Path) {

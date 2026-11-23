@@ -1,7 +1,8 @@
 //! The captured SGD training steps of a trainer are its eager training steps:
 //!
-//! - Under plain SGD, the whole training step is captured (a hardware
-//!   recording under `backend-cuda`, which [`expects_recording`] asserts).
+//! - Under plain SGD, the trainer captures the whole training step (a
+//!   hardware recording under `backend-cuda`, which [`expects_recording`]
+//!   asserts).
 //! - A batch of another shape gets an eager training step on the same
 //!   weights.
 //! - Every loss, output and final weight is what the `Sgd` of Burn gets when

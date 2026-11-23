@@ -1,7 +1,7 @@
-//! Sequential-MNIST dataset: each 28×28 image is flattened into a length-784
-//! sequence of single-pixel "tokens", turning digit classification into a
-//! sequence-modelling task.  Handles download/caching of the raw IDX files and
-//! batching into Burn tensors.
+//! Sequential-MNIST dataset: it flattens each 28×28 image into a length-784
+//! sequence of single-pixel "tokens". So digit classification becomes a
+//! sequence-modelling task. The module also downloads and caches the raw IDX
+//! files, and batches the images and their labels into Burn tensors.
 
 use burn::data::dataloader::batcher::Batcher;
 use burn::prelude::*;
@@ -22,7 +22,7 @@ use std::{
 // https://github.com/tracel-ai/burn/blob/fa4f9845a6b2279cd8de68bf7ca5a7eb76dec96d/crates/burn-dataset/src/vision/mnist.rs
 //
 // note: activating the "vision" feature for burn-dataset would considerably increase the dependencies,
-// so the necessary code was replicated here
+// so this file holds a copy of the necessary code
 
 // CVDF mirror of http://yann.lecun.com/exdb/mnist/
 const URL: &str = "https://storage.googleapis.com/cvdf-datasets/mnist/";
@@ -86,7 +86,7 @@ type MappedDataset =
 /// for each digit), with 7,000 images per class. There are 60,000 training
 /// images and 10,000 test images.
 ///
-/// The data is downloaded from the
+/// The dataset downloads the data from the
 /// [CVDF mirror](https://github.com/cvdfoundation/mnist).
 pub struct MnistDataset {
     dataset: MappedDataset,
@@ -139,7 +139,7 @@ impl MnistDataset {
     /// Download the MNIST dataset files from the web.
     /// Panics if the download cannot be completed or the content of the file cannot be written to disk.
     fn download(split: &str) -> PathBuf {
-        // Dataset files are stored in the burn-dataset cache directory
+        // The burn-dataset cache directory holds the dataset files
         let cache_dir = dirs::home_dir()
             .expect("Could not get home directory")
             .join(".cache")
@@ -167,7 +167,7 @@ impl MnistDataset {
     }
 
     /// Download a file from the MNIST dataset URL to the destination directory.
-    /// File download progress is reported with the help of a [progress bar](indicatif).
+    /// A [progress bar](indicatif) reports the progress of the download.
     fn download_file<P: AsRef<Path>>(name: &str, dest_dir: &P) -> PathBuf {
         // Output file name
         let file_name = dest_dir.as_ref().join(name);

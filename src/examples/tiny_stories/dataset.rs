@@ -24,15 +24,15 @@
 //! # Download
 //!
 //! The dataset is a single 673 MB parquet file (one column, `text`, one row
-//! per story, 2,669 ZSTD row groups of 1,024 rows). It is downloaded
+//! per story, 2,669 ZSTD row groups of 1,024 rows). This module downloads it
 //! **whole**, once, exactly as
 //! [`MnistDataset`](super::super::mnist::dataset::MnistDataset) downloads its
-//! IDX files, and cached at `~/.cache/burn-dataset/tinystories-gpt4-clean/`.
-//! The read is lazy, so only the row groups up to the requested rows are
-//! decompressed.
+//! IDX files. It caches the file at
+//! `~/.cache/burn-dataset/tinystories-gpt4-clean/`. The read is lazy, so the
+//! reader decompresses only the row groups up to the requested rows.
 //!
-//! The stories that come out are normalized and cached again, as text: one
-//! file per `(split, story count)`, with the records divided by
+//! The module normalizes the stories that it reads and caches them again, as
+//! text: one file per `(split, story count)`, with the records divided by
 //! [`STORY_SEPARATOR`]. So a second run reads a few MB of text, and never
 //! opens (or needs) the parquet. A cache whose record count disagrees with its
 //! name is rebuilt in place.
@@ -43,22 +43,21 @@
 //!
 //! # Items, windows and runs
 //!
-//! One **item is one story**, and nothing is spliced between two stories. A
-//! story is a self-contained example, and no separator character marks its
-//! start or its end. Leading and trailing whitespace is stripped, so the first
-//! token of an item is always a real symbol. The model decides what (if
-//! anything) marks the start, not the corpus. See
+//! One **item is one story**, and the corpus splices nothing between two
+//! stories. A story is a self-contained example, and no separator character
+//! marks its start or its end. `normalize` strips the leading and trailing
+//! whitespace, so the first token of an item is always a real symbol. The
+//! model decides what (if anything) marks the start, not the corpus. See
 //! [`lm_output`](super::lm::lm_output) for the one hook that this side offers.
 //!
 //! A story (303–4,149 characters, median 724) is longer than one
-//! back-propagation window. So it is walked in **windows** of `seq_len`
-//! tokens, with the recurrent state carried across them
-//! ([`lm::epoch_train`](super::lm::epoch_train)): this is the *run*. Its
-//! length comes from the data, capped by `run_len`. The frontier gate can end
-//! it early.
+//! back-propagation window. So [`lm::epoch_train`](super::lm::epoch_train)
+//! walks it in **windows** of `seq_len` tokens, and carries the recurrent
+//! state across them: this is the *run*. Its length comes from the data,
+//! capped by `run_len`. The frontier gate can end it early.
 //!
 //! Every row of a batch walks its own story, and stories differ in length. So
-//! a batch is padded to a whole number of windows of its longest story.
+//! the batcher pads a batch to a whole number of windows of its longest story.
 //! [`TinyStoriesBatch::scored`] records how many positions of each row are
 //! real, and [`lm_output`](super::lm::lm_output) scores only those. Padding
 //! never reaches the loss or the accuracy.
@@ -70,16 +69,18 @@
 //! ([`PackedStoriesDataset`], [`PackedStoriesBatcher`]) is one window of
 //! `rows` rows. Each row holds whole stories, one after another, as its
 //! segments. Each segment starts from a fresh state (see
-//! [`crate::utils::packing`]). The model says where a segment can start and
-//! how many opening slots it reserves ([`PackLayout`]). The packer fills the
-//! rows first-fit, over a few open rows ([`pack_rows`]). No state goes from
-//! one packed batch to the next. Only the train split is packed.
+//! [`crate::utils::packing`]).
+//!
+//! The model says where a segment can start and how many opening slots it
+//! reserves ([`PackLayout`]). The packer fills the rows first-fit, over a few
+//! open rows ([`pack_rows`]). No state goes from one packed batch to the next.
+//! The dataloaders pack only the train split.
 //!
 //! # Length buckets
 //!
 //! A model that takes no packed rows can still waste less on padding. A
 //! bucketed batch ([`BucketedStoriesDataset`], [`BucketedStoriesBatcher`]) is
-//! one window of stories of similar length: each story goes to the shortest
+//! one window of stories of similar length. Each story goes to the shortest
 //! of a few *buckets* (batch lengths) that holds it ([`bucket_batches`]). Each
 //! bucket takes as many stories as score about the same number of characters,
 //! so a bucket has one batch shape. Only the train split is bucketed.
@@ -124,8 +125,8 @@ pub const fn pair(token: u8) -> [i32; 2] {
     [(token & !UPPER) as i32, (token >> 7) as i32]
 }
 
-/// The cased token of the pair `(id, flag)`. A flag on a character that is not
-/// a letter is ignored.
+/// The cased token of the pair `(id, flag)`. It ignores a flag on a character
+/// that is not a letter.
 pub const fn unpair(id: u8, flag: bool) -> u8 {
     if flag && id as usize >= FIRST_LETTER { id | UPPER } else { id }
 }
@@ -212,8 +213,8 @@ impl Vocab {
     }
 
     /// Encode `text` as cased tokens, and silently drop anything outside the
-    /// alphabet. The cached corpus is normalized first, so the drop affects
-    /// only user prompts.
+    /// alphabet. The cache holds normalized stories, so the drop affects only
+    /// user prompts.
     pub fn encode_cased(&self, text: &str) -> Vec<u8> {
         text.bytes().filter_map(|byte| self.cased_token(byte)).collect()
     }
@@ -243,11 +244,11 @@ const PARQUET: &str = "tinystories_gpt4_clean.parquet";
 /// Which of the dataset card's suggested row ranges to read.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Split {
-    /// Rows `20_000..` — the training stories.
+    /// Rows `20_000..`: the training stories.
     Train,
-    /// Rows `10_000..20_000` — the validation stories.
+    /// Rows `10_000..20_000`: the validation stories.
     Valid,
-    /// Rows `0..10_000` — the held-out test stories.
+    /// Rows `0..10_000`: the held-out test stories.
     Test,
 }
 
@@ -329,11 +330,11 @@ fn parquet_file() -> PathBuf {
 
 /// Read `n_stories` rows of `split` out of the parquet file and normalize them.
 ///
-/// The reader is lazy: one row group (1,024 rows) at a time. It is dropped at
-/// the last group that the request touches, so a request never decompresses
-/// past its own end. The offsets of the splits are small (20k rows, that is,
-/// 20 groups) next to the 2,669 groups of the file, so the skipped rows cost
-/// little.
+/// The reader is lazy: one row group (1,024 rows) at a time. The function
+/// drops it at the last group that the request touches, so a request never
+/// decompresses past its own end. The offsets of the splits are small (20k
+/// rows, that is, 20 groups) next to the 2,669 groups of the file. So the
+/// skipped rows cost little.
 fn read_parquet(split: Split, n_stories: usize) -> Vec<String> {
     assert!(
         n_stories <= split.capacity(),
@@ -380,7 +381,7 @@ pub fn stories(split: Split, n_stories: usize) -> Vec<String> {
         // Not a corrupt file: a cache with a different separator. A blank line
         // is one, and a few stories contain one, so it split those stories in
         // two. A rebuild costs one pass over the (already downloaded) parquet,
-        // so it beats a request for a manual delete.
+        // so it beats a request to remove the file by hand.
         println!(
             "the text cache {path:?} holds {} records for {n_stories} stories \
              (a different separator). Rebuilding it.",
@@ -423,9 +424,9 @@ pub struct TinyStoriesDataset {
 impl TinyStoriesDataset {
     /// Load `n_stories` of `split` (download them once).
     ///
-    /// `run_len` caps the number of windows that one story can use. A longer
-    /// story is truncated to that many. The cap does nothing else: the run
-    /// length itself comes from the story.
+    /// `run_len` caps the number of windows that one story can use. The
+    /// dataset truncates a longer story to that many. The cap does nothing
+    /// else: the run length itself comes from the story.
     pub fn new(split: Split, n_stories: usize, seq_len: usize, run_len: usize) -> Self {
         assert!(run_len >= 1, "a run holds at least one window");
         // Keep at most `run_len` whole windows plus the final target. A story
@@ -456,7 +457,7 @@ impl TinyStoriesDataset {
         self.stories.iter().map(Vec::len).sum()
     }
 
-    /// The windows that the split holds if every story is walked alone. This
+    /// The windows that the split holds if a run walks each story alone. This
     /// is the number of training steps of an epoch at `batch_size = 1` when
     /// the frontier never stalls. A real batch runs the windows of its
     /// *longest* story, so it takes somewhat fewer training steps over
@@ -492,9 +493,9 @@ pub struct TinyStoriesBatch {
     /// `[batch_size, num_windows · seq_len, 2]`.
     pub targets: Tensor<3, Int>,
     /// Real (non-padding) scored positions per row: `story_len - 1` for the
-    /// whole batch, and what is left of it for a [`window`](Self::window).
+    /// whole batch, and what remains of it for a [`window`](Self::window).
     pub scored: Vec<usize>,
-    /// Window length this batch was padded against.
+    /// The window length that the batcher padded this batch against.
     pub seq_len: usize,
     /// `Some` for a batch of packed rows (see [`PackedStoriesBatcher`]). Then
     /// the batch is one window, and a row holds several segments.
@@ -538,8 +539,8 @@ impl TinyStoriesBatch {
     }
 
     /// Window `w` of the batch: the `[batch_size, seq_len, 2]` slice of both
-    /// tensors, with [`scored`](Self::scored) narrowed to what each row still
-    /// has left inside it (`0` for a story that ended earlier).
+    /// tensors. It narrows [`scored`](Self::scored) to the real positions of
+    /// each row inside the window (`0` for a story that ended earlier).
     ///
     /// Every row of the batch advances together, so window `w` continues
     /// window `w - 1` in all of them. This makes one carried cache valid for
@@ -573,7 +574,7 @@ impl TinyStoriesBatch {
 /// whole number of `seq_len` windows.
 #[derive(Clone)]
 pub struct TinyStoriesBatcher {
-    /// Window length the batch is padded against.
+    /// The window length that the batcher pads the batch against.
     seq_len: usize,
 }
 
@@ -856,12 +857,14 @@ impl Batcher<PackedItem, TinyStoriesBatch> for PackedStoriesBatcher {
 /// after bucket.
 ///
 /// `lens` holds the scored count of each story (its tokens less one), and
-/// `order` the order in which to take them (a shuffle). `buckets` holds the
-/// batch lengths, ascending. A story goes to the shortest bucket that holds
-/// it. A bucket takes `round(batch_chars / m)` stories per batch, where `m` is
+/// `order` holds the order in which to take them (a shuffle). `buckets` holds
+/// the batch lengths, ascending. A story goes to the shortest bucket that
+/// holds it.
+///
+/// A bucket takes `round(batch_chars / m)` stories per batch, where `m` is
 /// the mean scored count of its own stories. So each batch scores about
 /// `batch_chars` characters, and a bucket has one batch shape. The stories that
-/// do not fill a last batch move up to the next bucket. The last bucket can end
+/// do not fill a last batch move to the next bucket. The last bucket can end
 /// with one smaller batch.
 ///
 /// # Panics
@@ -903,13 +906,16 @@ pub fn bucket_batches(
     batches
 }
 
-/// The order of a VRAM probe over the `batches` of [`bucket_batches`]: first
-/// `k` batches of each bucket, bucket by bucket in the order of `buckets`
-/// (fewer if a bucket has fewer), then the other batches in the order of a
-/// shuffle with `seed`. The memory of a training step depends on the shape of
-/// its batch (its bucket), not in proportion to its positions. The pool keeps
-/// the pages of each shape. So a probe of `k · buckets.len()` training steps
-/// meets every shape of a run.
+/// The order of a VRAM probe over the `batches` of [`bucket_batches`]:
+///
+/// 1. the first `k` batches of each bucket, bucket by bucket in the order of
+///    `buckets` (fewer if a bucket has fewer),
+/// 2. then the other batches, in the order of a shuffle with `seed`.
+///
+/// The memory of a training step depends on the shape of its batch (its
+/// bucket), not in proportion to its positions. The pool keeps the pages of
+/// each shape. So a probe of `k · buckets.len()` training steps meets every
+/// shape of a run.
 pub fn probe_order(
     batches: Vec<(usize, Vec<usize>)>,
     buckets: &[usize],
@@ -953,7 +959,7 @@ pub struct BucketedStoriesDataset {
 impl BucketedStoriesDataset {
     /// Group `n_stories` of `split` into batches that score about
     /// `batch_chars` characters each, over `buckets`, in the order of a shuffle
-    /// with `seed`. A story longer than the longest bucket is truncated to fit.
+    /// with `seed`. It truncates a story longer than the longest bucket to fit.
     /// With `probe > 0`, the batches take the order of [`probe_order`]
     /// (`k = probe`). Then the loader must keep the order (no shuffle, one
     /// worker).

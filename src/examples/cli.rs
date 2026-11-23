@@ -106,7 +106,7 @@ pub struct AppArgs {
     pub training: bool,
     /// Whether to run inference.
     pub inference: bool,
-    /// Whether to delete existing model/optim artifacts before training.
+    /// Whether to remove existing model/optim artifacts before training.
     pub remove_artifacts: bool,
     /// Optional path to load the training config from.
     pub training_config: Option<PathBuf>,
@@ -333,7 +333,7 @@ impl AppArgs {
 
     /// Apply the overrides of the invocation (`--seed`, `--batch-size`,
     /// `--epochs`, `--max-lr`, the optimizer flags) to `training`, the loaded
-    /// or newly created config, before it is saved.
+    /// or newly created config, before the example saves it.
     ///
     /// `--epochs` rescales the training-step counts of the LR schedule by the
     /// same factor
@@ -350,7 +350,7 @@ impl AppArgs {
     /// AdamW), and keeps the LR schedule. It panics instead when both of these
     /// are true:
     ///
-    /// - Optimizer state is saved in the artifacts directory. That is, this is
+    /// - The artifacts directory holds optimizer state. That is, this is
     ///   not a new run, and `--remove-artifacts --training` did not remove the
     ///   state.
     /// - The old optimizer has state (plain SGD has none).
@@ -443,8 +443,8 @@ impl AppArgs {
         })
     }
 
-    /// Save the optimizer state into the artifacts directory, together with the
-    /// `progress` it was taken at (what `--resume` continues from).
+    /// Save the optimizer state into the artifacts directory, together with
+    /// `progress`, the position of that state (what `--resume` continues from).
     pub fn save_optim(&self, optim: &ModuleOptimizer, progress: &TrainingProgress) {
         save_optim(&self.artifacts_path, optim);
         save_progress(&self.artifacts_path, progress);
@@ -457,10 +457,10 @@ impl AppArgs {
         load_optim(&self.artifacts_path, optim)
     }
 
-    /// Load the optimizer state into `optim` if it is saved. Otherwise, save
-    /// `optim` as the initial state. Also returns the progress to start from:
-    /// under `--resume`, the progress saved with the loaded state. Otherwise, a
-    /// new one.
+    /// Load the optimizer state into `optim` if the artifacts directory holds
+    /// it. Otherwise, save `optim` as the initial state. Also returns the
+    /// progress to start from: under `--resume`, the progress saved with the
+    /// loaded state. Otherwise, a new one.
     pub fn load_or_save_optim(&self, optim: ModuleOptimizer) -> (ModuleOptimizer, TrainingProgress) {
         match self.load_optim(optim.clone()) {
             Some(loaded) => (loaded, self.resumed_progress()),
@@ -485,7 +485,7 @@ impl AppArgs {
                 progress
             }
             (true, None) => panic!(
-                "--resume: no {PROGRESS_NAME}.json was saved with the optim in {:?}",
+                "--resume: the optim in {:?} has no {PROGRESS_NAME}.json saved with it",
                 self.artifacts_path
             ),
             (false, Some(progress)) if progress.training_step > 0 => {
@@ -512,10 +512,11 @@ pub fn finish_extra(pargs: pico_args::Arguments) {
     assert!(remaining.is_empty(), "unused extra arguments: {remaining:?}");
 }
 
-/// The flags of a training step that an example can take after `--`: the
-/// phase timers ([`prof`](crate::examples::prof)), the cap on the device
-/// memory ([`vram`](crate::examples::vram)) and the gradient checkpointing of
-/// Burn.
+/// The flags of a training step that an example can take after `--`:
+///
+/// - the phase timers ([`prof`](crate::examples::prof)),
+/// - the cap on the device memory ([`vram`](crate::examples::vram)),
+/// - the gradient checkpointing of Burn.
 #[derive(Clone, Debug, Default)]
 pub struct TrainingStepFlags {
     /// `--profile <N>` and `--profile-sync`: the arguments of
@@ -584,7 +585,8 @@ impl TrainingStepFlags {
     }
 }
 
-/// `--adamw` / `--sgd` / `--muon` (see [`HELP`]). `None` when none is given.
+/// `--adamw` / `--sgd` / `--muon` (see [`HELP`]). `None` when the invocation
+/// gives none.
 fn parse_optimizer(pargs: &mut pico_args::Arguments) -> Option<OptimizerKind> {
     let (adamw, sgd, muon) = (
         pargs.contains("--adamw"),
@@ -601,7 +603,7 @@ fn parse_optimizer(pargs: &mut pico_args::Arguments) -> Option<OptimizerKind> {
     }
 }
 
-/// Create the artifacts directory. When `delete` is set, first remove the
+/// Create the artifacts directory. When `delete` is true, first remove the
 /// `model`, `optim` and progress files.
 pub fn create_artifact_dir(artifact_dir: &Path, delete: bool) {
     if delete {
@@ -667,7 +669,7 @@ pub fn load_model_config<ModelConfig: Config>(path: &Path) -> Option<ModelConfig
 /// The save/load of `ModuleRecord`/`ModuleOptimizer` appends this
 /// automatically when the path has no extension. So it is explicit here, and
 /// the existence checks and the `--remove-artifacts` cleanup match the files
-/// that are written.
+/// that the save writes.
 pub const RECORD_EXT: &str = "bpk";
 
 /// Base filename (without extension) for the persisted model weights.
@@ -716,8 +718,8 @@ pub fn save_optim(artifact_dir: &Path, optim: &ModuleOptimizer) {
 
 /// Load optimizer state from `artifact_dir`, or `None` if absent.
 ///
-/// Optimizer state is keyed by `ParamId`. [`load_model`] keeps the saved ids,
-/// so the loaded state lands on the parameters of the resumed model.
+/// Burn keys the optimizer state by `ParamId`. [`load_model`] keeps the saved
+/// ids, so the loaded state lands on the parameters of the resumed model.
 pub fn load_optim(artifact_dir: &Path, optim: ModuleOptimizer) -> Option<ModuleOptimizer> {
     let path = artifact_dir.join(OPTIM_NAME).with_extension(RECORD_EXT);
     let exists = std::fs::exists(&path).unwrap_or_else(|e| panic!("failed to check {path:?}: {e}"));

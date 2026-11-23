@@ -168,7 +168,7 @@ fn cased_tokens_keep_the_case() {
     let flags: Vec<bool> = cased.iter().map(|&t| pair(t)[1] == 1).collect();
     let upper: Vec<bool> = text.bytes().map(|b| b.is_ascii_uppercase()).collect();
     assert_eq!(flags, upper);
-    // A pair goes back to its cased token, and a flag on a symbol is dropped.
+    // `unpair` restores the cased token of a pair. It drops a flag on a symbol.
     for &t in &cased {
         let [id, flag] = pair(t);
         assert_eq!(unpair(id as u8, flag == 1), t);

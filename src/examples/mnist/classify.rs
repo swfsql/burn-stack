@@ -2,11 +2,17 @@
 //! examples of the consumer crates.
 //!
 //! [`MnistModel`] holds everything model-specific. An example supplies a
-//! wrapper that can take a whole training step (typically that of a
-//! [`Trainer`](crate::examples::trainer::Trainer)), hop to the inner backend,
-//! checkpoint itself, and turn images into class probabilities. The epoch
-//! loops, the metric printing, the checkpoint cadence and the periodic
-//! prediction PNGs are the same for every model, so they live here.
+//! wrapper that can:
+//!
+//! - take a whole training step (typically that of a
+//!   [`Trainer`](crate::examples::trainer::Trainer)),
+//! - hop to the inner backend,
+//! - checkpoint itself,
+//! - turn images into class probabilities.
+//!
+//! The other parts are the same for every model, so they live here. These are
+//! the epoch loops, the metric printing, the checkpoint cadence and the
+//! periodic prediction PNGs.
 //!
 //! The outer `train()` reads the configs and builds the dataloaders. It stays
 //! in the example, because the model config is there.
@@ -166,7 +172,7 @@ pub fn epoch_train<W: MnistModel>(
         }
     }
 
-    // Display the averaged training metrics
+    // Print the averaged training metrics
     println!(
         "Epoch {}/{}, Avg Loss {:.4}, Avg Acc: {}",
         epoch,
@@ -220,7 +226,7 @@ pub fn epoch_valid<V>(
         acc_metric.update(&pre_metrics.adapt(), &metric_meta).expect("metric update");
     }
 
-    // Display the averaged validation metrics
+    // Print the averaged validation metrics
     let (loss, acc) = (
         metric_current(loss_metric.running_value()),
         metric_current(acc_metric.running_value()),

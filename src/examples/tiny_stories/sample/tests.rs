@@ -171,7 +171,7 @@ fn the_flag_of_a_token_changes_the_next_logits() {
         net.step(x, Some(caches.clone()), None).0
     };
     let d = max_abs_diff(step(0), step(1));
-    assert!(d > 1e-3, "the flag input is read: the logits differ by {d}");
+    assert!(d > 1e-3, "the model reads the flag input: the logits differ by {d}");
 }
 
 /// Whether this build and device give a hardware recording (cubecl without
@@ -182,9 +182,9 @@ fn expects_recording(device: &Device) -> bool {
         && (name.contains("Cuda") || name.contains("Hip"))
 }
 
-/// The story that a host sampler writes. The probabilities of every step are
-/// read back, with two draws per character (the id, then the case) from the
-/// stream of the seed (none when greedy).
+/// The story that a host sampler writes. It reads the probabilities of every
+/// step back to the host. It takes two draws per character (the id, then the
+/// case) from the stream of the seed (none when greedy).
 fn host_story(
     net: &VocabNetwork<RefBlock>,
     device: &Device,

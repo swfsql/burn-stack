@@ -1,9 +1,10 @@
 //! Shared training configuration for the examples.
 //!
 //! [`TrainingConfig`] holds the common hyperparameters (epochs, batch size, LR
-//! schedule, seed), plus the [`OptimizerConfig`]: a fallback optimizer (AdamW
-//! or plain SGD, the one that a captured training step replays), optionally
-//! with Muon on the hidden weight matrices (see [`crate::optim`]).
+//! schedule, seed) and the [`OptimizerConfig`]. The optimizer config has a
+//! fallback optimizer, AdamW or plain SGD. A captured training step replays
+//! plain SGD. Muon on the hidden weight matrices is optional (see
+//! [`crate::optim`]).
 //! [`OptimizerKind`] names the four combinations, and [`OptimizerConfig::of`]
 //! builds the defaults of each one ([`optimizer_config`] for AdamW,
 //! [`sgd_config`] for SGD).
@@ -116,25 +117,28 @@ impl OptimizerConfig {
 /// It is a *budget*, not a per-epoch limit. The [`Session`] of the epoch loops
 /// holds it. The session bounds their `take()` by the remaining batches, and
 /// spends one per training step. So a cap of 600 stops 600 training steps into
-/// the run, in whichever epoch that lands. The clock starts at the first
-/// training step (data loading and an initial validation are free). A loop
-/// sees it run out when it checks [`Session::is_exhausted`] after each
-/// training step. A check after each epoch breaks the outer loop (the caller
-/// still checkpoints and validates first).
+/// the run, in whichever epoch that lands.
+///
+/// The clock starts at the first training step (data loading and an initial
+/// validation are free). A loop finds the budget spent when it calls
+/// [`Session::is_exhausted`] after each training step. A call after each
+/// epoch breaks the outer loop (the caller still checkpoints and validates
+/// first).
 ///
 /// [`Session`]: crate::examples::session::Session
 /// [`Session::is_exhausted`]: crate::examples::session::Session::is_exhausted
 ///
 /// It lives outside [`TrainingConfig`] on purpose. It describes this
-/// invocation ("stop early so I can look at it"), not the hyperparameters that
-/// the artifacts directory saves and that a resumed run should inherit.
+/// invocation ("stop early so I can look at it"). The hyperparameters are
+/// different: the artifacts directory saves them, and a resumed run should
+/// inherit them.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Budget {
     /// Batches still allowed, or `None` when uncapped.
     remaining: Option<usize>,
     /// The time allowed, or `None` when uncapped.
     max_time: Option<Duration>,
-    /// When the first batch was charged.
+    /// When `spend` charged the first batch.
     started: Option<Instant>,
 }
 
@@ -154,7 +158,7 @@ impl Budget {
         Self::new(None, None)
     }
 
-    /// Whether a cap was given at all.
+    /// Whether the budget has a cap at all.
     pub fn is_capped(&self) -> bool {
         self.remaining.is_some() || self.max_time.is_some()
     }
@@ -170,7 +174,7 @@ impl Budget {
         self.remaining
     }
 
-    /// Whether a cap was given and is fully spent, that is, training must stop.
+    /// Whether a cap of the budget is fully spent, that is, training must stop.
     pub fn is_exhausted(&self) -> bool {
         let out_of_time = match (self.max_time, self.started) {
             (Some(max_time), Some(started)) => started.elapsed() >= max_time,

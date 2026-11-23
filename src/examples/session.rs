@@ -2,8 +2,8 @@
 //! loops as one [`Session`]:
 //!
 //! - **where the run stands**: [`TrainingProgress`] (the count of training
-//!   steps, the epoch, and the batch within the epoch). It is saved next to
-//!   every optimizer checkpoint and restored by `--resume`.
+//!   steps, the epoch, and the batch within the epoch). The examples save it
+//!   next to every optimizer checkpoint, and `--resume` restores it.
 //! - **how far this invocation can go**: the `--max-batches` /
 //!   `--max-seconds` [`Budget`].
 //! - **how often it checkpoints and validates**: [`Cadence`], the defaults of
@@ -16,10 +16,10 @@
 //!
 //! The dataloaders shuffle inside each of their worker threads, and the
 //! batches of the workers interleave in the order that they finish. So no run
-//! can replay the exact batches that an earlier run trained. A resumed epoch
-//! thus trains only its remaining batches, drawn from a **new** shuffle
-//! ([`TrainingProgress::shuffle_seed`]): statistically the rest of the epoch,
-//! never a replay of its start.
+//! can replay the exact batches that an earlier run trained. So a resumed
+//! epoch trains only its remaining batches, from a **new** shuffle
+//! ([`TrainingProgress::shuffle_seed`]). These batches are statistically the
+//! rest of the epoch, never a replay of its start.
 
 use crate::examples::training::{Budget, Lr};
 use burn::data::dataloader::Progress;
@@ -29,9 +29,9 @@ use std::io::Write;
 use std::ops::RangeInclusive;
 use std::path::Path;
 
-/// Where a training run stands. It is saved next to every optimizer checkpoint
-/// (a position has a meaning only for the state that it was taken with), and
-/// read back only under `--resume`.
+/// Where a training run stands. The examples save it next to every optimizer
+/// checkpoint, and they read it back only under `--resume`. A position has a
+/// meaning only for the state that they save with it.
 #[derive(Config, Debug)]
 pub struct TrainingProgress {
     /// The count of training steps: the training steps taken, plus the
@@ -175,9 +175,9 @@ impl Session {
         (self.progress.training_step, self.lr)
     }
 
-    /// Add `training_steps` to the count of training steps, with no training,
-    /// so the LR schedule advances too (the character LM uses this for the
-    /// windows that its frontier gate dropped).
+    /// Add `training_steps` to the count of training steps, with no training.
+    /// So the LR schedule advances too. The character LM uses this for the
+    /// windows that its frontier gate dropped.
     pub fn skip_training_steps(&mut self, training_steps: usize) {
         self.progress.training_step += training_steps;
         self.meta.iteration = Some(self.progress.training_step);
@@ -210,7 +210,8 @@ impl Session {
     }
 
     /// Whether the current training step is already validated: by a periodic
-    /// validation, or by the initial one when no training step was taken.
+    /// validation, or by the initial one when this session took no training
+    /// step.
     pub fn validated_now(&self) -> bool {
         self.last_valid == self.progress.training_step
     }
@@ -247,8 +248,8 @@ pub const METRICS_LOG_NAME: &str = "metrics";
 /// the start of the session. A `valid` line adds its `split`. Sessions append
 /// to the same file, and each one opens with a `start` line (which also records
 /// the wall-clock `unix_time`). So a resumed run continues the curve, and a run
-/// that starts again from training step 0 shows as a new curve. Non-finite
-/// values are written as `null`.
+/// that starts again from training step 0 shows as a new curve. The log
+/// writes a non-finite value as `null`.
 pub struct MetricsLog {
     file: std::fs::File,
     start: std::time::Instant,

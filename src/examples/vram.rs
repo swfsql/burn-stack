@@ -10,10 +10,10 @@
 //! The reserved bytes are the pages that the pools hold. The device holds
 //! more:
 //!
-//! - **Dropped pages.** A pool drops a page on its own: a page that stays idle
-//!   past its period, or a page that a growth of the pages left behind. A
-//!   dropped page leaves the report at once, but the storage only queues it.
-//!   The driver frees it at the next explicit cleanup
+//! - **Dropped pages.** A pool drops a page on its own. This happens to a page
+//!   that stays idle past its period, and to a page that a growth of the pages
+//!   left behind. A dropped page leaves the report at once, but the storage
+//!   only queues it. The driver frees it at the next explicit cleanup
 //!   (`Device::memory_cleanup`), and nothing else frees it. So between two
 //!   cleanups, the queue holds memory that no report shows (~0.5 GiB on a
 //!   model near 1M params).
@@ -25,7 +25,7 @@
 //! period of 1 (`--vram-cleanup-every 1`), the queue never outlives a window.
 //! Then the reserved bytes after a backward are the pool memory of the device
 //! at the peak of the training step. They miss only the pages that the pools
-//! dropped within that training step. The cost: each cleanup also gives back
+//! dropped within that training step. The cost: each cleanup also releases
 //! the empty pages, so the next window allocates them again.
 
 use burn::prelude::*;

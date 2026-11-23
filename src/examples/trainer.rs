@@ -4,19 +4,22 @@
 //!
 //! Either way, one [`LossFn`] defines the training step: the loss of the
 //! module on a batch, and the outputs that the metrics read. Eagerly, its
-//! gradients go to the [`ModuleOptimizer`] that each call gets. Under plain
-//! SGD (unless `--eager`), the weights move into a [`CapturedStep`] at the
-//! first call: forward, backward and [`SgdConfig::update`], captured at the
-//! shapes of that batch and replayed for every later batch of the same
-//! shapes. A batch of any other shape (a short last one) gets an eager
-//! training step, on the same weights. The runs of the capture itself are
-//! rolled back, and the learning rate is an input. So it trains exactly as
-//! the eager training steps would. No other optimizer can be replayed
-//! (tracel-ai/burn#5779), Muon + SGD included, so they run eagerly.
+//! gradients go to the [`ModuleOptimizer`] that each call gets.
+//!
+//! Under plain SGD (unless `--eager`), the weights move into a
+//! [`CapturedStep`] at the first call. The capture records forward, backward
+//! and [`SgdConfig::update`] at the shapes of that batch. The trainer replays
+//! the recording for each later batch of the same shapes. A batch of any other
+//! shape (a short last one) gets an eager training step, on the same weights.
+//! The capture rolls back its own runs, and the learning rate is an input. So
+//! it trains exactly as the eager training steps would.
+//!
+//! The trainer cannot replay any other optimizer (tracel-ai/burn#5779), Muon +
+//! SGD included. So these optimizers run eagerly.
 //!
 //! A replay freezes the launch sequence. So the loss must keep the shapes of
-//! the batch: a mask, not a gather of the positions that it scores, and no
-//! read back to the host.
+//! the batch. It must use a mask, not a gather of the positions that it
+//! scores, and it must not read a value back to the host.
 
 #[cfg(test)]
 mod tests;
@@ -31,16 +34,17 @@ use burn::prelude::*;
 /// outputs that the metrics read.
 ///
 /// The batch arrives on the inner backend (lift it with `.autodiff()`). The
-/// loss is the tracked `[1]` mean that the gradients come from. The outputs go
-/// back to the inner backend (`.inner()`).
+/// loss is the tracked `[1]` mean that the gradients come from. The outputs
+/// return to the inner backend (`.inner()`).
 pub type LossFn<M, I, Y> = fn(&M, I) -> (Tensor<1>, Y);
 
 /// A module under training, one training step
 /// ([`train_step`](Self::train_step)) per batch (see the [module docs](self)).
 ///
-/// `M` is the module (on the autodiff backend), `I` a batch (one tensor or a
-/// tuple, on the inner backend), `Y` the outputs that its [`LossFn`] returns
-/// beside the loss. Not `Send`, like the [`CapturedStep`] inside.
+/// `M` is the module (on the autodiff backend). `I` is a batch (one tensor or
+/// a tuple, on the inner backend). `Y` holds the outputs that its [`LossFn`]
+/// returns beside the loss. A trainer is not `Send`, like the
+/// [`CapturedStep`] inside it.
 pub struct Trainer<M, I, Y>
 where
     M: Module + Clone + 'static,
@@ -79,7 +83,7 @@ where
     Y: StepInput + 'static,
 {
     /// `module`, trained through `loss` under `optimizer`. It replays a
-    /// captured step if `optimizer` is plain SGD and `capture` is set (the
+    /// captured step if `optimizer` is plain SGD and `capture` is true (the
     /// [`AppArgs::capture`](crate::examples::cli::AppArgs::capture) of the
     /// examples). Else it runs each training step eagerly.
     pub fn new(module: M, loss: LossFn<M, I, Y>, optimizer: &OptimizerConfig, capture: bool) -> Self {
@@ -131,7 +135,7 @@ where
                 };
                 (State::Captured(captured), output)
             }
-            (State::Captured(_), None) => unreachable!("only plain SGD is captured"),
+            (State::Captured(_), None) => unreachable!("the trainer captures only plain SGD"),
         };
         self.state = Some(state);
         output

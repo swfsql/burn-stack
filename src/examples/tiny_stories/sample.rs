@@ -54,15 +54,15 @@ use std::rc::Rc;
 /// continue it.
 ///
 /// With `prompt: None`, the model writes from its own opening. `prime`
-/// replays what the model splices in front of a sequence, and gives back the
+/// replays what the model splices in front of a sequence, and returns the
 /// distribution of the first character. So no input is necessary, and no
 /// out-of-distribution input goes in (a seed character from the corpus would
 /// be one). A model that splices nothing has no such opening and panics here.
 /// Prompt it, or write the sampler that its opening needs.
 ///
-/// A prompt keeps its case, is filtered through the alphabet (see [`VOCAB`]),
-/// and must not come out empty. The same cursors splice the opening of the
-/// model in front of it, exactly as in training.
+/// A prompt keeps its case, and the alphabet filters it (see [`VOCAB`]). The
+/// filtered prompt must not be empty. The same cursors splice the opening of
+/// the model in front of it, exactly as in training.
 ///
 /// - `temperature` scales the logits before the softmax. `<= 0` samples
 ///   greedily (argmax).
@@ -91,7 +91,7 @@ where
 {
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
     // One story: the cursors open the sequence here, and go through every call
-    // below. So the opening is emitted once.
+    // below. So the model emits the opening once.
     let mut class = ClassCursors::stream();
 
     let (logits, caches) = match prompt {
@@ -170,9 +170,9 @@ where
 /// The logits of the opening give the first character. Every later character
 /// costs a `step` on the character before it (its pair `[1, 2]`), and is
 /// drawn from its logits on the device ([`sample_token`]). The token is state,
-/// like the cache. The only thing that a step takes from the host is its two
-/// uniforms (the id and the case), and `rng` draws all of them at the start.
-/// The characters are read back [`READBACK`] at a time.
+/// like the cache. A step takes only its two uniforms (the id and the case)
+/// from the host. `rng` draws all of them at the start. The loop reads the
+/// characters back [`READBACK`] at a time.
 ///
 /// With `capture`, the first [`WARMUP_STEPS`] steps run eagerly. The other
 /// steps replay one [`CapturedStep`] of the step and its draw, without
@@ -203,8 +203,8 @@ pub unsafe fn decode<C: CacheTensors>(
     if n_chars == 0 {
         return String::new();
     }
-    // Two uniforms per character, the id and the case (none are used when
-    // greedy).
+    // Two uniforms per character, the id and the case (greedy sampling uses
+    // none).
     let mut uniform = || if temperature > 0.0 { rng.random_range(0.0..1.0) } else { 0.0 };
     let draws: Vec<[f32; 2]> = (0..n_chars).map(|_| [uniform(), uniform()]).collect();
     // In f32 whatever the dtype of the model. `sample_token` casts it to the
@@ -274,9 +274,9 @@ pub unsafe fn decode<C: CacheTensors>(
 /// every marker is a `Start`
 /// ([`Layers::only_start_latents`](crate::modules::Layers::only_start_latents)).
 /// That opening takes no input, so it is the same for every story. It runs
-/// once, at the first prompt, and is kept. Each window comes out as its real
-/// tokens alone would come out, the cache included: this is the `pad` contract
-/// of [`Layers::forward`](crate::modules::Layers::forward).
+/// once, at the first prompt, and the prefill keeps it. Each window gives the
+/// same output as its real tokens alone, the cache included: this is the `pad`
+/// contract of [`Layers::forward`](crate::modules::Layers::forward).
 pub struct Prefill<'a, C: CacheTensors> {
     device: Device,
     window: usize,
@@ -286,7 +286,7 @@ pub struct Prefill<'a, C: CacheTensors> {
     opening: Option<Option<(C, ClassCursors)>>,
     /// The cursors that the opening left. Every window starts from them.
     opened: Rc<RefCell<ClassCursors>>,
-    /// The forward of one window, until it is captured.
+    /// The forward of one window, until the prefill captures it.
     run: Option<Box<WindowFn<'a, C>>>,
     captured: Option<CapturedStep<'a, Tensor<3, Int>, Tensor<2>, C>>,
     /// The windows run eagerly so far. [`WARMUP_STEPS`] of them precede a
@@ -435,14 +435,14 @@ fn read_back(tokens: &mut Vec<Tensor<2, Int>>, ids: &mut Vec<i64>) {
 ///
 /// - The id is the first one whose cumulative temperature-scaled probability
 ///   reaches `draw[0]`. The running total never decreases, so that first id
-///   is the count of totals below the draw. The count is clamped, because
-///   rounding can leave the last total short of 1. The last id then takes the
-///   remainder.
+///   is the count of totals below the draw. The function clamps the count,
+///   because rounding can leave the last total short of 1. The last id then
+///   takes the remainder.
 /// - The flag is 1 when `draw[1]` is below `σ(z / temperature)`, with `z` the
 ///   case logit, and when the id is a letter. A symbol has no case.
 ///
 /// When `temperature <= 0`, the id is the argmax and the flag is `z > 0` (the
-/// draws are not used). Nothing is read back.
+/// draws are not used). The function reads nothing back.
 ///
 /// The draw is in f32 for an f16, bf16 or f32 model, and in f64 for an f64
 /// model. In f16, the spacing of the values of the running total below 1 is

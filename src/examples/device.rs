@@ -1,17 +1,20 @@
 //! Runtime dtype selection for the examples.
 //!
 //! With the Dispatch architecture, the [`Device`] chooses the backend at
-//! runtime. So the examples use [`Device::default`]: it resolves to the
+//! runtime. So the examples use [`Device::default`]. It resolves to the
 //! enabled `backend-*` feature (each one enables the matching
-//! `burn/<backend>`), with the `BURN_DEVICE` env override and a built-in
-//! priority list when several are compiled in. [`configure_dtype`] optionally
-//! installs a non-default dtype (`dev-f16` uses it to switch the device to
-//! fp16/i32). Otherwise the backend defaults do not change.
+//! `burn/<backend>`). The `BURN_DEVICE` env override can select one of the
+//! enabled backends. With no override, a built-in priority list selects one
+//! when the build has several.
 //!
-//! Model and optimizer state is saved in the burnpack [`store`](burn::store)
-//! format. The on-disk dtype is the dtype that the module holds (fp16 under
-//! `dev-f16`, fp32 otherwise), so there is no separate recorder precision to
-//! configure.
+//! [`configure_dtype`] optionally installs a non-default dtype (`dev-f16` uses
+//! it to switch the device to fp16/i32). Otherwise the backend defaults do not
+//! change.
+//!
+//! The examples save the model and optimizer state in the burnpack
+//! [`store`](burn::store) format. The on-disk dtype is the dtype that the
+//! module holds (fp16 under `dev-f16`, fp32 otherwise), so there is no
+//! separate recorder precision to configure.
 
 use burn::prelude::*;
 
@@ -64,9 +67,9 @@ pub fn batch_int<const D: usize>(t: Tensor<D, Int>, device: &Device) -> Tensor<D
     t.to_device(device).cast(device.settings().int_dtype)
 }
 
-/// When `dev-f16` is enabled, install fp16 (and i32) as the device defaults.
+/// Under `dev-f16`, install fp16 (and i32) as the device defaults.
 ///
-/// Call it before any tensor is created on `device`. No-op when the feature
+/// Call it before you create a tensor on `device`. No-op when the feature
 /// is off: the dtype defaults of the backend apply.
 pub fn configure_dtype(device: &mut Device) {
     #[cfg(feature = "dev-f16")]
