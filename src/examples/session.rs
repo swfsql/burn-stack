@@ -237,6 +237,12 @@ impl Session {
     }
 }
 
+/// Print that the training reached its budget. A training loop calls it when
+/// [`Session::is_exhausted`] is true, before it stops.
+pub fn print_budget_reached() {
+    println!("the training reached its budget, so it stops");
+}
+
 /// Base filename (without extension) of the metrics log.
 pub const METRICS_LOG_NAME: &str = "metrics";
 

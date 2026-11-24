@@ -99,6 +99,13 @@ ARGS:
                                 -h or --help there shows the help of the example.
 ";
 
+/// Print that the flags enable neither training nor inference, and then
+/// [`HELP`]. A launcher calls it when its flags select no run.
+pub fn print_nothing_to_run() {
+    println!("the flags enable neither training nor inference");
+    println!("{HELP}");
+}
+
 /// Parsed command-line arguments. For field descriptions, see [`HELP`].
 #[derive(Debug)]
 pub struct AppArgs {
